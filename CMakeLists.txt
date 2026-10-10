@@ -56,6 +56,6 @@ add_executable(regml ${REGML_APP_SOURCES})
 target_link_libraries(regml PRIVATE regml_engine)
 
 include(CTest)
-if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
     add_subdirectory(tests)
 endif()
