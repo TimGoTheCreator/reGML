@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  # ubuntu
+  build-linux:
+    name: Ubuntu / CMake
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            pkg-config \
+            libpng-dev \
+            libvorbis-dev \
+            libsdl2-dev
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DREGML_SDL2=ON
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Run CTest
+        run: ctest --test-dir build --output-on-failure -C Release
+
+  # win script
+  build-windows-script:
+    name: Windows / tools/build.ps1
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up vcpkg dependencies
+        shell: pwsh
+        run: |
+          # Install dependencies required by the project
+          vcpkg install libpng libvorbis sdl2:x64-windows
+
+      - name: Run Build Script
+        shell: pwsh
+        run: |
+          # Pass the vcpkg installed prefix to tools/build.ps1
+          $vcpkgPrefix = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows"
+          .\tools\build.ps1 -Configuration Release -Test -SdlPrefix $vcpkgPrefix
+  # win
+  build-windows-cmake:
+    name: Windows / CMake (MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies via vcpkg
+        run: |
+          vcpkg install libpng libvorbis sdl2:x64-windows
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Run CTest
+        run: ctest --test-dir build --output-on-failure -C Release
