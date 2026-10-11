@@ -40,9 +40,35 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The experimental Wii U homebrew target is documented in [docs/wiiu.md](docs/wiiu.md).
-
 Headless: `-DREGML_SDL2=OFF`
+
+## Wii U
+
+Install devkitPro, then run this in its MSYS2 terminal:
+
+```sh
+pacman -Syu
+pacman -S --needed cmake ninja wiiu-dev wiiu-sdl2 ppc-libpng ppc-libvorbis
+/opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake -S . -B build-wiiu -DCMAKE_BUILD_TYPE=Release -DREGML_WIIU=ON -DBUILD_TESTING=OFF
+cmake --build build-wiiu --config Release
+```
+
+Run the build commands from the repository root
+
+- Aroma: copy `build-wiiu/regml.wuhb` to `sd:/wiiu/apps/reGML/` and launch through Homebrew on Menu
+- Tiramisu: copy `build-wiiu/regml.rpx` to `sd:/wiiu/apps/reGML/` and launch through the Homebrew Launcher
+- Put your game's `data.win` and external audio files in `sd:/reGML/`
+- Saves go to `sd:/wiiu/apps/reGML/saves/`
+
+For Cemu 2.6, put the game files in `sdcard/reGML/` inside the Cemu folder, then open `build-wiiu/regml.wuhb` with File > Load
+
+In Cemu, configure an emulated Wii U GamePad in Input settings and enable TV audio in General settings > Audio
+
+Controls: D-pad for movement, A for Z, B for X, X/Y for C, Start for Enter
+
+Tested in Cemu 2.6, real hardware untested, performance still poor in some scenes
+
+Tracing and scripted input: [docs/wiiu.md](docs/wiiu.md)
 
 ## Run
 
