@@ -39,13 +39,13 @@ Pass the path to a GameMaker package to the runner:
 .\build\direct\regml.exe run 'C:\path\to\data.win'
 ```
 
-For faster real-time playback, pass `--speed 2x` or `--speed 4x`:
+To change real-time playback speed, pass any multiplier from `0.01x` to `1000x`:
 
 ```powershell
 .\build\direct\regml.exe run 'C:\path\to\data.win' --speed 4x
 ```
 
-`--speed` accepts `1x`, `2x`, or `4x` (`1`, `2`, and `4` also work). It increases the simulation and audio playback rate. Hidden and headless runs already run as fast as possible; `--frames` remains a count of simulation steps.
+Examples include `--speed 0.5x`, `--speed 1.5x`, `--speed 3x`, and `--speed 10x`; the `x` is optional. It changes the simulation rate. Audio sample rate is limited to the device-friendly 8–192 kHz range. Hidden and headless runs already run as fast as possible; `--frames` remains a count of simulation steps.
 
 The CMake executable is `build/regml` (or `build/Release/regml.exe` with a multi-configuration generator).
 
@@ -62,6 +62,16 @@ The optional Undertale integration check requires a built test executable and a 
 ```powershell
 .\tools\test-undertale.ps1 -DataFile 'C:\path\to\data.win'
 ```
+
+To check Undertale audio decoding and mixing with CTest, configure with the local `data.win` path:
+
+```powershell
+cmake -S . -B build/audio-test -DREGML_UNDERTALE_DATA='C:\path\to\data.win'
+cmake --build build/audio-test --config Release
+ctest --test-dir build/audio-test --output-on-failure -C Release
+```
+
+This audio test checks the intro track and dialogue sound in the decoder/mixer. It does not verify SDL output or speaker playback.
 
 Do not put game packages, extracted assets, saves, or screenshots in source control.
 

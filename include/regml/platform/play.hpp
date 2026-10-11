@@ -8,7 +8,7 @@ struct PlayOptions {
     bool headless = false;
     bool hidden = false;
     bool autoplay = false;
-    unsigned speed_multiplier = 1;
+    double speed_multiplier = 1.0;
     std::filesystem::path screenshot;
     std::filesystem::path input_script;
     std::optional<std::uint32_t> seed;
@@ -20,6 +20,6 @@ struct PlayReport {
     std::uint64_t frame_hash = 0;
     std::string room;
 };
-PlayReport play_demo(const PlayOptions& options);
-PlayReport play_game(const std::filesystem::path& package,const PlayOptions& options);
+PlayReport play_demo(const PlayOptions &options);
+PlayReport play_game(const std::filesystem::path &package, const PlayOptions &options);
 } // namespace regml

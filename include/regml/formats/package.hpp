@@ -23,7 +23,9 @@ struct GeneralInfo {
     std::uint32_t game_id = 0, name_pointer = 0, display_name_pointer = 0, width = 0, height = 0;
     bool has_known_prefix = false;
 };
-struct StringRecord { std::size_t record_offset = 0, length = 0; };
+struct StringRecord {
+    std::size_t record_offset = 0, length = 0;
+};
 struct CodeEntry {
     std::size_t record_offset = 0;
     std::uint32_t name_pointer = 0;
@@ -33,26 +35,27 @@ struct CodeEntry {
     std::uint32_t entry_offset = 0;
 };
 class Package {
-public:
-    static Package load(const std::filesystem::path& path, LoadLimits limits = {});
+  public:
+    static Package load(const std::filesystem::path &path, LoadLimits limits = {});
     static Package from_bytes(std::vector<std::uint8_t> bytes, LoadLimits limits = {});
     [[nodiscard]] BinaryView view() const { return BinaryView(bytes_); }
     [[nodiscard]] std::size_t size() const noexcept { return bytes_.size(); }
-    [[nodiscard]] const std::vector<Chunk>& chunks() const noexcept { return chunks_; }
-    [[nodiscard]] const Chunk* find_chunk(std::string_view name) const noexcept;
-    [[nodiscard]] const std::optional<GeneralInfo>& general_info() const noexcept { return info_; }
-    [[nodiscard]] const std::vector<StringRecord>& strings() const noexcept { return strings_; }
-    [[nodiscard]] const std::vector<CodeEntry>& code() const noexcept { return code_; }
+    [[nodiscard]] const std::vector<Chunk> &chunks() const noexcept { return chunks_; }
+    [[nodiscard]] const Chunk *find_chunk(std::string_view name) const noexcept;
+    [[nodiscard]] const std::optional<GeneralInfo> &general_info() const noexcept { return info_; }
+    [[nodiscard]] const std::vector<StringRecord> &strings() const noexcept { return strings_; }
+    [[nodiscard]] const std::vector<CodeEntry> &code() const noexcept { return code_; }
     [[nodiscard]] std::string_view string_at(std::size_t index) const;
     [[nodiscard]] std::string_view string_pointer(std::uint32_t pointer) const;
     [[nodiscard]] BinaryView code_bytes(std::size_t index) const;
     [[nodiscard]] std::string_view code_name(std::size_t index) const;
-private:
+
+  private:
     void parse(LoadLimits limits);
-    void parse_strings(const Chunk& chunk, LoadLimits limits);
-    void parse_info(const Chunk& chunk);
-    void parse_code(const Chunk& chunk, LoadLimits limits);
-    [[nodiscard]] std::size_t list_count(const Chunk& chunk, LoadLimits limits) const;
+    void parse_strings(const Chunk &chunk, LoadLimits limits);
+    void parse_info(const Chunk &chunk);
+    void parse_code(const Chunk &chunk, LoadLimits limits);
+    [[nodiscard]] std::size_t list_count(const Chunk &chunk, LoadLimits limits) const;
     std::vector<std::uint8_t> bytes_;
     std::vector<Chunk> chunks_;
     std::optional<GeneralInfo> info_;

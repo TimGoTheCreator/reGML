@@ -6,18 +6,48 @@
 #include <vector>
 namespace regml {
 enum class DataType : std::uint8_t {
-    real = 0, int32 = 2, int64 = 3, boolean = 4, variable = 5, string = 6, int16 = 15
+    real = 0,
+    int32 = 2,
+    int64 = 3,
+    boolean = 4,
+    variable = 5,
+    string = 6,
+    int16 = 15
 };
 enum class Opcode : std::uint8_t {
-    conv = 0x07, mul = 0x08, div = 0x09, rem = 0x0a, mod = 0x0b,
-    add = 0x0c, sub = 0x0d, bit_and = 0x0e, bit_or = 0x0f, bit_xor = 0x10,
-    neg = 0x11, bit_not = 0x12, shl = 0x13, shr = 0x14, cmp = 0x15,
-    pop = 0x45, push_i = 0x84, dup = 0x86, call_v = 0x99,
-    ret = 0x9c, exit = 0x9d, popz = 0x9e,
-    branch = 0xb6, branch_true = 0xb7, branch_false = 0xb8,
-    push_env = 0xba, pop_env = 0xbb,
-    push = 0xc0, push_local = 0xc1, push_global = 0xc2, push_builtin = 0xc3,
-    call = 0xd9, extended = 0xff
+    conv = 0x07,
+    mul = 0x08,
+    div = 0x09,
+    rem = 0x0a,
+    mod = 0x0b,
+    add = 0x0c,
+    sub = 0x0d,
+    bit_and = 0x0e,
+    bit_or = 0x0f,
+    bit_xor = 0x10,
+    neg = 0x11,
+    bit_not = 0x12,
+    shl = 0x13,
+    shr = 0x14,
+    cmp = 0x15,
+    pop = 0x45,
+    push_i = 0x84,
+    dup = 0x86,
+    call_v = 0x99,
+    ret = 0x9c,
+    exit = 0x9d,
+    popz = 0x9e,
+    branch = 0xb6,
+    branch_true = 0xb7,
+    branch_false = 0xb8,
+    push_env = 0xba,
+    pop_env = 0xbb,
+    push = 0xc0,
+    push_local = 0xc1,
+    push_global = 0xc2,
+    push_builtin = 0xc3,
+    call = 0xd9,
+    extended = 0xff
 };
 std::string_view opcode_name(Opcode opcode) noexcept;
 std::string_view type_name(DataType type) noexcept;
@@ -40,6 +70,8 @@ struct Program {
     std::unordered_map<std::size_t, std::size_t> index_by_offset;
 };
 // Decodes v15/v16 wire formats. Linking variables/functions is a later milestone.
-struct DecodeLimits { std::size_t max_instructions = 1'000'000; };
+struct DecodeLimits {
+    std::size_t max_instructions = 1'000'000;
+};
 Program decode(BinaryView code, std::uint8_t bytecode_version, DecodeLimits limits = {});
 } // namespace regml

@@ -16,5 +16,5 @@ struct LinkedPackage {
     std::size_t instruction_count = 0;
 };
 // Legacy v15/v16 profile only. Resolves names, not runtime scope/array semantics.
-LinkedPackage link_legacy_package(const Package& package, LoadLimits limits = {});
+LinkedPackage link_legacy_package(const Package &package, LoadLimits limits = {});
 } // namespace regml

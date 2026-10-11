@@ -1,424 +1,731 @@
+#include "regml/bytecode/linker.hpp"
 #include "regml/formats/package.hpp"
-#include "regml/vm/interpreter.hpp"
 #include "regml/runtime/demo.hpp"
 #include "regml/runtime/game.hpp"
-#include "regml/bytecode/linker.hpp"
-#include <functional>
+#include "regml/vm/interpreter.hpp"
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
-#include <string>
-#include <utility>
 #include <map>
 #include <sstream>
+#include <string>
+#include <utility>
 
 namespace {
 using Bytes = std::vector<std::uint8_t>;
 void check(bool result, std::string_view message) {
-    if (!result) throw std::runtime_error(std::string(message));
+    if (!result)
+        throw std::runtime_error(std::string(message));
 }
-void error_is(regml::ErrorKind kind, const std::function<void()>& action, std::optional<std::size_t> offset = std::nullopt) {
-    try { action(); } catch (const regml::Error& error) {
+void error_is(regml::ErrorKind kind, const std::function<void()> &action,
+              std::optional<std::size_t> offset = std::nullopt) {
+    try {
+        action();
+    } catch (const regml::Error &error) {
         check(error.kind() == kind, "wrong error category");
-        if (offset) check(error.offset() == offset, "wrong absolute error offset");
+        if (offset)
+            check(error.offset() == offset, "wrong absolute error offset");
         return;
     }
     throw std::runtime_error("expected a structured error");
 }
-void u32(Bytes& bytes, std::uint32_t value) {
-    for (unsigned shift = 0; shift < 32; shift += 8) bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+void u32(Bytes &bytes, std::uint32_t value) {
+    for (unsigned shift = 0; shift < 32; shift += 8)
+        bytes.push_back(static_cast<std::uint8_t>(value >> shift));
 }
-void patch(Bytes& bytes, std::size_t at, std::uint32_t value) {
-    for (unsigned shift = 0; shift < 32; shift += 8) bytes.at(at + shift / 8) = static_cast<std::uint8_t>(value >> shift);
+void patch(Bytes &bytes, std::size_t at, std::uint32_t value) {
+    for (unsigned shift = 0; shift < 32; shift += 8)
+        bytes.at(at + shift / 8) = static_cast<std::uint8_t>(value >> shift);
 }
 Bytes words(std::initializer_list<std::uint32_t> input) {
-    Bytes bytes; for (auto word : input) u32(bytes, word); return bytes;
+    Bytes bytes;
+    for (auto word : input)
+        u32(bytes, word);
+    return bytes;
 }
-std::size_t chunk(Bytes& bytes, std::string_view tag, std::size_t length) {
-    for (auto ch : tag) bytes.push_back(static_cast<std::uint8_t>(ch));
-    u32(bytes, static_cast<std::uint32_t>(length)); return bytes.size();
+std::size_t chunk(Bytes &bytes, std::string_view tag, std::size_t length) {
+    for (auto ch : tag)
+        bytes.push_back(static_cast<std::uint8_t>(ch));
+    u32(bytes, static_cast<std::uint32_t>(length));
+    return bytes.size();
 }
-void finish(Bytes& bytes) { patch(bytes, 4, static_cast<std::uint32_t>(bytes.size() - 8)); }
+void finish(Bytes &bytes) {
+    patch(bytes, 4, static_cast<std::uint32_t>(bytes.size() - 8));
+}
 struct Fixture {
     Bytes bytes;
     std::size_t gen = 0, strg = 0, code = 0, record = 0, blob = 0, string_record = 0;
 };
 Fixture fixture(std::uint8_t version = 16) {
-    Fixture f; f.bytes = {'F','O','R','M',0,0,0,0};
-    f.gen = chunk(f.bytes, "GEN8", 104); f.bytes.resize(f.gen + 104);
-    f.bytes[f.gen] = 1; f.bytes[f.gen + 1] = version;
-    patch(f.bytes, f.gen + 20, 1337); patch(f.bytes, f.gen + 44, 1); patch(f.bytes, f.gen + 48, 4);
-    patch(f.bytes, f.gen + 52, 1804); patch(f.bytes, f.gen + 60, 640); patch(f.bytes, f.gen + 64, 480);
-    const auto demo = regml::demo_bytecode(); const bool old = version == 14;
-    f.code = chunk(f.bytes, "CODE", 0); u32(f.bytes, 1); u32(f.bytes, 0);
+    Fixture f;
+    f.bytes = {'F', 'O', 'R', 'M', 0, 0, 0, 0};
+    f.gen = chunk(f.bytes, "GEN8", 104);
+    f.bytes.resize(f.gen + 104);
+    f.bytes[f.gen] = 1;
+    f.bytes[f.gen + 1] = version;
+    patch(f.bytes, f.gen + 20, 1337);
+    patch(f.bytes, f.gen + 44, 1);
+    patch(f.bytes, f.gen + 48, 4);
+    patch(f.bytes, f.gen + 52, 1804);
+    patch(f.bytes, f.gen + 60, 640);
+    patch(f.bytes, f.gen + 64, 480);
+    const auto demo = regml::demo_bytecode();
+    const bool old = version == 14;
+    f.code = chunk(f.bytes, "CODE", 0);
+    u32(f.bytes, 1);
+    u32(f.bytes, 0);
     if (old) {
-        f.record = f.bytes.size(); u32(f.bytes, 0); u32(f.bytes, static_cast<std::uint32_t>(demo.size()));
-        f.blob = f.bytes.size(); f.bytes.insert(f.bytes.end(), demo.begin(), demo.end());
+        f.record = f.bytes.size();
+        u32(f.bytes, 0);
+        u32(f.bytes, static_cast<std::uint32_t>(demo.size()));
+        f.blob = f.bytes.size();
+        f.bytes.insert(f.bytes.end(), demo.begin(), demo.end());
     } else {
-        f.blob = f.bytes.size(); f.bytes.insert(f.bytes.end(), demo.begin(), demo.end());
-        f.record = f.bytes.size(); u32(f.bytes, 0); u32(f.bytes, static_cast<std::uint32_t>(demo.size()));
+        f.blob = f.bytes.size();
+        f.bytes.insert(f.bytes.end(), demo.begin(), demo.end());
+        f.record = f.bytes.size();
+        u32(f.bytes, 0);
+        u32(f.bytes, static_cast<std::uint32_t>(demo.size()));
         u32(f.bytes, 0x80000002); // locals=2, args=0, high-bit locals flag
-        const auto displacement = static_cast<std::int32_t>(static_cast<std::int64_t>(f.blob) - static_cast<std::int64_t>(f.bytes.size()));
-        u32(f.bytes, std::bit_cast<std::uint32_t>(displacement)); u32(f.bytes, 0);
+        const auto displacement =
+            static_cast<std::int32_t>(static_cast<std::int64_t>(f.blob) - static_cast<std::int64_t>(f.bytes.size()));
+        u32(f.bytes, std::bit_cast<std::uint32_t>(displacement));
+        u32(f.bytes, 0);
     }
     patch(f.bytes, f.code + 4, static_cast<std::uint32_t>(f.record));
     patch(f.bytes, f.code - 4, static_cast<std::uint32_t>(f.bytes.size() - f.code));
-    f.strg = chunk(f.bytes, "STRG", 0); u32(f.bytes, 2); u32(f.bytes, 0); u32(f.bytes, 0);
+    f.strg = chunk(f.bytes, "STRG", 0);
+    u32(f.bytes, 2);
+    u32(f.bytes, 0);
+    u32(f.bytes, 0);
     const std::string names[] = {"reGML fixture", "gml_Script_test"};
     std::size_t pointers[2]{};
     for (std::size_t i = 0; i < 2; ++i) {
-        pointers[i] = f.bytes.size(); u32(f.bytes, static_cast<std::uint32_t>(names[i].size()));
-        f.bytes.insert(f.bytes.end(), names[i].begin(), names[i].end()); f.bytes.push_back(0);
+        pointers[i] = f.bytes.size();
+        u32(f.bytes, static_cast<std::uint32_t>(names[i].size()));
+        f.bytes.insert(f.bytes.end(), names[i].begin(), names[i].end());
+        f.bytes.push_back(0);
         patch(f.bytes, f.strg + 4 + 4 * i, static_cast<std::uint32_t>(pointers[i]));
     }
     f.string_record = pointers[0];
     patch(f.bytes, f.gen + 40, static_cast<std::uint32_t>(pointers[0] + 4));
     patch(f.bytes, f.gen + 100, static_cast<std::uint32_t>(pointers[0] + 4));
     patch(f.bytes, f.record, static_cast<std::uint32_t>(pointers[1] + 4));
-    patch(f.bytes, f.strg - 4, static_cast<std::uint32_t>(f.bytes.size() - f.strg)); finish(f.bytes); return f;
+    patch(f.bytes, f.strg - 4, static_cast<std::uint32_t>(f.bytes.size() - f.strg));
+    finish(f.bytes);
+    return f;
 }
-regml::VmResult run(const Bytes& bytes, regml::VmOptions options = {}) {
+regml::VmResult run(const Bytes &bytes, regml::VmOptions options = {}) {
     return regml::execute_numeric(regml::decode(regml::BinaryView(bytes), 16), options);
 }
-std::int32_t integer_result(const regml::VmResult& result) {
-    check(result.returned.has_value(), "missing return value"); return std::get<std::int32_t>(*result.returned);
+std::int32_t integer_result(const regml::VmResult &result) {
+    check(result.returned.has_value(), "missing return value");
+    return std::get<std::int32_t>(*result.returned);
 }
-}
-int main(int argc, char** argv) {
-    if(argc==5 && std::string_view(argv[1])=="--flowey-regression"){
+} // namespace
+int main(int argc, char **argv) {
+    if (argc == 5 && std::string_view(argv[1]) == "--flowey-regression") {
         try {
-            std::ifstream input(argv[3]);check(static_cast<bool>(input),"replay cannot be opened");std::map<std::size_t,regml::KeyboardState> replay;std::string line;
-            while(std::getline(input,line)){if(line.empty() || line[0]=='#')continue;std::istringstream row(line);std::size_t frame;check(static_cast<bool>(row>>frame),"invalid replay frame");regml::KeyboardState keys{};int key;while(row>>key){check(key>=0 && key<256,"invalid replay key");keys[static_cast<std::size_t>(key)]=true;}replay[frame]=keys;}
-            for(bool dodge:{true,false}){
+            std::ifstream input(argv[3]);
+            check(static_cast<bool>(input), "replay cannot be opened");
+            std::map<std::size_t, regml::KeyboardState> replay;
+            std::string line;
+            while (std::getline(input, line)) {
+                if (line.empty() || line[0] == '#')
+                    continue;
+                std::istringstream row(line);
+                std::size_t frame;
+                check(static_cast<bool>(row >> frame), "invalid replay frame");
+                regml::KeyboardState keys{};
+                int key;
+                while (row >> key) {
+                    check(key >= 0 && key < 256, "invalid replay key");
+                    keys[static_cast<std::size_t>(key)] = true;
+                }
+                replay[frame] = keys;
+            }
+            for (bool dodge : {true, false}) {
                 std::filesystem::create_directories(argv[4]);
-                regml::GameSession game(argv[2],1,std::filesystem::path(argv[4])/(dodge?"dodge":"hit"));regml::KeyboardState held{};
-                bool launched=false,advanced=false;std::size_t launch_frame=0,max_attacking=0;double last_conversation=-1;
-                for(std::size_t frame=0;frame<7000;++frame){
-                    if(frame<3500){if(const auto it=replay.find(frame);it!=replay.end())held=it->second;}
-                    else {held={};if(!launched && frame%80==0)held[90]=true;if(dodge && launched && frame<launch_frame+20){held[37]=true;held[40]=true;}}
-                    game.tick(held,{});if(game.room_name()!="room_floweybattle")continue;
-                    const auto states=game.instance_states();double conversation=-1;std::size_t attacking=0;
-                    for(const auto& state:states){if(state.object_name=="obj_floweybattle1")conversation=regml::value_number(state.variables.at("conversation"));if(state.object_name=="obj_friendlypellet" && regml::value_number(state.variables.at("attackyou"))==2)++attacking;}
-                    max_attacking=std::max(max_attacking,attacking);
-                    if(!launched && attacking>0){launched=true;launch_frame=frame;}
-                    if(conversation!=last_conversation){std::cout<<(dodge?"DODGE":"HIT")<<" frame "<<frame<<" conversation "<<conversation<<" attacking pellets "<<attacking<<'\n';last_conversation=conversation;}
-                    if(launched && (dodge?conversation==5:conversation==10)){advanced=true;break;}
-                    if(launched && dodge && conversation>=10)throw std::runtime_error("dodge replay was hit before the miss branch");
+                regml::GameSession game(argv[2], 1, std::filesystem::path(argv[4]) / (dodge ? "dodge" : "hit"));
+                regml::KeyboardState held{};
+                bool launched = false, advanced = false;
+                std::size_t launch_frame = 0, max_attacking = 0;
+                double last_conversation = -1;
+                for (std::size_t frame = 0; frame < 7000; ++frame) {
+                    if (frame < 3500) {
+                        if (const auto it = replay.find(frame); it != replay.end())
+                            held = it->second;
+                    } else {
+                        held = {};
+                        if (!launched && frame % 80 == 0)
+                            held[90] = true;
+                        if (dodge && launched && frame < launch_frame + 20) {
+                            held[37] = true;
+                            held[40] = true;
+                        }
+                    }
+                    game.tick(held, {});
+                    if (game.room_name() != "room_floweybattle")
+                        continue;
+                    const auto states = game.instance_states();
+                    double conversation = -1;
+                    std::size_t attacking = 0;
+                    for (const auto &state : states) {
+                        if (state.object_name == "obj_floweybattle1")
+                            conversation = regml::value_number(state.variables.at("conversation"));
+                        if (state.object_name == "obj_friendlypellet" &&
+                            regml::value_number(state.variables.at("attackyou")) == 2)
+                            ++attacking;
+                    }
+                    max_attacking = std::max(max_attacking, attacking);
+                    if (!launched && attacking > 0) {
+                        launched = true;
+                        launch_frame = frame;
+                    }
+                    if (conversation != last_conversation) {
+                        std::cout << (dodge ? "DODGE" : "HIT") << " frame " << frame << " conversation " << conversation
+                                  << " attacking pellets " << attacking << '\n';
+                        last_conversation = conversation;
+                    }
+                    if (launched && (dodge ? conversation == 5 : conversation == 10)) {
+                        advanced = true;
+                        break;
+                    }
+                    if (launched && dodge && conversation >= 10)
+                        throw std::runtime_error("dodge replay was hit before the miss branch");
                 }
-                check(max_attacking==5,"all five pellets must launch together");check(advanced,dodge?"dodging must advance Flowey conversation":"taking a hit must advance Flowey conversation");
-                for(int frame=0;frame<120;++frame){regml::KeyboardState confirm{};if(frame==0)confirm[90]=true;game.tick(confirm,{});}
-                bool followup=false;for(const auto& state:game.instance_states())if(state.object_name=="obj_floweybattle1"){
-                    const auto conversation=regml::value_number(state.variables.at("conversation"));std::cout<<(dodge?"DODGE":"HIT")<<" follow-up conversation "<<conversation<<'\n';followup=dodge?conversation==7:conversation==12;
+                check(max_attacking == 5, "all five pellets must launch together");
+                check(advanced, dodge ? "dodging must advance Flowey conversation"
+                                      : "taking a hit must advance Flowey conversation");
+                for (int frame = 0; frame < 120; ++frame) {
+                    regml::KeyboardState confirm{};
+                    if (frame == 0)
+                        confirm[90] = true;
+                    game.tick(confirm, {});
                 }
-                check(followup,"Flowey must start the follow-up dialogue after the attack");game.canvas().save_bmp(std::filesystem::path(argv[4])/(dodge?"dodge.bmp":"hit.bmp"));
+                bool followup = false;
+                for (const auto &state : game.instance_states())
+                    if (state.object_name == "obj_floweybattle1") {
+                        const auto conversation = regml::value_number(state.variables.at("conversation"));
+                        std::cout << (dodge ? "DODGE" : "HIT") << " follow-up conversation " << conversation << '\n';
+                        followup = dodge ? conversation == 7 : conversation == 12;
+                    }
+                check(followup, "Flowey must start the follow-up dialogue after the attack");
+                game.canvas().save_bmp(std::filesystem::path(argv[4]) / (dodge ? "dodge.bmp" : "hit.bmp"));
             }
-            regml::GameSession rescue(argv[2],1,std::filesystem::path(argv[4])/"toriel");regml::KeyboardState held{};
-            int player_id=-1;bool visited_battle=false,returned=false;double restored_x=0,restored_y=0;
-            for(std::size_t frame=0;frame<10000;++frame){
-                if(frame<3500){if(const auto it=replay.find(frame);it!=replay.end())held=it->second;}
-                else {held={};if(frame%100==0)held[90]=true;}
-                rescue.tick(held,{});
-                if(rescue.room_name()=="room_floweybattle")visited_battle=true;
-                if(rescue.room_name()=="room_area1_2")for(const auto& state:rescue.instance_states())if(state.object_name=="obj_mainchara"){
-                    if(!visited_battle)player_id=state.id;
-                    else {check(state.id==player_id,"persistent room must restore the original player instance");returned=true;restored_x=regml::value_number(state.variables.at("x"));restored_y=regml::value_number(state.variables.at("y"));}
+            regml::GameSession rescue(argv[2], 1, std::filesystem::path(argv[4]) / "toriel");
+            regml::KeyboardState held{};
+            int player_id = -1;
+            bool visited_battle = false, returned = false;
+            double restored_x = 0, restored_y = 0;
+            for (std::size_t frame = 0; frame < 10000; ++frame) {
+                if (frame < 3500) {
+                    if (const auto it = replay.find(frame); it != replay.end())
+                        held = it->second;
+                } else {
+                    held = {};
+                    if (frame % 100 == 0)
+                        held[90] = true;
                 }
+                rescue.tick(held, {});
+                if (rescue.room_name() == "room_floweybattle")
+                    visited_battle = true;
+                if (rescue.room_name() == "room_area1_2")
+                    for (const auto &state : rescue.instance_states())
+                        if (state.object_name == "obj_mainchara") {
+                            if (!visited_battle)
+                                player_id = state.id;
+                            else {
+                                check(state.id == player_id,
+                                      "persistent room must restore the original player instance");
+                                returned = true;
+                                restored_x = regml::value_number(state.variables.at("x"));
+                                restored_y = regml::value_number(state.variables.at("y"));
+                            }
+                        }
             }
-            check(visited_battle && returned,"Toriel rescue must return to the overworld");
-            bool moved=false;regml::KeyboardState up{};up[38]=true;
-            for(int frame=0;frame<120;++frame){rescue.tick(up,{});for(const auto& state:rescue.instance_states())if(state.object_name=="obj_mainchara" && state.id==player_id)moved=moved || regml::value_number(state.variables.at("x"))!=restored_x || regml::value_number(state.variables.at("y"))!=restored_y;}
-            check(moved,"player movement must unlock after Toriel leaves");check(rescue.room_name()=="room_ruins1","player must be able to enter the Ruins after Toriel leaves");
-            bool toriel_faced_path=false;regml::KeyboardState idle{};
-            for(int frame=0;frame<180;++frame){rescue.tick(idle,{});for(const auto& state:rescue.instance_states())if(state.object_name=="obj_toroverworld2" && regml::value_number(state.variables.at("path_index"))>=0 && regml::value_number(state.variables.at("myinteract"))==0){
-                const auto direction=regml::value_number(state.variables.at("direction"));
-                if(direction>=45 && direction<=135 && regml::value_number(state.variables.at("sprite_index"))==regml::value_number(state.variables.at("usprite")))toriel_faced_path=true;
-            }}
-            check(toriel_faced_path,"Toriel must use her upward-facing sprite while walking up her Ruins path");
-            rescue.canvas().save_bmp(std::filesystem::path(argv[4])/"toriel-return.bmp");
-            std::cout<<"PASS Flowey five-pellet attack, dodge/hit progression, Toriel room restoration and movement into the Ruins\n";return 0;
-        }catch(const std::exception& error){std::cerr<<"FAIL Flowey regression: "<<error.what()<<'\n';return 1;}
+            check(visited_battle && returned, "Toriel rescue must return to the overworld");
+            bool moved = false;
+            regml::KeyboardState up{};
+            up[38] = true;
+            for (int frame = 0; frame < 120; ++frame) {
+                rescue.tick(up, {});
+                for (const auto &state : rescue.instance_states())
+                    if (state.object_name == "obj_mainchara" && state.id == player_id)
+                        moved = moved || regml::value_number(state.variables.at("x")) != restored_x ||
+                                regml::value_number(state.variables.at("y")) != restored_y;
+            }
+            check(moved, "player movement must unlock after Toriel leaves");
+            check(rescue.room_name() == "room_ruins1", "player must be able to enter the Ruins after Toriel leaves");
+            bool toriel_faced_path = false;
+            regml::KeyboardState idle{};
+            for (int frame = 0; frame < 180; ++frame) {
+                rescue.tick(idle, {});
+                for (const auto &state : rescue.instance_states())
+                    if (state.object_name == "obj_toroverworld2" &&
+                        regml::value_number(state.variables.at("path_index")) >= 0 &&
+                        regml::value_number(state.variables.at("myinteract")) == 0) {
+                        const auto direction = regml::value_number(state.variables.at("direction"));
+                        if (direction >= 45 && direction <= 135 &&
+                            regml::value_number(state.variables.at("sprite_index")) ==
+                                regml::value_number(state.variables.at("usprite")))
+                            toriel_faced_path = true;
+                    }
+            }
+            check(toriel_faced_path, "Toriel must use her upward-facing sprite while walking up her Ruins path");
+            rescue.canvas().save_bmp(std::filesystem::path(argv[4]) / "toriel-return.bmp");
+            std::cout << "PASS Flowey five-pellet attack, dodge/hit progression, Toriel room restoration and movement "
+                         "into the Ruins\n";
+            return 0;
+        } catch (const std::exception &error) {
+            std::cerr << "FAIL Flowey regression: " << error.what() << '\n';
+            return 1;
+        }
     }
     if (argc > 1) {
         if (argc != 3 || std::string_view(argv[1]) != "--emit-fixture") {
             std::cerr << "Usage: regml_tests [--emit-fixture <output-path>]\n"
-                         "       regml_tests --flowey-regression <data.win> <replay> <artifact-directory>\n"; return 2;
+                         "       regml_tests --flowey-regression <data.win> <replay> <artifact-directory>\n";
+            return 2;
         }
         // Explicitly requested test artifact only; never extracts game files.
         const auto bytes = fixture().bytes;
         std::ofstream file(argv[2], std::ios::binary | std::ios::trunc);
-        if (!file) { std::cerr << "Cannot write synthetic fixture\n"; return 1; }
-        file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (!file) {
+            std::cerr << "Cannot write synthetic fixture\n";
+            return 1;
+        }
+        file.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
         file.close();
-        if (!file) { std::cerr << "Synthetic fixture write failed\n"; return 1; }
-        std::cout << "Wrote synthetic package: " << argv[2] << '\n'; return 0;
+        if (!file) {
+            std::cerr << "Synthetic fixture write failed\n";
+            return 1;
+        }
+        std::cout << "Wrote synthetic package: " << argv[2] << '\n';
+        return 0;
     }
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
-        {"package variable chains and corruption", [] {
-            auto f=fixture();
-            const auto program=words({0x840f0007,0x4522ffff,0xa0000008,0xc005ffff,0xa0000001,0x9d000000});
-            std::copy(program.begin(),program.end(),f.bytes.begin()+static_cast<std::ptrdiff_t>(f.blob));
-            const auto name=regml::BinaryView(f.bytes).u32(f.record);
-            const auto vari=chunk(f.bytes,"VARI",32);
-            for (unsigned i=0;i<3;++i) u32(f.bytes,0);
-            u32(f.bytes,name); u32(f.bytes,0xffffffffU); u32(f.bytes,0); u32(f.bytes,2); u32(f.bytes,static_cast<std::uint32_t>(f.blob+4)); finish(f.bytes);
-            auto linked=regml::link_legacy_package(regml::Package::from_bytes(f.bytes));
-            check(linked.variables.size()==1 && linked.variable_at.size()==2,"package chain linkage");
-            check(linked.variable_at.at(f.blob+12)==0,"second occurrence");
-            patch(f.bytes,f.blob+8,0xa0000000);
-            error_is(regml::ErrorKind::malformed,[&] { (void)regml::link_legacy_package(regml::Package::from_bytes(f.bytes)); });
-            patch(f.bytes,f.blob+8,0xa0000008); patch(f.bytes,f.blob+16,0xa0000000);
-            error_is(regml::ErrorKind::malformed,[&] { (void)regml::link_legacy_package(regml::Package::from_bytes(f.bytes)); });
-            patch(f.bytes,f.blob+16,0xa0000001); patch(f.bytes,vari+28,static_cast<std::uint32_t>(f.blob+8));
-            error_is(regml::ErrorKind::malformed,[&] { (void)regml::link_legacy_package(regml::Package::from_bytes(f.bytes)); });
-        }},
-        {"package function chains and missing references", [] {
-            auto f=fixture(); const auto program=words({0xd9050000,1,0x9e050000,0x840f0007,0x9c020000,0x9d000000});
-            std::copy(program.begin(),program.end(),f.bytes.begin()+static_cast<std::ptrdiff_t>(f.blob));
-            error_is(regml::ErrorKind::malformed,[&] { (void)regml::link_legacy_package(regml::Package::from_bytes(f.bytes)); });
-            const auto name=regml::BinaryView(f.bytes).u32(f.record);
-            (void)chunk(f.bytes,"FUNC",20); u32(f.bytes,1); u32(f.bytes,name); u32(f.bytes,1); u32(f.bytes,static_cast<std::uint32_t>(f.blob)); u32(f.bytes,0); finish(f.bytes);
-            const auto linked=regml::link_legacy_package(regml::Package::from_bytes(f.bytes));
-            check(linked.functions.size()==1 && linked.function_at.at(f.blob)==0,"function linking");
-            patch(f.bytes,f.blob+4,2);
-            error_is(regml::ErrorKind::malformed,[&] { (void)regml::link_legacy_package(regml::Package::from_bytes(f.bytes)); });
-        }},
-        {"binary reads and absolute bounds", [] {
-            const auto bytes = words({0x78563412, 0x3ff00000}); const regml::BinaryView data(bytes, 100);
-            check(data.u16(0) == 0x3412 && data.u32(0) == 0x78563412, "endianness");
-            error_is(regml::ErrorKind::malformed, [&] { (void)data.slice(4, 4).u32(1); }, 105);
-            error_is(regml::ErrorKind::malformed, [&] { (void)data.u64(std::numeric_limits<std::size_t>::max()); });
-            check(data.slice(8, 0).text(0, 0).empty(), "empty end slice");
-        }},
-        {"v16 resource pointers and relative code address", [] {
-            auto f = fixture(); const auto package = regml::Package::from_bytes(std::move(f.bytes));
-            check(package.chunks().size() == 3 && package.strings().size() == 2 && package.code().size() == 1, "resource counts");
-            check(package.string_at(0) == "reGML fixture" && package.code_name(0) == "gml_Script_test", "string pointer convention");
-            check(package.code()[0].bytecode_offset == f.blob && package.code()[0].locals == 2 && package.code()[0].locals_flag, "code header");
-            check(package.general_info()->width == 640, "GEN8 metadata");
-            check(integer_result(regml::execute_numeric(regml::decode(package.code_bytes(0), 16))) == 42, "loaded code execution");
-            const auto copy = package; auto moved = copy; auto moved_again = std::move(moved);
-            check(moved_again.code_name(0) == "gml_Script_test", "package ownership after copy/move");
-        }},
-        {"v14 inventory is separate from instruction support", [] {
-            const auto package = regml::Package::from_bytes(fixture(14).bytes);
-            check(package.code().size() == 1, "v14 inline CODE inventory");
-            error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(package.code_bytes(0), 14); });
-        }},
-        {"truncated containers and trailing bytes", [] {
-            const auto full = fixture().bytes;
-            for (std::size_t size = 0; size < full.size(); ++size) {
-                Bytes truncated(full.begin(), full.begin() + static_cast<std::ptrdiff_t>(size));
-                error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(truncated); });
-            }
-            auto extra = full; extra.push_back(0);
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(extra); }, 4);
-        }},
-        {"bad signature and oversized chunk", [] {
-            auto f = fixture(); f.bytes[0] = 'X';
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); }, 0);
-            f = fixture(); patch(f.bytes, f.code - 4, 0xffffffff);
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
-        }},
-        {"unknown chunks preserved and duplicates explicit", [] {
-            auto f = fixture(); (void)chunk(f.bytes, "TEST", 1); f.bytes.push_back(0x42); finish(f.bytes);
-            auto package = regml::Package::from_bytes(f.bytes);
-            check(package.find_chunk("TEST")->size == 1, "unknown chunk retention");
-            (void)chunk(f.bytes, "TEST", 0); finish(f.bytes);
-            error_is(regml::ErrorKind::unsupported, [&] { (void)regml::Package::from_bytes(f.bytes); });
-        }},
-        {"string lengths, terminators and pointers checked", [] {
-            auto f = fixture(); patch(f.bytes, f.string_record, 0xffffffff);
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
-            f = fixture(); f.bytes[f.string_record + 4 + 13] = 'x';
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
-            f = fixture(); patch(f.bytes, f.strg + 4, static_cast<std::uint32_t>(f.strg));
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
-            f = fixture(); patch(f.bytes, f.gen + 40, 1);
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
-        }},
-        {"code references and offsets checked", [] {
-            auto f = fixture(); patch(f.bytes, f.record + 12, 0x80000000);
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
-            f = fixture(); patch(f.bytes, f.record + 4, 23);
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
-            f = fixture(); patch(f.bytes, f.record + 16, 28);
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
-        }},
-        {"allocation limits enforced", [] {
-            const auto f = fixture(); regml::LoadLimits limits; limits.max_file_bytes = 8;
-            error_is(regml::ErrorKind::unsupported, [&] { (void)regml::Package::from_bytes(f.bytes, limits); });
-            limits = {}; limits.max_chunks = 1;
-            error_is(regml::ErrorKind::unsupported, [&] { (void)regml::Package::from_bytes(f.bytes, limits); });
-            limits = {}; limits.max_entries = 1;
-            error_is(regml::ErrorKind::unsupported, [&] { (void)regml::Package::from_bytes(f.bytes, limits); });
-            auto corrupt = f; patch(corrupt.bytes, corrupt.strg, 100);
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(corrupt.bytes); });
-        }},
-        {"missing metadata and unsupported version stay inventory only", [] {
-            auto group = words({0x4d524f46, 8, 0x4f445541, 0});
-            const auto package = regml::Package::from_bytes(group); check(!package.general_info(), "audio-only container");
-            auto f = fixture(); f.bytes[f.gen + 1] = 99;
-            const auto newer = regml::Package::from_bytes(f.bytes);
-            check(!newer.general_info()->has_known_prefix && newer.strings().empty(), "unknown profile isolation");
-        }},
-        {"decoder variable widths and signed immediates", [] {
-            const auto bytes = words({0x840ffffe, 0xc0020000, 0x7fffffff, 0xc0000000, 0, 0x3ff00000, 0xc0030000, 0xffffffff, 0xffffffff, 0x9d000000});
-            const auto program = regml::decode(regml::BinaryView(bytes, 200), 16);
-            check(program.instructions.size() == 5, "variable instruction widths");
-            check(std::get<std::int32_t>(program.instructions[0].immediate) == -2, "signed pushi");
-            check(std::get<double>(program.instructions[2].immediate) == 1.0, "double payload");
-            check(std::get<std::int64_t>(program.instructions[3].immediate) == -1, "int64 payload");
-            check(program.instructions[4].offset == 36, "instruction boundary");
-        }},
-        {"truncated payload and unsupported opcode", [] {
-            auto bytes = words({0xc0000000});
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); });
-            bytes = words({0xfe000000});
-            error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); }, 0);
-            error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 17); });
-            bytes = words({0x840f0001, 0x9c020000});
-            error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 16, {1}); }, 4);
-        }},
-        {"branches validate ranges and immediate boundaries", [] {
-            auto bytes = words({0xc0020000, 0, 0xb67fffff, 0x9d000000});
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); }, 8);
-            bytes = words({0xb67fffff});
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); }, 0);
-            bytes = words({0xb6000002});
-            error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); });
-            bytes = words({0xbbf00000});
-            check(regml::decode(regml::BinaryView(bytes), 16).instructions[0].environment_exit, "popenv exit sentinel");
-        }},
-        {"numeric result and operand order", [] {
-            auto result = run(regml::demo_bytecode());
-            check(integer_result(result) == 42 && result.instructions_executed == 6 && result.peak_stack_values == 2, "demo result");
-            check(integer_result(run(words({0x840f0002, 0x840f0007, 0x0d220000, 0x9c020000}))) == -5, "subtraction order");
-            const auto real = run(words({0xc0000000, 0, 0x40240000, 0xc0000000, 0, 0x40000000, 0x09000000, 0x9c000000}));
-            check(std::get<double>(*real.returned) == 5.0, "real division order");
-        }},
-        {"backward loop and conditional branch", [] {
-            const auto result = run(words({0x840f0003, 0x86020000, 0x840f0000, 0x15220600, 0xb8000004, 0x840f0001, 0x0d220000, 0xb67ffffa, 0x9c020000}));
-            check(integer_result(result) == 0 && result.instructions_executed == 27, "loop control flow");
-        }},
-        {"VM errors, unsupported behavior and execution limits", [] {
-            error_is(regml::ErrorKind::vm, [&] { (void)run(words({0x9c020000})); }, 0);
-            error_is(regml::ErrorKind::unsupported, [&] { (void)run(words({0xc0020000, 0x7fffffff, 0x840f0001, 0x0c220000, 0x9c020000})); });
-            error_is(regml::ErrorKind::unsupported, [&] { (void)run(words({0xc105fff9, 0})); });
-            regml::VmOptions budget; budget.instruction_budget = 8;
-            error_is(regml::ErrorKind::vm, [&] { (void)run(words({0xb6000000}), budget); }, 0);
-            regml::VmOptions stack; stack.max_stack_values = 1;
-            error_is(regml::ErrorKind::vm, [&] { (void)run(regml::demo_bytecode(), stack); }, 4);
-        }},
-        {"trace and independent execution state", [] {
-            std::vector<std::size_t> depths; regml::VmOptions options;
-            options.trace = [&](const regml::Instruction&, std::span<const regml::Value> stack) { depths.push_back(stack.size()); };
-            (void)run(regml::demo_bytecode(), options);
-            check(depths == std::vector<std::size_t>({0,1,2,1,2,1}), "trace before instruction");
-            check(integer_result(run(regml::demo_bytecode())) == 42, "fresh state");
-        }},
-        {"conversion, discard and boolean return", [] {
-            const auto real = run(words({0x840f0007, 0x07020000, 0x9c000000}));
-            check(std::get<double>(*real.returned) == 7.0, "int32 to double");
-            const auto boolean = run(words({0x840f0002, 0x840f0003, 0x15220100, 0x9c040000}));
-            check(std::get<bool>(*boolean.returned), "less-than comparison");
-            check(integer_result(run(words({0x840f0001, 0x9e020000, 0x840f0009, 0x9c020000}))) == 9, "discard");
-            const auto taken = run(words({0x840f0001, 0xb7000002, 0x840f0009, 0x840f0004, 0x9c020000}));
-            check(integer_result(taken) == 4, "branch true");
-        }},
-        {"empty strings and zero-length code", [] {
-            auto f = fixture(); patch(f.bytes, f.string_record, 0); f.bytes[f.string_record + 4] = 0;
-            auto package = regml::Package::from_bytes(f.bytes);
-            check(package.string_at(0).empty(), "empty STRG record");
-            f = fixture(); patch(f.bytes, f.record + 4, 0);
-            package = regml::Package::from_bytes(f.bytes);
-            const auto empty = regml::decode(package.code_bytes(0), 16);
-            check(empty.instructions.empty() && !regml::execute_numeric(empty).returned, "zero-length code");
-        }},
-        {"resolved variable scopes and persistent state", [] {
-            const auto bytes=words({0x840f000d,0x4555fff9,0,0xc105fff9,0,0x9c050000});
-            const auto program=regml::decode(regml::BinaryView(bytes),16);
-            regml::VmBindings bindings;
-            bindings.variables.emplace(4,regml::VariableBinding{regml::VariableScope::local,"value"});
-            bindings.variables.emplace(12,regml::VariableBinding{regml::VariableScope::local,"value"});
-            regml::ExecutionContext context; context.bindings=&bindings;
-            check(integer_result(regml::execute(program,context))==13,"local storage and ret.v");
-            bindings.variables[4].scope=regml::VariableScope::self; bindings.variables[12].scope=regml::VariableScope::self;
-            regml::VariableStore state; context.self=&state;
-            check(integer_result(regml::execute(program,context))==13 && std::get<std::int32_t>(state.at("value"))==13,"persistent self storage");
-            context.self=nullptr;
-            error_is(regml::ErrorKind::vm,[&] { (void)regml::execute(program,context); },4);
-            context.self=&state; bindings.variables[12].name="absent";
-            error_is(regml::ErrorKind::vm,[&] { (void)regml::execute(program,context); },12);
-        }},
-        {"built-in calls preserve argument order and diagnostics", [] {
-            const auto bytes=words({0x840f0007,0x840f0002,0xd9050002,0,0x9c050000});
-            const auto program=regml::decode(regml::BinaryView(bytes,100),16);
-            regml::VmBindings bindings; bindings.functions.emplace(8,"subtract");
-            regml::ExecutionContext context; context.bindings=&bindings;
-            context.call_builtin=[](std::string_view name,std::span<const regml::Value> args)->regml::Value {
-                check(name=="subtract"&&args.size()==2,"call binding/arity");
-                return std::get<std::int32_t>(args[0])-std::get<std::int32_t>(args[1]);
-            };
-            check(integer_result(regml::execute(program,context))==-5,"first argument popped first");
-            context.call_builtin=[](std::string_view,std::span<const regml::Value>)->regml::Value { throw regml::Error(regml::ErrorKind::unsupported,"not implemented"); };
-            error_is(regml::ErrorKind::unsupported,[&] { (void)regml::execute(program,context); },108);
-        }},
-        {"string constants and dynamic scalar addition", [] {
-            const auto bytes=words({0xc0060000,0,0xc0060000,1,0x0c550000,0x9c050000});
-            const auto program=regml::decode(regml::BinaryView(bytes),16);
-            regml::VmBindings bindings; bindings.strings.emplace(0,"hello "); bindings.strings.emplace(1,"world");
-            regml::ExecutionContext context; context.bindings=&bindings;
-            check(std::get<std::string>(*regml::execute(program,context).returned)=="hello world","dynamic strings");
-            check(regml::value_text(std::monostate{})=="undefined","undefined return display");
-            const auto number=run(words({0x840f0002,0x07520000,0xc0000000,0,0x3ff80000,0x0c550000,0x9c050000}));
-            check(std::get<double>(*number.returned)==3.5,"dynamic numeric operands");
-        }},
-        {"framebuffer clipping, alpha and glyph pixels", [] {
-            regml::Canvas canvas(16,16); canvas.clear(0); canvas.color(0xffffff);
-            canvas.rectangle(1,1,3,3,false);
-            check(canvas.pixel(1,1)==0xffffffff && canvas.pixel(3,3)==0xff000000,"half-open rectangle");
-            canvas.clear(0); canvas.rectangle(-100,-100,100,100,true);
-            check(canvas.pixel(0,0)==0xff000000,"clipping does not invent outline edges");
-            canvas.clear(0xff0000); canvas.color(0x0000ff); canvas.alpha(0.5); canvas.rectangle(0,0,1,1,false);
-            check(canvas.pixel(0,0)==0xff80007f,"source alpha and GML BGR color");
-            canvas.clear(0); canvas.color(0xffffff); canvas.alpha(1); canvas.text(0,0,"A");
-            check(canvas.pixel(1,0)==0xffffffff && canvas.pixel(0,0)==0xff000000,"bitmap text");
-            canvas.clear(0); canvas.circle(8,8,3,false);
-            check(canvas.pixel(8,8)==0xffffffff && canvas.pixel(12,8)==0xff000000,"circle coverage");
-            error_is(regml::ErrorKind::vm,[&] { canvas.alpha(std::numeric_limits<double>::quiet_NaN()); });
-            error_is(regml::ErrorKind::unsupported,[&] { regml::Canvas invalid(0,16); });
-        }},
-        {"playable VM fixture controls, bounds and scoring", [] {
-            regml::DemoSession demo; regml::KeyboardState held{};
-            const auto initial_hash=demo.canvas().hash();
-            held[39]=true; demo.tick(held); demo.draw();
-            check(regml::value_number(demo.state().at("x"))==324,"right input changes VM variable");
-            held[32]=true; demo.tick(held); check(regml::value_number(demo.state().at("x"))==326,"slow input");
-            held={}; held[37]=true;
-            for (int i=0;i<100;++i) demo.tick(held);
-            check(regml::value_number(demo.state().at("x"))==48,"left arena bound");
-            demo.draw(); check(demo.canvas().hash()!=initial_hash && demo.vm_instructions()>1000,"VM draw output");
-            regml::DemoSession collect; held={}; held[65]=true;
-            for (int i=0;i<50;++i) collect.tick(held);
-            held={}; held[87]=true;
-            for (int i=0;i<50;++i) collect.tick(held);
-            check(regml::value_number(collect.state().at("score"))>=1,"bytecode pickup and score");
-        }},
+        {"package variable chains and corruption",
+         [] {
+             auto f = fixture();
+             const auto program = words({0x840f0007, 0x4522ffff, 0xa0000008, 0xc005ffff, 0xa0000001, 0x9d000000});
+             std::copy(program.begin(), program.end(), f.bytes.begin() + static_cast<std::ptrdiff_t>(f.blob));
+             const auto name = regml::BinaryView(f.bytes).u32(f.record);
+             const auto vari = chunk(f.bytes, "VARI", 32);
+             for (unsigned i = 0; i < 3; ++i)
+                 u32(f.bytes, 0);
+             u32(f.bytes, name);
+             u32(f.bytes, 0xffffffffU);
+             u32(f.bytes, 0);
+             u32(f.bytes, 2);
+             u32(f.bytes, static_cast<std::uint32_t>(f.blob + 4));
+             finish(f.bytes);
+             auto linked = regml::link_legacy_package(regml::Package::from_bytes(f.bytes));
+             check(linked.variables.size() == 1 && linked.variable_at.size() == 2, "package chain linkage");
+             check(linked.variable_at.at(f.blob + 12) == 0, "second occurrence");
+             patch(f.bytes, f.blob + 8, 0xa0000000);
+             error_is(regml::ErrorKind::malformed,
+                      [&] { (void)regml::link_legacy_package(regml::Package::from_bytes(f.bytes)); });
+             patch(f.bytes, f.blob + 8, 0xa0000008);
+             patch(f.bytes, f.blob + 16, 0xa0000000);
+             error_is(regml::ErrorKind::malformed,
+                      [&] { (void)regml::link_legacy_package(regml::Package::from_bytes(f.bytes)); });
+             patch(f.bytes, f.blob + 16, 0xa0000001);
+             patch(f.bytes, vari + 28, static_cast<std::uint32_t>(f.blob + 8));
+             error_is(regml::ErrorKind::malformed,
+                      [&] { (void)regml::link_legacy_package(regml::Package::from_bytes(f.bytes)); });
+         }},
+        {"package function chains and missing references",
+         [] {
+             auto f = fixture();
+             const auto program = words({0xd9050000, 1, 0x9e050000, 0x840f0007, 0x9c020000, 0x9d000000});
+             std::copy(program.begin(), program.end(), f.bytes.begin() + static_cast<std::ptrdiff_t>(f.blob));
+             error_is(regml::ErrorKind::malformed,
+                      [&] { (void)regml::link_legacy_package(regml::Package::from_bytes(f.bytes)); });
+             const auto name = regml::BinaryView(f.bytes).u32(f.record);
+             (void)chunk(f.bytes, "FUNC", 20);
+             u32(f.bytes, 1);
+             u32(f.bytes, name);
+             u32(f.bytes, 1);
+             u32(f.bytes, static_cast<std::uint32_t>(f.blob));
+             u32(f.bytes, 0);
+             finish(f.bytes);
+             const auto linked = regml::link_legacy_package(regml::Package::from_bytes(f.bytes));
+             check(linked.functions.size() == 1 && linked.function_at.at(f.blob) == 0, "function linking");
+             patch(f.bytes, f.blob + 4, 2);
+             error_is(regml::ErrorKind::malformed,
+                      [&] { (void)regml::link_legacy_package(regml::Package::from_bytes(f.bytes)); });
+         }},
+        {"binary reads and absolute bounds",
+         [] {
+             const auto bytes = words({0x78563412, 0x3ff00000});
+             const regml::BinaryView data(bytes, 100);
+             check(data.u16(0) == 0x3412 && data.u32(0) == 0x78563412, "endianness");
+             error_is(regml::ErrorKind::malformed, [&] { (void)data.slice(4, 4).u32(1); }, 105);
+             error_is(regml::ErrorKind::malformed, [&] { (void)data.u64(std::numeric_limits<std::size_t>::max()); });
+             check(data.slice(8, 0).text(0, 0).empty(), "empty end slice");
+         }},
+        {"v16 resource pointers and relative code address",
+         [] {
+             auto f = fixture();
+             const auto package = regml::Package::from_bytes(std::move(f.bytes));
+             check(package.chunks().size() == 3 && package.strings().size() == 2 && package.code().size() == 1,
+                   "resource counts");
+             check(package.string_at(0) == "reGML fixture" && package.code_name(0) == "gml_Script_test",
+                   "string pointer convention");
+             check(package.code()[0].bytecode_offset == f.blob && package.code()[0].locals == 2 &&
+                       package.code()[0].locals_flag,
+                   "code header");
+             check(package.general_info()->width == 640, "GEN8 metadata");
+             check(integer_result(regml::execute_numeric(regml::decode(package.code_bytes(0), 16))) == 42,
+                   "loaded code execution");
+             const auto copy = package;
+             auto moved = copy;
+             auto moved_again = std::move(moved);
+             check(moved_again.code_name(0) == "gml_Script_test", "package ownership after copy/move");
+         }},
+        {"v14 inventory is separate from instruction support",
+         [] {
+             const auto package = regml::Package::from_bytes(fixture(14).bytes);
+             check(package.code().size() == 1, "v14 inline CODE inventory");
+             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(package.code_bytes(0), 14); });
+         }},
+        {"truncated containers and trailing bytes",
+         [] {
+             const auto full = fixture().bytes;
+             for (std::size_t size = 0; size < full.size(); ++size) {
+                 Bytes truncated(full.begin(), full.begin() + static_cast<std::ptrdiff_t>(size));
+                 error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(truncated); });
+             }
+             auto extra = full;
+             extra.push_back(0);
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(extra); }, 4);
+         }},
+        {"bad signature and oversized chunk",
+         [] {
+             auto f = fixture();
+             f.bytes[0] = 'X';
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); }, 0);
+             f = fixture();
+             patch(f.bytes, f.code - 4, 0xffffffff);
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
+         }},
+        {"unknown chunks preserved and duplicates explicit",
+         [] {
+             auto f = fixture();
+             (void)chunk(f.bytes, "TEST", 1);
+             f.bytes.push_back(0x42);
+             finish(f.bytes);
+             auto package = regml::Package::from_bytes(f.bytes);
+             check(package.find_chunk("TEST")->size == 1, "unknown chunk retention");
+             (void)chunk(f.bytes, "TEST", 0);
+             finish(f.bytes);
+             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::Package::from_bytes(f.bytes); });
+         }},
+        {"string lengths, terminators and pointers checked",
+         [] {
+             auto f = fixture();
+             patch(f.bytes, f.string_record, 0xffffffff);
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
+             f = fixture();
+             f.bytes[f.string_record + 4 + 13] = 'x';
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
+             f = fixture();
+             patch(f.bytes, f.strg + 4, static_cast<std::uint32_t>(f.strg));
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
+             f = fixture();
+             patch(f.bytes, f.gen + 40, 1);
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
+         }},
+        {"code references and offsets checked",
+         [] {
+             auto f = fixture();
+             patch(f.bytes, f.record + 12, 0x80000000);
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
+             f = fixture();
+             patch(f.bytes, f.record + 4, 23);
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
+             f = fixture();
+             patch(f.bytes, f.record + 16, 28);
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(f.bytes); });
+         }},
+        {"allocation limits enforced",
+         [] {
+             const auto f = fixture();
+             regml::LoadLimits limits;
+             limits.max_file_bytes = 8;
+             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::Package::from_bytes(f.bytes, limits); });
+             limits = {};
+             limits.max_chunks = 1;
+             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::Package::from_bytes(f.bytes, limits); });
+             limits = {};
+             limits.max_entries = 1;
+             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::Package::from_bytes(f.bytes, limits); });
+             auto corrupt = f;
+             patch(corrupt.bytes, corrupt.strg, 100);
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(corrupt.bytes); });
+         }},
+        {"missing metadata and unsupported version stay inventory only",
+         [] {
+             auto group = words({0x4d524f46, 8, 0x4f445541, 0});
+             const auto package = regml::Package::from_bytes(group);
+             check(!package.general_info(), "audio-only container");
+             auto f = fixture();
+             f.bytes[f.gen + 1] = 99;
+             const auto newer = regml::Package::from_bytes(f.bytes);
+             check(!newer.general_info()->has_known_prefix && newer.strings().empty(), "unknown profile isolation");
+         }},
+        {"decoder variable widths and signed immediates",
+         [] {
+             const auto bytes = words({0x840ffffe, 0xc0020000, 0x7fffffff, 0xc0000000, 0, 0x3ff00000, 0xc0030000,
+                                       0xffffffff, 0xffffffff, 0x9d000000});
+             const auto program = regml::decode(regml::BinaryView(bytes, 200), 16);
+             check(program.instructions.size() == 5, "variable instruction widths");
+             check(std::get<std::int32_t>(program.instructions[0].immediate) == -2, "signed pushi");
+             check(std::get<double>(program.instructions[2].immediate) == 1.0, "double payload");
+             check(std::get<std::int64_t>(program.instructions[3].immediate) == -1, "int64 payload");
+             check(program.instructions[4].offset == 36, "instruction boundary");
+         }},
+        {"truncated payload and unsupported opcode",
+         [] {
+             auto bytes = words({0xc0000000});
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); });
+             bytes = words({0xfe000000});
+             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); }, 0);
+             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 17); });
+             bytes = words({0x840f0001, 0x9c020000});
+             error_is(
+                 regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 16, {1}); }, 4);
+         }},
+        {"branches validate ranges and immediate boundaries",
+         [] {
+             auto bytes = words({0xc0020000, 0, 0xb67fffff, 0x9d000000});
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); }, 8);
+             bytes = words({0xb67fffff});
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); }, 0);
+             bytes = words({0xb6000002});
+             error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); });
+             bytes = words({0xbbf00000});
+             check(regml::decode(regml::BinaryView(bytes), 16).instructions[0].environment_exit,
+                   "popenv exit sentinel");
+         }},
+        {"numeric result and operand order",
+         [] {
+             auto result = run(regml::demo_bytecode());
+             check(integer_result(result) == 42 && result.instructions_executed == 6 && result.peak_stack_values == 2,
+                   "demo result");
+             check(integer_result(run(words({0x840f0002, 0x840f0007, 0x0d220000, 0x9c020000}))) == -5,
+                   "subtraction order");
+             const auto real =
+                 run(words({0xc0000000, 0, 0x40240000, 0xc0000000, 0, 0x40000000, 0x09000000, 0x9c000000}));
+             check(std::get<double>(*real.returned) == 5.0, "real division order");
+         }},
+        {"backward loop and conditional branch",
+         [] {
+             const auto result = run(words({0x840f0003, 0x86020000, 0x840f0000, 0x15220600, 0xb8000004, 0x840f0001,
+                                            0x0d220000, 0xb67ffffa, 0x9c020000}));
+             check(integer_result(result) == 0 && result.instructions_executed == 27, "loop control flow");
+         }},
+        {"VM errors, unsupported behavior and execution limits",
+         [] {
+             error_is(regml::ErrorKind::vm, [&] { (void)run(words({0x9c020000})); }, 0);
+             error_is(regml::ErrorKind::unsupported,
+                      [&] { (void)run(words({0xc0020000, 0x7fffffff, 0x840f0001, 0x0c220000, 0x9c020000})); });
+             error_is(regml::ErrorKind::unsupported, [&] { (void)run(words({0xc105fff9, 0})); });
+             regml::VmOptions budget;
+             budget.instruction_budget = 8;
+             error_is(regml::ErrorKind::vm, [&] { (void)run(words({0xb6000000}), budget); }, 0);
+             regml::VmOptions stack;
+             stack.max_stack_values = 1;
+             error_is(regml::ErrorKind::vm, [&] { (void)run(regml::demo_bytecode(), stack); }, 4);
+         }},
+        {"trace and independent execution state",
+         [] {
+             std::vector<std::size_t> depths;
+             regml::VmOptions options;
+             options.trace = [&](const regml::Instruction &, std::span<const regml::Value> stack) {
+                 depths.push_back(stack.size());
+             };
+             (void)run(regml::demo_bytecode(), options);
+             check(depths == std::vector<std::size_t>({0, 1, 2, 1, 2, 1}), "trace before instruction");
+             check(integer_result(run(regml::demo_bytecode())) == 42, "fresh state");
+         }},
+        {"conversion, discard and boolean return",
+         [] {
+             const auto real = run(words({0x840f0007, 0x07020000, 0x9c000000}));
+             check(std::get<double>(*real.returned) == 7.0, "int32 to double");
+             const auto boolean = run(words({0x840f0002, 0x840f0003, 0x15220100, 0x9c040000}));
+             check(std::get<bool>(*boolean.returned), "less-than comparison");
+             check(integer_result(run(words({0x840f0001, 0x9e020000, 0x840f0009, 0x9c020000}))) == 9, "discard");
+             const auto taken = run(words({0x840f0001, 0xb7000002, 0x840f0009, 0x840f0004, 0x9c020000}));
+             check(integer_result(taken) == 4, "branch true");
+         }},
+        {"empty strings and zero-length code",
+         [] {
+             auto f = fixture();
+             patch(f.bytes, f.string_record, 0);
+             f.bytes[f.string_record + 4] = 0;
+             auto package = regml::Package::from_bytes(f.bytes);
+             check(package.string_at(0).empty(), "empty STRG record");
+             f = fixture();
+             patch(f.bytes, f.record + 4, 0);
+             package = regml::Package::from_bytes(f.bytes);
+             const auto empty = regml::decode(package.code_bytes(0), 16);
+             check(empty.instructions.empty() && !regml::execute_numeric(empty).returned, "zero-length code");
+         }},
+        {"resolved variable scopes and persistent state",
+         [] {
+             const auto bytes = words({0x840f000d, 0x4555fff9, 0, 0xc105fff9, 0, 0x9c050000});
+             const auto program = regml::decode(regml::BinaryView(bytes), 16);
+             regml::VmBindings bindings;
+             bindings.variables.emplace(4, regml::VariableBinding{regml::VariableScope::local, "value"});
+             bindings.variables.emplace(12, regml::VariableBinding{regml::VariableScope::local, "value"});
+             regml::ExecutionContext context;
+             context.bindings = &bindings;
+             check(integer_result(regml::execute(program, context)) == 13, "local storage and ret.v");
+             bindings.variables[4].scope = regml::VariableScope::self;
+             bindings.variables[12].scope = regml::VariableScope::self;
+             regml::VariableStore state;
+             context.self = &state;
+             check(integer_result(regml::execute(program, context)) == 13 &&
+                       std::get<std::int32_t>(state.at("value")) == 13,
+                   "persistent self storage");
+             context.self = nullptr;
+             error_is(regml::ErrorKind::vm, [&] { (void)regml::execute(program, context); }, 4);
+             context.self = &state;
+             bindings.variables[12].name = "absent";
+             error_is(regml::ErrorKind::vm, [&] { (void)regml::execute(program, context); }, 12);
+         }},
+        {"built-in calls preserve argument order and diagnostics",
+         [] {
+             const auto bytes = words({0x840f0007, 0x840f0002, 0xd9050002, 0, 0x9c050000});
+             const auto program = regml::decode(regml::BinaryView(bytes, 100), 16);
+             regml::VmBindings bindings;
+             bindings.functions.emplace(8, "subtract");
+             regml::ExecutionContext context;
+             context.bindings = &bindings;
+             context.call_builtin = [](std::string_view name, std::span<const regml::Value> args) -> regml::Value {
+                 check(name == "subtract" && args.size() == 2, "call binding/arity");
+                 return std::get<std::int32_t>(args[0]) - std::get<std::int32_t>(args[1]);
+             };
+             check(integer_result(regml::execute(program, context)) == -5, "first argument popped first");
+             context.call_builtin = [](std::string_view, std::span<const regml::Value>) -> regml::Value {
+                 throw regml::Error(regml::ErrorKind::unsupported, "not implemented");
+             };
+             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::execute(program, context); }, 108);
+         }},
+        {"string constants and dynamic scalar addition",
+         [] {
+             const auto bytes = words({0xc0060000, 0, 0xc0060000, 1, 0x0c550000, 0x9c050000});
+             const auto program = regml::decode(regml::BinaryView(bytes), 16);
+             regml::VmBindings bindings;
+             bindings.strings.emplace(0, "hello ");
+             bindings.strings.emplace(1, "world");
+             regml::ExecutionContext context;
+             context.bindings = &bindings;
+             check(std::get<std::string>(*regml::execute(program, context).returned) == "hello world",
+                   "dynamic strings");
+             check(regml::value_text(std::monostate{}) == "undefined", "undefined return display");
+             const auto number =
+                 run(words({0x840f0002, 0x07520000, 0xc0000000, 0, 0x3ff80000, 0x0c550000, 0x9c050000}));
+             check(std::get<double>(*number.returned) == 3.5, "dynamic numeric operands");
+         }},
+        {"framebuffer clipping, alpha and glyph pixels",
+         [] {
+             regml::Canvas canvas(16, 16);
+             canvas.clear(0);
+             canvas.color(0xffffff);
+             canvas.rectangle(1, 1, 3, 3, false);
+             check(canvas.pixel(1, 1) == 0xffffffff && canvas.pixel(3, 3) == 0xff000000, "half-open rectangle");
+             canvas.clear(0);
+             canvas.rectangle(-100, -100, 100, 100, true);
+             check(canvas.pixel(0, 0) == 0xff000000, "clipping does not invent outline edges");
+             canvas.clear(0xff0000);
+             canvas.color(0x0000ff);
+             canvas.alpha(0.5);
+             canvas.rectangle(0, 0, 1, 1, false);
+             check(canvas.pixel(0, 0) == 0xff80007f, "source alpha and GML BGR color");
+             canvas.clear(0);
+             canvas.color(0xffffff);
+             canvas.alpha(1);
+             canvas.text(0, 0, "A");
+             check(canvas.pixel(1, 0) == 0xffffffff && canvas.pixel(0, 0) == 0xff000000, "bitmap text");
+             canvas.clear(0);
+             canvas.circle(8, 8, 3, false);
+             check(canvas.pixel(8, 8) == 0xffffffff && canvas.pixel(12, 8) == 0xff000000, "circle coverage");
+             regml::Canvas surface(2, 2), composite(4, 4);
+             surface.clear_transparent();
+             surface.rgba_pixel(0, 0, 0x80ffffff, 0xffffff, 1);
+             composite.clear_transparent();
+             composite.draw_surface(surface, 1, 1);
+             check(composite.pixel(1, 1) == 0x80ffffff && composite.pixel(2, 1) == 0,
+                   "surface keeps transparency while compositing");
+             error_is(regml::ErrorKind::vm, [&] { canvas.alpha(std::numeric_limits<double>::quiet_NaN()); });
+             error_is(regml::ErrorKind::unsupported, [&] { regml::Canvas invalid(0, 16); });
+         }},
+        {"playable VM fixture controls, bounds and scoring",
+         [] {
+             regml::DemoSession demo;
+             regml::KeyboardState held{};
+             const auto initial_hash = demo.canvas().hash();
+             held[39] = true;
+             demo.tick(held);
+             demo.draw();
+             check(regml::value_number(demo.state().at("x")) == 324, "right input changes VM variable");
+             held[32] = true;
+             demo.tick(held);
+             check(regml::value_number(demo.state().at("x")) == 326, "slow input");
+             held = {};
+             held[37] = true;
+             for (int i = 0; i < 100; ++i)
+                 demo.tick(held);
+             check(regml::value_number(demo.state().at("x")) == 48, "left arena bound");
+             demo.draw();
+             check(demo.canvas().hash() != initial_hash && demo.vm_instructions() > 1000, "VM draw output");
+             regml::DemoSession collect;
+             held = {};
+             held[65] = true;
+             for (int i = 0; i < 50; ++i)
+                 collect.tick(held);
+             held = {};
+             held[87] = true;
+             for (int i = 0; i < 50; ++i)
+                 collect.tick(held);
+             check(regml::value_number(collect.state().at("score")) >= 1, "bytecode pickup and score");
+         }},
         {"fixture collision, game over and pressed-edge restart", [] {
-            regml::DemoSession demo; regml::KeyboardState held{}; held[38]=true;
-            for (int i=0;i<32;++i) demo.tick(held);
-            held={}; for (int i=0;i<700;++i) demo.tick(held);
-            check(regml::value_number(demo.state().at("lives"))==0 && regml::value_number(demo.state().at("game_over"))==1,"collision and game-over progression");
-            regml::KeyboardState pressed{}; pressed[82]=true; demo.tick(held,pressed);
-            check(regml::value_number(demo.state().at("lives"))==3 && regml::value_number(demo.state().at("y"))==380,"short key tap restarts");
-            held[82]=true; demo.tick(held); demo.tick(held);
-            check(regml::value_number(demo.state().at("timer"))==1,"held restart does not repeat");
-        }}
-    };
+             regml::DemoSession demo;
+             regml::KeyboardState held{};
+             held[38] = true;
+             for (int i = 0; i < 32; ++i)
+                 demo.tick(held);
+             held = {};
+             for (int i = 0; i < 700; ++i)
+                 demo.tick(held);
+             check(regml::value_number(demo.state().at("lives")) == 0 &&
+                       regml::value_number(demo.state().at("game_over")) == 1,
+                   "collision and game-over progression");
+             regml::KeyboardState pressed{};
+             pressed[82] = true;
+             demo.tick(held, pressed);
+             check(regml::value_number(demo.state().at("lives")) == 3 &&
+                       regml::value_number(demo.state().at("y")) == 380,
+                   "short key tap restarts");
+             held[82] = true;
+             demo.tick(held);
+             demo.tick(held);
+             check(regml::value_number(demo.state().at("timer")) == 1, "held restart does not repeat");
+         }}};
     int failed = 0;
-    for (const auto& [name, test] : tests) {
-        try { test(); std::cout << "PASS " << name << '\n'; }
-        catch (const std::exception& error) { ++failed; std::cerr << "FAIL " << name << ": " << error.what() << '\n'; }
+    for (const auto &[name, test] : tests) {
+        try {
+            test();
+            std::cout << "PASS " << name << '\n';
+        } catch (const std::exception &error) {
+            ++failed;
+            std::cerr << "FAIL " << name << ": " << error.what() << '\n';
+        }
     }
     std::cout << tests.size() - static_cast<std::size_t>(failed) << '/' << tests.size() << " test groups passed\n";
     return failed == 0 ? 0 : 1;
