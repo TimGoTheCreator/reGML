@@ -28,8 +28,8 @@ compile_commands.json
 *.gcno
 *.profraw
 *.profdata
-core
-core.*
+/core
+/core.*
 
 /games/
 /game-data/
