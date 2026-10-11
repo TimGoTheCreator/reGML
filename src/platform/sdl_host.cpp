@@ -366,8 +366,11 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             trace_stage("delay", &session);
             const auto frame_time = std::chrono::duration<double>(1.0 / (session.speed() * options.speed_multiplier));
             next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(frame_time);
-            if (!options.hidden)
+            if (!options.hidden) {
+                // Drop missed deadlines instead of replaying the backlog at full speed.
+                next = std::max(next, std::chrono::steady_clock::now());
                 std::this_thread::sleep_until(next);
+            }
         }
 #else
         throw Error(ErrorKind::unsupported, "SDL2 backend is unavailable");

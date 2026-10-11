@@ -19,24 +19,30 @@ DataType runtime_type(const Value &value) {
     return DataType::variable;
 }
 bool compare(double left, double right, std::uint8_t kind, std::size_t offset) {
-    switch (kind) {
-    case 1:
-        return left < right;
-    case 2:
-        return left <= right;
-    case 3:
-        return left == right;
-    case 4:
-        return left != right;
-    case 5:
-        return left >= right;
-    case 6:
-        return left > right;
-    default:
+    if (kind < 1 || kind > 6)
         throw Error(ErrorKind::malformed, "unknown comparison kind", offset);
-    }
+    return compare_numbers(left, right, kind);
 }
 } // namespace
+bool compare_numbers(double left, double right, std::uint8_t kind, double epsilon) {
+    const bool equal = left == right || std::abs(left - right) <= epsilon;
+    switch (kind) {
+    case 1:
+        return !equal && left < right;
+    case 2:
+        return equal || left < right;
+    case 3:
+        return equal;
+    case 4:
+        return !equal;
+    case 5:
+        return equal || left > right;
+    case 6:
+        return !equal && left > right;
+    default:
+        throw Error(ErrorKind::malformed, "unknown comparison kind");
+    }
+}
 VmResult execute_numeric(const Program &program, VmOptions options) {
     ExecutionContext context;
     return execute(program, context, std::move(options));

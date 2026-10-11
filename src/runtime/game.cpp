@@ -171,6 +171,7 @@ struct GameSession::Impl {
     bool ini_opened = false;
     unsigned draw_color = 0xffffff;
     double draw_alpha = 1;
+    double comparison_epsilon = 0.00001;
     int draw_font = -1, halign = 0, valign = 0;
     std::size_t frame = 0, instruction_count = 0, depth = 0, event_budget = 0;
     int current_room = -1, pending_room = -1, next_id = 200000;
@@ -764,6 +765,10 @@ struct GameSession::Impl {
                                 base = store->emplace(symbol.name, ArrayPtr(new ArrayValue)).first;
                             }
                             auto *array = std::get_if<ArrayPtr>(&base->second);
+                            if (writing && (!array || !*array)) {
+                                base->second = ArrayPtr(new ArrayValue);
+                                array = std::get_if<ArrayPtr>(&base->second);
+                            }
                             if (!array || !*array)
                                 throw Error(ErrorKind::vm, "indexed variable is not an array: " + symbol.name);
                             const int row = array_index / 32000, col = array_index % 32000;
@@ -944,12 +949,7 @@ struct GameSession::Impl {
                         push(std::fmod(a, b));
                         break;
                     case Opcode::cmp:
-                        push(ins.comparison == 1   ? a < b
-                             : ins.comparison == 2 ? a <= b
-                             : ins.comparison == 3 ? a == b
-                             : ins.comparison == 4 ? a != b
-                             : ins.comparison == 5 ? a >= b
-                                                   : a > b);
+                        push(compare_numbers(a, b, ins.comparison, comparison_epsilon));
                         break;
                     case Opcode::bit_and:
                         push(static_cast<std::int32_t>(number(left) & number(right)));
@@ -1096,6 +1096,9 @@ struct GameSession::Impl {
             return text(0);
         if (name == "real") {
             if (std::holds_alternative<std::string>(args[0])) {
+                // Legacy runners convert the empty string to zero.
+                if (text(0).empty())
+                    return 0.0;
                 try {
                     return std::stod(text(0));
                 } catch (const std::exception &) {
@@ -1164,7 +1167,7 @@ struct GameSession::Impl {
         }
         if (name == "string_char_at") {
             auto str = text(0);
-            const int at = static_cast<int>(n(1)) - 1;
+            const int at = std::max(0, static_cast<int>(n(1)) - 1);
             return at >= 0 && static_cast<std::size_t>(at) < str.size() ? str.substr(static_cast<std::size_t>(at), 1)
                                                                         : std::string{};
         }
@@ -1661,6 +1664,15 @@ struct GameSession::Impl {
         }
         if (name == "steam_initialised" || name == "steam_is_overlay_enabled" || name == "steam_file_exists")
             return false;
+        if (name == "math_get_epsilon")
+            return comparison_epsilon;
+        if (name == "math_set_epsilon") {
+            const double epsilon = n(0);
+            if (!std::isfinite(epsilon) || epsilon < 0 || epsilon >= 1)
+                throw Error(ErrorKind::vm, "comparison epsilon must be between 0 and 1 (exclusive)");
+            comparison_epsilon = epsilon;
+            return std::monostate{};
+        }
         if (name == "randomize") {
             if (!fixed_seed)
                 random.seed(static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));

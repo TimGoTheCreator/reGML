@@ -90,5 +90,6 @@ VmResult execute_numeric(const Program &program, VmOptions options = {});
 VmResult execute(const Program &program, ExecutionContext &context, VmOptions options = {});
 double value_number(const Value &value);
 std::string value_text(const Value &value);
+bool compare_numbers(double left, double right, std::uint8_t kind, double epsilon = 0.00001);
 std::vector<std::uint8_t> demo_bytecode();
 } // namespace regml

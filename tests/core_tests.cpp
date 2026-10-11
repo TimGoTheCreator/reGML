@@ -3,6 +3,7 @@
 #include "regml/runtime/demo.hpp"
 #include "regml/runtime/game.hpp"
 #include "regml/vm/interpreter.hpp"
+#include <bit>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -305,6 +306,32 @@ int main(int argc, char **argv) {
         return 0;
     }
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
+        {"numeric comparisons tolerate fade rounding",
+         [] {
+             double alpha = 1;
+             for (int step = 0; step < 10; ++step)
+                 alpha -= 0.1;
+             check(alpha != 0 && regml::compare_numbers(alpha, 0, 3), "fade remainder compares equal to zero");
+             check(!regml::compare_numbers(alpha, 0, 4), "inequality agrees with equality");
+             check(!regml::compare_numbers(alpha, 0, 6), "near-zero is not greater than zero");
+             check(regml::compare_numbers(alpha, 0, 2) && regml::compare_numbers(alpha, 0, 5),
+                   "inclusive comparisons accept near-zero");
+             check(!regml::compare_numbers(-alpha, 0, 1), "negative rounding residue is not less than zero");
+             check(!regml::compare_numbers(0.001, 0, 3), "distinct values remain unequal");
+             check(!regml::compare_numbers(alpha, 0, 3, 0), "zero epsilon restores exact comparison");
+             check(regml::compare_numbers(0.001, 0, 3, 0.01), "custom epsilon is applied");
+             Bytes code;
+             for (double number : {alpha, 0.0}) {
+                 u32(code, 0xc0000000);
+                 const auto bits = std::bit_cast<std::uint64_t>(number);
+                 u32(code, static_cast<std::uint32_t>(bits));
+                 u32(code, static_cast<std::uint32_t>(bits >> 32));
+             }
+             u32(code, 0x15000300);
+             u32(code, 0x9c040000);
+             const auto result = regml::execute_numeric(regml::decode(regml::BinaryView(code), 16));
+             check(std::get<bool>(*result.returned), "bytecode comparison uses epsilon");
+         }},
         {"array values retain nested data across copies and moves",
          [] {
              regml::Value original;
