@@ -45,12 +45,12 @@ $pngFlags = @('-I', (Join-Path $pngPrefix 'include'),
     (Find-DependencyLibrary @('vorbisfile.lib', 'libvorbisfile.dll.a', 'libvorbisfile.a')),
     (Find-DependencyLibrary @('vorbis.lib', 'libvorbis.dll.a', 'libvorbis.a')),
     (Find-DependencyLibrary @('ogg.lib', 'libogg.dll.a', 'libogg.a')),
-    (Find-DependencyLibrary @('zlib.lib', 'libz.dll.a', 'libz.a')))
+    (Find-DependencyLibrary @('z.lib', 'zs.lib', 'zlib.lib', 'zlib1.lib', 'zlibstatic.lib', 'libz.dll.a', 'libz.a')))
 & $compilerCommand.Source @flags @videoFlags @coreSources (Join-Path $projectRoot 'src\app\main.cpp') (Join-Path $projectRoot 'src\platform\sdl_host.cpp') @videoLibraries @pngFlags '-o' $appExe
 if ($LASTEXITCODE -ne 0) { throw "Application compilation failed: $LASTEXITCODE" }
 if (-not $NoVideo) { Copy-Item -LiteralPath $sdlDll -Destination (Join-Path $outputDir 'SDL2.dll') -Force }
 Get-ChildItem -LiteralPath (Join-Path $pngPrefix 'bin') -Filter '*.dll' -File |
-    Where-Object { $_.Name -match '^(lib)?(png\d*|vorbisfile|vorbis|ogg|zlib|z)(-\d+)?\.dll$' } |
+    Where-Object { $_.Name -match '^(lib)?(png\d*|vorbisfile|vorbis|ogg|zlib\d*|z)(-\d+)?\.dll$' } |
     Copy-Item -Destination $outputDir -Force
 if (-not $AppOnly -or $Test) {
     & $compilerCommand.Source @flags @coreSources (Join-Path $projectRoot 'tests\core_tests.cpp') @pngFlags '-o' $testExe
