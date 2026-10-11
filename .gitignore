@@ -1,4 +1,5 @@
 /build/
+/build-wiiu/
 /cmake-build-*/
 /out/
 /bin/

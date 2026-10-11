@@ -40,6 +40,8 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+The experimental Wii U homebrew target is documented in [docs/wiiu.md](docs/wiiu.md).
+
 Headless: `-DREGML_SDL2=OFF`
 
 ## Run

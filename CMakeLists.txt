@@ -6,20 +6,34 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(REGML_SDL2 "Enable SDL2 windowed frontend" ON)
+option(REGML_WIIU "Build a Wii U homebrew RPX with devkitPro wut" OFF)
 set(REGML_UNDERTALE_DATA "" CACHE FILEPATH "Optional Undertale data.win path for audio integration testing")
 
-find_package(PNG REQUIRED)
-find_package(ZLIB REQUIRED)
+if(REGML_WIIU)
+    # devkitPro's Wii U portlibs expose their dependencies through pkg-config.
+    # SDL2 is built on wut and supplies the window, input, renderer, and audio backends.
+    set(REGML_SDL2 ON CACHE BOOL "Enable SDL2 windowed frontend" FORCE)
+    # Wii U portlibs are static, so include their private link dependencies too.
+    set(PKG_CONFIG_ARGN --static)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(REGML_PNG REQUIRED IMPORTED_TARGET libpng)
+    pkg_check_modules(REGML_ZLIB REQUIRED IMPORTED_TARGET zlib)
+    pkg_check_modules(REGML_VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
+    pkg_check_modules(REGML_SDL2 REQUIRED IMPORTED_TARGET sdl2)
+else()
+    find_package(PNG REQUIRED)
+    find_package(ZLIB REQUIRED)
 
-find_path(VORBISFILE_INCLUDE_DIR NAMES vorbis/vorbisfile.h REQUIRED)
-find_library(VORBISFILE_LIBRARY NAMES vorbisfile REQUIRED)
-add_library(regml_vorbisfile UNKNOWN IMPORTED)
-set_target_properties(regml_vorbisfile PROPERTIES
-    IMPORTED_LOCATION "${VORBISFILE_LIBRARY}"
-    INTERFACE_INCLUDE_DIRECTORIES "${VORBISFILE_INCLUDE_DIR}"
-)
+    find_path(VORBISFILE_INCLUDE_DIR NAMES vorbis/vorbisfile.h REQUIRED)
+    find_library(VORBISFILE_LIBRARY NAMES vorbisfile REQUIRED)
+    add_library(regml_vorbisfile UNKNOWN IMPORTED)
+    set_target_properties(regml_vorbisfile PROPERTIES
+        IMPORTED_LOCATION "${VORBISFILE_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${VORBISFILE_INCLUDE_DIR}"
+    )
+endif()
 
-if(REGML_SDL2)
+if(REGML_SDL2 AND NOT REGML_WIIU)
     find_package(SDL2 REQUIRED)
 endif()
 
@@ -40,15 +54,22 @@ target_include_directories(regml_engine PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
-target_link_libraries(regml_engine PUBLIC
-    PNG::PNG
-    ZLIB::ZLIB
-    regml_vorbisfile
-)
+if(REGML_WIIU)
+    target_link_libraries(regml_engine PUBLIC
+        PkgConfig::REGML_PNG
+        PkgConfig::REGML_ZLIB
+        PkgConfig::REGML_VORBISFILE
+        PkgConfig::REGML_SDL2
+    )
+else()
+    target_link_libraries(regml_engine PUBLIC PNG::PNG ZLIB::ZLIB regml_vorbisfile)
+endif()
 
 if(REGML_SDL2)
     target_compile_definitions(regml_engine PUBLIC REGML_WITH_SDL2=1 SDL_MAIN_HANDLED)
-    if(TARGET SDL2::SDL2)
+    if(REGML_WIIU)
+        # SDL is already linked from devkitPro's pkg-config metadata above.
+    elseif(TARGET SDL2::SDL2)
         target_link_libraries(regml_engine PUBLIC SDL2::SDL2)
     else()
         target_include_directories(regml_engine PUBLIC ${SDL2_INCLUDE_DIRS})
@@ -65,9 +86,19 @@ file(GLOB_RECURSE REGML_APP_SOURCES
 
 add_executable(regml ${REGML_APP_SOURCES})
 target_link_libraries(regml PRIVATE regml_engine)
+if(REGML_WIIU)
+    if(NOT COMMAND wut_create_rpx)
+        message(FATAL_ERROR "REGML_WIIU requires devkitPro's powerpc-eabi-cmake and wut toolchain")
+    endif()
+    target_compile_definitions(regml_engine PUBLIC REGML_WIIU=1)
+    wut_create_rpx(regml)
+    if(COMMAND wut_create_wuhb)
+        wut_create_wuhb(regml NAME "reGML" SHORTNAME "reGML" AUTHOR "TimGoTheCreator")
+    endif()
+endif()
 
 include(CTest)
-if(BUILD_TESTING)
+if(BUILD_TESTING AND NOT REGML_WIIU)
     add_executable(regml_tests tests/core_tests.cpp)
     target_link_libraries(regml_tests PRIVATE regml_engine)
     add_executable(regml_audio_test tests/audio_integration.cpp)

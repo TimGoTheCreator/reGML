@@ -3,14 +3,62 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 namespace regml {
-// Scalar values; arrays, structs, methods and the complete coercion model remain pending.
+// Runtime scalars and legacy VM arrays.
 struct ArrayValue;
-using Value = std::variant<std::int32_t, double, bool, std::string, std::monostate, std::shared_ptr<ArrayValue>>;
+// VM values stay on the simulation thread. Avoid platform atomic reference-count
+// operations for arrays, including when unrelated audio worker threads exist.
+class ArrayPtr {
+  public:
+    ArrayPtr() = default;
+    explicit ArrayPtr(ArrayValue *value) noexcept;
+    ArrayPtr(const ArrayPtr &other) noexcept;
+    ArrayPtr(ArrayPtr &&other) noexcept : value_(std::exchange(other.value_, nullptr)) {}
+    ~ArrayPtr();
+    ArrayPtr &operator=(ArrayPtr other) noexcept {
+        std::swap(value_, other.value_);
+        return *this;
+    }
+    ArrayValue *get() const noexcept { return value_; }
+    ArrayValue *operator->() const noexcept { return value_; }
+    ArrayValue &operator*() const noexcept { return *value_; }
+    explicit operator bool() const noexcept { return value_ != nullptr; }
+    std::size_t use_count() const noexcept;
+
+  private:
+    ArrayValue *value_ = nullptr;
+};
+using Value = std::variant<std::int32_t, double, bool, std::string, std::monostate, ArrayPtr>;
 struct ArrayValue {
+    ArrayValue() = default;
+    ArrayValue(const ArrayValue &other) : elements(other.elements), row_lengths(other.row_lengths) {}
+    ArrayValue &operator=(const ArrayValue &other) {
+        if (this != &other) {
+            elements = other.elements;
+            row_lengths = other.row_lengths;
+        }
+        return *this;
+    }
     std::unordered_map<std::int32_t, Value> elements;
     std::unordered_map<std::int32_t, std::int32_t> row_lengths;
+
+  private:
+    friend class ArrayPtr;
+    std::size_t references_ = 0;
 };
+inline ArrayPtr::ArrayPtr(ArrayValue *value) noexcept : value_(value) {
+    if (value_)
+        ++value_->references_;
+}
+inline ArrayPtr::ArrayPtr(const ArrayPtr &other) noexcept : ArrayPtr(other.value_) {}
+inline ArrayPtr::~ArrayPtr() {
+    if (value_ && --value_->references_ == 0)
+        delete value_;
+}
+inline std::size_t ArrayPtr::use_count() const noexcept {
+    return value_ ? value_->references_ : 0;
+}
 using VariableStore = std::unordered_map<std::string, Value>;
 enum class VariableScope { local, self, global };
 struct VariableBinding {

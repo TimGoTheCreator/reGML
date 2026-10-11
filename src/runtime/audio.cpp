@@ -4,9 +4,35 @@
 #include <cstring>
 #include <fstream>
 #include <vorbis/vorbisfile.h>
+#if REGML_WIIU
+#include <SDL2/SDL.h>
+#include <unordered_set>
+#endif
 namespace regml {
+#if REGML_WIIU
+struct GameAudio::AsyncState {
+    struct Task {
+        AsyncState *state;
+        int sound;
+        std::vector<std::uint8_t> bytes;
+    };
+    struct Completion {
+        int sound;
+        Clip *clip;
+    };
+    SDL_mutex *mutex = SDL_CreateMutex();
+    std::vector<SDL_Thread *> threads;
+    std::vector<Completion> completed;
+    std::unordered_set<int> pending;
+};
+#endif
 GameAudio::GameAudio(const Package &package, std::filesystem::path directory)
     : package_(package), directory_(std::move(directory)) {
+#if REGML_WIIU
+    async_ = std::make_unique<AsyncState>();
+    if (!async_->mutex)
+        throw Error(ErrorKind::io, "audio decode mutex creation failed");
+#endif
     const auto d = package.view();
     auto pointers = [&](const Chunk &c) {
         const auto view = d.slice(c.data_offset, c.size);
@@ -39,13 +65,24 @@ GameAudio::GameAudio(const Package &package, std::filesystem::path directory)
         }
     }
 }
+GameAudio::~GameAudio() {
+#if REGML_WIIU
+    if (async_) {
+        for (auto *thread : async_->threads)
+            SDL_WaitThread(thread, nullptr);
+        for (const auto &item : async_->completed)
+            delete item.clip;
+        SDL_DestroyMutex(async_->mutex);
+    }
+#endif
+}
 std::optional<int> GameAudio::find_sound_id(std::string_view filename) const {
     for (const auto &[id, sound] : sounds_)
         if (sound.filename == filename)
             return id;
     return std::nullopt;
 }
-std::shared_ptr<GameAudio::Clip> GameAudio::decode(std::span<const std::uint8_t> bytes) {
+std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::span<const std::uint8_t> bytes) {
     std::vector<float> source;
     long rate = 0;
     int channels = 0;
@@ -133,7 +170,7 @@ std::shared_ptr<GameAudio::Clip> GameAudio::decode(std::span<const std::uint8_t>
             source.push_back(bits == 16 ? static_cast<float>(samples.i16(at)) / 32768.0f
                                         : (static_cast<float>(samples.u8(at)) - 128) / 128);
     }
-    auto clip = std::make_shared<Clip>();
+    auto clip = std::make_unique<Clip>();
     const auto count = source.size() / static_cast<std::size_t>(channels);
     if (count == 0)
         throw Error(ErrorKind::malformed, "empty audio clip");
@@ -153,13 +190,11 @@ std::shared_ptr<GameAudio::Clip> GameAudio::decode(std::span<const std::uint8_t>
     }
     return clip;
 }
-std::shared_ptr<GameAudio::Clip> GameAudio::load(int id) {
+std::vector<std::uint8_t> GameAudio::read_audio(int id) const {
     auto found = sounds_.find(id);
     if (found == sounds_.end())
         throw Error(ErrorKind::vm, "audio resource does not exist");
-    auto &sound = found->second;
-    if (sound.clip)
-        return sound.clip;
+    const auto &sound = found->second;
     const auto path = directory_ / sound.filename;
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (file) {
@@ -171,7 +206,7 @@ std::shared_ptr<GameAudio::Clip> GameAudio::load(int id) {
         file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
         if (!file)
             throw Error(ErrorKind::io, "audio file read failed");
-        sound.clip = decode(bytes);
+        return bytes;
     } else if (sound.embedded >= 0) {
         if (static_cast<std::size_t>(sound.embedded) >= embedded_.size())
             throw Error(ErrorKind::malformed, "embedded audio ID out of range");
@@ -181,13 +216,34 @@ std::shared_ptr<GameAudio::Clip> GameAudio::load(int id) {
         const auto size = d.u32(at);
         if (size > c->data_offset + c->size - at - 4)
             throw Error(ErrorKind::malformed, "embedded audio length out of range", at);
-        sound.clip = decode(d.slice(at + 4, size).bytes());
+        const auto data = d.slice(at + 4, size).bytes();
+        return {data.begin(), data.end()};
     } else {
         throw Error(ErrorKind::io, "audio file missing: " + path.string());
     }
-    sound.clip->gain = sound.gain;
-    return sound.clip;
 }
+GameAudio::Clip *GameAudio::load(int id) {
+    auto &sound = sounds_.at(id);
+    if (sound.clip)
+        return sound.clip.get();
+    sound.clip = decode(read_audio(id));
+    sound.clip->gain = sound.gain;
+    return sound.clip.get();
+}
+#if REGML_WIIU
+int GameAudio::decode_thread(void *context) {
+    std::unique_ptr<AsyncState::Task> task(static_cast<AsyncState::Task *>(context));
+    Clip *clip = nullptr;
+    try {
+        clip = decode(task->bytes).release();
+    } catch (...) {
+    }
+    SDL_LockMutex(task->state->mutex);
+    task->state->completed.push_back({task->sound, clip});
+    SDL_UnlockMutex(task->state->mutex);
+    return 0;
+}
+#endif
 int GameAudio::create_stream(std::string_view filename) {
     const int id = next_stream_++;
     sounds_[id] = {-1, std::string(filename), 1, {}};
@@ -195,7 +251,13 @@ int GameAudio::create_stream(std::string_view filename) {
     return id;
 }
 int GameAudio::play(int sound, bool loop, double priority) {
-    auto clip = load(sound);
+#if REGML_WIIU
+    if (!sounds_.contains(sound))
+        throw Error(ErrorKind::vm, "audio resource does not exist");
+    auto *clip = sounds_.at(sound).clip.get();
+#else
+    auto *clip = load(sound);
+#endif
     if (voices_.size() >= static_cast<std::size_t>(channels_)) {
         auto lowest = std::min_element(voices_.begin(), voices_.end(), [](const auto &a, const auto &b) {
             return a.second.priority < b.second.priority;
@@ -206,6 +268,19 @@ int GameAudio::play(int sound, bool loop, double priority) {
     }
     const int id = next_voice_++;
     voices_[id] = {sound, clip, 0, 1, 1, priority, loop, false};
+#if REGML_WIIU
+    if (!clip && !async_->pending.contains(sound)) {
+        auto *task = new AsyncState::Task{async_.get(), sound, read_audio(sound)};
+        auto *thread = SDL_CreateThread(decode_thread, "reGML audio decode", task);
+        if (!thread) {
+            delete task;
+            voices_.erase(id);
+            throw Error(ErrorKind::io, std::string("audio decoder thread: ") + SDL_GetError());
+        }
+        async_->pending.insert(sound);
+        async_->threads.push_back(thread);
+    }
+#endif
     return id;
 }
 void GameAudio::stop(int id) {
@@ -225,6 +300,8 @@ bool GameAudio::playing(int id) const {
 double GameAudio::gain(int id) {
     if (const auto it = voices_.find(id); it != voices_.end())
         return it->second.gain;
+    if (const auto it = sounds_.find(id); it != sounds_.end())
+        return it->second.gain;
     return load(id)->gain;
 }
 void GameAudio::gain(int id, double value) {
@@ -232,7 +309,11 @@ void GameAudio::gain(int id, double value) {
         throw Error(ErrorKind::vm, "nonfinite audio gain");
     if (auto it = voices_.find(id); it != voices_.end())
         it->second.gain = value;
-    else
+    else if (auto it = sounds_.find(id); it != sounds_.end()) {
+        it->second.gain = value;
+        if (it->second.clip)
+            it->second.clip->gain = value;
+    } else
         load(id)->gain = value;
 }
 void GameAudio::pitch(int id, double value) {
@@ -254,7 +335,7 @@ void GameAudio::channel_limit(int count) {
     channels_ = std::clamp(count, 1, 1024);
 }
 double GameAudio::length(int id) {
-    if (auto it = voices_.find(id); it != voices_.end())
+    if (auto it = voices_.find(id); it != voices_.end() && it->second.clip)
         return static_cast<double>(it->second.clip->stereo.size()) / 96000;
     return static_cast<double>(load(id)->stereo.size()) / 96000;
 }
@@ -266,14 +347,36 @@ void GameAudio::position(int id, double seconds) {
     if (!std::isfinite(seconds) || seconds < 0)
         throw Error(ErrorKind::vm, "invalid audio seek");
     if (auto it = voices_.find(id); it != voices_.end())
-        it->second.frame = std::min(seconds * 48000, static_cast<double>(it->second.clip->stereo.size() / 2));
+        it->second.frame = it->second.clip
+                               ? std::min(seconds * 48000,
+                                          static_cast<double>(it->second.clip->stereo.size() / 2))
+                               : seconds * 48000;
 }
 std::vector<float> GameAudio::mix(std::size_t frames) {
     if (frames > 48000)
         throw Error(ErrorKind::vm, "audio block exceeds limit");
+#if REGML_WIIU
+    std::vector<AsyncState::Completion> completed;
+    SDL_LockMutex(async_->mutex);
+    completed.swap(async_->completed);
+    SDL_UnlockMutex(async_->mutex);
+    for (auto &item : completed) {
+        async_->pending.erase(item.sound);
+        if (!item.clip) {
+            std::erase_if(voices_, [&](const auto &voice) { return voice.second.sound == item.sound; });
+            continue;
+        }
+        auto &sound = sounds_.at(item.sound);
+        sound.clip.reset(item.clip);
+        sound.clip->gain = sound.gain;
+        for (auto &[id, voice] : voices_)
+            if (voice.sound == item.sound)
+                voice.clip = sound.clip.get();
+    }
+#endif
     std::vector<float> out(frames * 2, 0);
     for (auto &[id, v] : voices_) {
-        if (v.paused)
+        if (v.paused || !v.clip)
             continue;
         const auto length = v.clip->stereo.size() / 2;
         for (std::size_t f = 0; f < frames; ++f) {
@@ -292,7 +395,8 @@ std::vector<float> GameAudio::mix(std::size_t frames) {
         }
     }
     std::erase_if(voices_, [](const auto &p) {
-        return !p.second.loop && p.second.frame >= static_cast<double>(p.second.clip->stereo.size() / 2);
+        return p.second.clip && !p.second.loop &&
+               p.second.frame >= static_cast<double>(p.second.clip->stereo.size() / 2);
     });
     for (auto &sample : out)
         sample = std::clamp(sample, -1.0f, 1.0f);

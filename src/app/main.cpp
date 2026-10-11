@@ -281,6 +281,27 @@ int command(int argc, char **argv) {
 }
 } // namespace
 int main(int argc, char **argv) {
+#if REGML_WIIU
+    // Wii U homebrew launches don't have a useful shell for passing CLI args.
+    // Keep the package on the SD card beside this fixed homebrew path.
+    const std::filesystem::path package = argc > 1 ? argv[1] : "/vol/external01/reGML/data.win";
+    regml::PlayOptions options;
+    options.save_directory = "/vol/external01/wiiu/apps/reGML/saves";
+    const auto game_directory = package.parent_path();
+    if (std::filesystem::exists(game_directory / "regml-input.txt"))
+        options.input_script = game_directory / "regml-input.txt";
+    if (std::filesystem::exists(game_directory / "regml-trace.enabled"))
+        options.trace_log = game_directory / "regml-trace.log";
+    try {
+        const auto report = regml::play_game(package, options);
+        std::cout << "reGML Wii U\nFrames: " << report.frames << "\nVM instructions: " << report.instructions
+                  << "\nRoom: " << report.room << '\n';
+        return 0;
+    } catch (const std::exception &error) {
+        std::cerr << "reGML Wii U error: " << error.what() << '\n';
+        return 1;
+    }
+#else
     try {
         return command(argc, argv);
     } catch (const regml::Error &error) {
@@ -301,4 +322,5 @@ int main(int argc, char **argv) {
         std::cerr << "reGML host error: " << error.what() << '\n';
         return 1;
     }
+#endif
 }

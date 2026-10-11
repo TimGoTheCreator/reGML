@@ -14,6 +14,7 @@
 #include <random>
 #include <sstream>
 #include <unordered_set>
+#include <utility>
 namespace regml {
 namespace {
 int number(const Value &v) {
@@ -21,6 +22,31 @@ int number(const Value &v) {
     if (!std::isfinite(n) || n < INT32_MIN || n > INT32_MAX)
         throw Error(ErrorKind::vm, "integer value out of range");
     return static_cast<int>(n);
+}
+std::filesystem::path default_save_root() {
+#if REGML_WIIU
+    return "/vol/external01/wiiu/apps/reGML/saves";
+#else
+    return std::filesystem::current_path() / "build" / "saves";
+#endif
+}
+std::string save_profile(const Package &package, const std::filesystem::path &package_path) {
+    std::string profile;
+    if (const auto &info = package.general_info(); info && info->name_pointer != 0)
+        profile = package.string_pointer(info->name_pointer);
+    if (profile.empty()) {
+        profile = package_path.parent_path().filename().string();
+        if (profile.empty())
+            profile = package_path.stem().string();
+    }
+    std::string safe;
+    safe.reserve(std::min<std::size_t>(profile.size(), 64));
+    for (const unsigned char ch : profile) {
+        if (safe.size() == 64)
+            break;
+        safe.push_back(std::isalnum(ch) || ch == '-' || ch == '_' ? static_cast<char>(ch) : '_');
+    }
+    return safe.empty() ? "game" : safe;
 }
 struct Object {
     std::string name;
@@ -62,9 +88,47 @@ struct Path {
 };
 struct Instance {
     int id = 0, object = 0;
+#if REGML_WIIU
+    std::size_t references = 0;
+#endif
     bool alive = true, outside_room = false, deactivated = false;
     VariableStore vars;
 };
+#if REGML_WIIU
+class InstancePtr {
+  public:
+    InstancePtr() = default;
+    explicit InstancePtr(Instance *instance) : instance_(instance) { retain(); }
+    InstancePtr(const InstancePtr &other) : instance_(other.instance_) { retain(); }
+    InstancePtr(InstancePtr &&other) noexcept : instance_(std::exchange(other.instance_, nullptr)) {}
+    InstancePtr &operator=(InstancePtr other) noexcept {
+        std::swap(instance_, other.instance_);
+        return *this;
+    }
+    ~InstancePtr() { release(); }
+    Instance *get() const noexcept { return instance_; }
+    Instance *operator->() const noexcept { return instance_; }
+    Instance &operator*() const noexcept { return *instance_; }
+    explicit operator bool() const noexcept { return instance_ != nullptr; }
+    friend bool operator==(const InstancePtr &left, const InstancePtr &right) noexcept {
+        return left.instance_ == right.instance_;
+    }
+
+  private:
+    void retain() noexcept {
+        if (instance_)
+            ++instance_->references;
+    }
+    void release() noexcept {
+        if (instance_ && --instance_->references == 0)
+            delete instance_;
+        instance_ = nullptr;
+    }
+    Instance *instance_ = nullptr;
+};
+#else
+using InstancePtr = std::shared_ptr<Instance>;
+#endif
 struct GameBuffer {
     std::vector<std::uint8_t> bytes;
     std::size_t position = 0;
@@ -82,9 +146,9 @@ struct GameSession::Impl {
     std::vector<Room> rooms;
     std::vector<int> order, scripts;
     std::unordered_map<std::string, int> script_names;
-    std::vector<std::shared_ptr<Instance>> instances;
+    std::vector<InstancePtr> instances;
     struct SavedRoom {
-        std::vector<std::shared_ptr<Instance>> instances;
+        std::vector<InstancePtr> instances;
         VariableStore engine;
     };
     std::unordered_map<int, SavedRoom> saved_rooms;
@@ -101,7 +165,7 @@ struct GameSession::Impl {
     int next_buffer = 1, next_async_request = 1;
     std::unordered_map<int, std::unique_ptr<std::fstream>> files;
     int next_file = 0;
-    std::filesystem::path save_dir = std::filesystem::current_path() / "build" / "saves" / "undertale", ini_path;
+    std::filesystem::path save_dir = default_save_root(), ini_path;
     std::map<std::string, std::map<std::string, std::string>> ini;
     bool ini_dirty = false;
     bool ini_opened = false;
@@ -126,6 +190,8 @@ struct GameSession::Impl {
             random.seed(*seed);
         if (!save_directory.empty())
             save_dir = save_directory;
+        else
+            save_dir /= save_profile(package, path);
         load_world();
         engine = {{"os_type", std::int32_t{0}},
                   {"os_version", std::int32_t{0}},
@@ -353,11 +419,11 @@ struct GameSession::Impl {
             order.push_back(id);
         }
     }
-    std::shared_ptr<Instance> make(const Placement &p) {
+    InstancePtr make(const Placement &p) {
         if (instances.size() >= 10000)
             throw Error(ErrorKind::vm, "instance limit reached");
         const auto &obj = objects.at(static_cast<std::size_t>(p.object));
-        auto inst = std::make_shared<Instance>();
+        auto inst = InstancePtr(new Instance());
         inst->id = p.id;
         inst->object = p.object;
         inst->vars = {{"x", p.x},
@@ -391,8 +457,9 @@ struct GameSession::Impl {
                       {"path_index", std::int32_t{-1}},
                       {"path_position", 0.0},
                       {"path_speed", 0.0}};
-        for (int a = 0; a < 12; ++a)
+        for (int a = 0; a < 12; ++a) {
             inst->vars["alarm[" + std::to_string(a) + "]"] = std::int32_t{-1};
+        }
         instances.push_back(inst);
         return inst;
     }
@@ -474,20 +541,18 @@ struct GameSession::Impl {
         }
         return false;
     }
-    std::vector<std::shared_ptr<Instance>> targets(int target, const std::shared_ptr<Instance> &self,
-                                                   const std::shared_ptr<Instance> &other) {
+    std::vector<InstancePtr> targets(int target, const InstancePtr &self, const InstancePtr &other) {
         if (target == -1)
-            return self ? std::vector{self} : std::vector<std::shared_ptr<Instance>>{};
+            return self ? std::vector{self} : std::vector<InstancePtr>{};
         if (target == -2)
-            return other && other->alive ? std::vector{other} : std::vector<std::shared_ptr<Instance>>{};
-        std::vector<std::shared_ptr<Instance>> out;
+            return other && other->alive ? std::vector{other} : std::vector<InstancePtr>{};
+        std::vector<InstancePtr> out;
         for (auto &i : instances)
             if (i->alive && !i->deactivated && matches(*i, target))
                 out.push_back(i);
         return out;
     }
-    void event(std::shared_ptr<Instance> inst, int type, int subtype, int object = -1,
-               std::shared_ptr<Instance> other = {}) {
+    void event(InstancePtr inst, int type, int subtype, int object = -1, InstancePtr other = {}) {
         if (!inst->alive || inst->deactivated)
             return;
         int n = object < 0 ? inst->object : object;
@@ -501,8 +566,9 @@ struct GameSession::Impl {
                     std::vector<EventFrame> &frames;
                     ~Guard() { frames.pop_back(); }
                 } guard{event_stack};
-                for (auto code : it->second)
+                for (auto code : it->second) {
                     execute(code, inst, {}, other);
+                }
                 return;
             }
             n = obj.parent;
@@ -541,7 +607,7 @@ struct GameSession::Impl {
         for (const auto &[key, value] : room.views)
             engine[key] = value;
         event_budget = 0;
-        std::vector<std::shared_ptr<Instance>> placed;
+        std::vector<InstancePtr> placed;
         const auto saved = saved_rooms.find(id);
         if (saved != saved_rooms.end()) {
             instances.insert(instances.end(), saved->second.instances.begin(), saved->second.instances.end());
@@ -573,8 +639,7 @@ struct GameSession::Impl {
         std::cout << "Entered room " << id << ": " << room.name << " (" << instances.size() << " instances)"
                   << std::endl;
     }
-    Value execute(int code, std::shared_ptr<Instance> self, std::span<const Value> arguments,
-                  std::shared_ptr<Instance> other = {}) {
+    Value execute(int code, InstancePtr self, std::span<const Value> arguments, InstancePtr other = {}) {
         if (code < 0)
             return std::monostate{};
         if (depth >= 128)
@@ -594,8 +659,8 @@ struct GameSession::Impl {
         std::vector<Value> stack;
         std::size_t pc = 0;
         struct Environment {
-            std::shared_ptr<Instance> saved, saved_other;
-            std::vector<std::shared_ptr<Instance>> choices;
+            InstancePtr saved, saved_other;
+            std::vector<InstancePtr> choices;
             std::size_t index = 0;
         };
         std::vector<Environment> environments;
@@ -697,15 +762,15 @@ struct GameSession::Impl {
                             if (base == store->end()) {
                                 if (!writing)
                                     throw Error(ErrorKind::vm, "array variable is uninitialized: " + symbol.name);
-                                base = store->emplace(symbol.name, std::make_shared<ArrayValue>()).first;
+                                base = store->emplace(symbol.name, ArrayPtr(new ArrayValue)).first;
                             }
-                            auto *array = std::get_if<std::shared_ptr<ArrayValue>>(&base->second);
+                            auto *array = std::get_if<ArrayPtr>(&base->second);
                             if (!array || !*array)
                                 throw Error(ErrorKind::vm, "indexed variable is not an array: " + symbol.name);
                             const int row = array_index / 32000, col = array_index % 32000;
                             if (writing) {
                                 if (array->use_count() > 1)
-                                    *array = std::make_shared<ArrayValue>(**array);
+                                    *array = ArrayPtr(new ArrayValue(**array));
                                 if ((*array)->elements.size() >= 1'000'000)
                                     throw Error(ErrorKind::vm, "array element limit reached");
                                 (*array)->elements[array_index] = value;
@@ -993,8 +1058,7 @@ struct GameSession::Impl {
         }
         return std::monostate{};
     }
-    Value call(std::string_view name, std::span<const Value> args, std::shared_ptr<Instance> self,
-               std::shared_ptr<Instance> other) {
+    Value call(std::string_view name, std::span<const Value> args, InstancePtr self, InstancePtr other) {
         auto n = [&](std::size_t i) {
             if (i >= args.size())
                 throw Error(ErrorKind::vm, "missing built-in argument");
@@ -1049,7 +1113,7 @@ struct GameSession::Impl {
         if (name == "is_string")
             return std::holds_alternative<std::string>(args[0]);
         if (name == "is_array")
-            return std::holds_alternative<std::shared_ptr<ArrayValue>>(args[0]);
+            return std::holds_alternative<ArrayPtr>(args[0]);
         if (name == "is_real")
             return !std::holds_alternative<std::string>(args[0]) && !std::holds_alternative<std::monostate>(args[0]);
         if (name == "string_upper" || name == "string_lower") {
@@ -2629,13 +2693,24 @@ struct GameSession::Impl {
                 if (entered)
                     event(i, 7, 0);
             }
-        // Resolve each object's most specific collision handler, including inherited targets.
+        // Objects without collision events must not scan every other instance.
+        // Include inherited events so child objects retain their parent's behavior.
+        const auto has_collision_event = [&](int object) {
+            for (std::size_t guard = 0; object >= 0 && static_cast<std::size_t>(object) < objects.size() &&
+                                        guard < objects.size(); ++guard) {
+                const auto &definition = objects[static_cast<std::size_t>(object)];
+                for (const auto &entry : definition.events)
+                    if (entry.first.first == 4)
+                        return true;
+                object = definition.parent;
+            }
+            return false;
+        };
+        // Resolve the handler before testing geometry: unrelated objects cannot fire an event.
         for (const auto &i : snapshot)
-            if (i->alive)
+            if (i->alive && has_collision_event(i->object))
                 for (const auto &j : snapshot)
                     if (j->alive && i != j) {
-                        if (!collides(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), *j))
-                            continue;
                         bool handled = false;
                         int source = i->object;
                         for (std::size_t guard = 0; source >= 0 && static_cast<std::size_t>(source) < objects.size() &&
@@ -2646,7 +2721,8 @@ struct GameSession::Impl {
                                                      tg < objects.size();
                                  ++tg) {
                                 if (objects[static_cast<std::size_t>(source)].events.contains({4, target})) {
-                                    event(i, 4, target, source, j);
+                                    if (collides(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), *j))
+                                        event(i, 4, target, source, j);
                                     handled = true;
                                     break;
                                 }

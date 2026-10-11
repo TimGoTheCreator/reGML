@@ -349,7 +349,7 @@ std::string value_text(const Value &value) {
         return *string;
     if (std::holds_alternative<std::monostate>(value))
         return "undefined";
-    if (std::holds_alternative<std::shared_ptr<ArrayValue>>(value))
+    if (std::holds_alternative<ArrayPtr>(value))
         return "[array]";
     std::ostringstream out;
     out.imbue(std::locale::classic());

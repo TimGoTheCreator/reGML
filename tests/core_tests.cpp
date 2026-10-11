@@ -306,6 +306,32 @@ int main(int argc, char **argv) {
         return 0;
     }
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
+        {"array values retain nested data across copies and moves",
+         [] {
+             regml::Value original;
+             {
+                 regml::ArrayPtr child(new regml::ArrayValue);
+                 child->elements[0] = std::string("retained");
+                 child->row_lengths[0] = 1;
+                 regml::ArrayPtr parent(new regml::ArrayValue);
+                 parent->elements[32000] = child;
+                 parent->row_lengths[1] = 1;
+                 original = parent;
+             }
+             regml::Value copied = original;
+             regml::Value moved = std::move(copied);
+             original = std::monostate{};
+             auto &parent = std::get<regml::ArrayPtr>(moved);
+             auto &child = std::get<regml::ArrayPtr>(parent->elements.at(32000));
+             check(regml::value_text(child->elements.at(0)) == "retained", "nested array survives owner release");
+             regml::ArrayPtr detached(new regml::ArrayValue(*parent));
+             detached->elements[32000] = std::int32_t{9};
+             check(regml::value_text(child->elements.at(0)) == "retained", "detached copy preserves source");
+             check(detached->row_lengths.at(1) == 1, "detached copy retains sparse row lengths");
+             check(parent.use_count() == 1 && detached.use_count() == 1, "clones have independent ownership");
+             moved = std::monostate{};
+             check(regml::value_number(detached->elements.at(32000)) == 9, "clone survives source release");
+         }},
         {"package variable chains and corruption",
          [] {
              auto f = fixture();
@@ -657,10 +683,15 @@ int main(int argc, char **argv) {
              regml::Canvas surface(2, 2), composite(4, 4);
              surface.clear_transparent();
              surface.rgba_pixel(0, 0, 0x80ffffff, 0xffffff, 1);
+             surface.rgba_pixel(1, 0, 0xffff0000, 0xffffff, 1);
              composite.clear_transparent();
              composite.draw_surface(surface, 1, 1);
-             check(composite.pixel(1, 1) == 0x80ffffff && composite.pixel(2, 1) == 0,
+             check(composite.pixel(1, 1) == 0x80ffffff && composite.pixel(2, 1) == 0xffff0000 &&
+                       composite.pixel(1, 2) == 0,
                    "surface keeps transparency while compositing");
+             composite.clear(0);
+             composite.draw_surface(surface, -1, 1);
+             check(composite.pixel(0, 1) == 0xffff0000, "fast surface path clips and blends correctly");
              error_is(regml::ErrorKind::vm, [&] { canvas.alpha(std::numeric_limits<double>::quiet_NaN()); });
              error_is(regml::ErrorKind::unsupported, [&] { regml::Canvas invalid(0, 16); });
          }},

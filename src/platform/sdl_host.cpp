@@ -60,7 +60,7 @@ class VideoWindow {
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
         const auto flags = static_cast<Uint32>(SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
                                                (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN));
-        window_.reset(SDL_CreateWindow(escape_quits ? "reGML - VM Arcade" : "reGML - Undertale (experimental)",
+        window_.reset(SDL_CreateWindow(escape_quits ? "reGML - VM Arcade" : "reGML - Game (experimental)",
                                        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 800, 600, flags));
         if (!window_)
             throw Error(ErrorKind::io, std::string("window creation: ") + SDL_GetError());
@@ -75,6 +75,22 @@ class VideoWindow {
         if (!texture_)
             throw Error(ErrorKind::io, std::string("framebuffer texture: ") + SDL_GetError());
         sdl_ok(SDL_SetTextureBlendMode(texture_.get(), SDL_BLENDMODE_NONE), "texture blend mode");
+        if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) >= 0) {
+            controller_subsystem_ = true;
+        }
+        for (int i = 0; controller_subsystem_ && i < SDL_NumJoysticks(); ++i) {
+            if (SDL_IsGameController(i)) {
+                controller_ = SDL_GameControllerOpen(i);
+                if (controller_)
+                    break;
+            }
+        }
+    }
+    ~VideoWindow() {
+        if (controller_)
+            SDL_GameControllerClose(controller_);
+        if (controller_subsystem_)
+            SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
     }
     bool poll() {
         SDL_Event event;
@@ -96,6 +112,27 @@ class VideoWindow {
                     if (event.type == SDL_KEYDOWN && !event.key.repeat)
                         pressed_[index] = true;
                 }
+            }
+            if (controller_subsystem_ && event.type == SDL_CONTROLLERDEVICEADDED && !controller_ &&
+                SDL_IsGameController(event.cdevice.which))
+                controller_ = SDL_GameControllerOpen(event.cdevice.which);
+            if (event.type == SDL_CONTROLLERDEVICEREMOVED && controller_ &&
+                SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller_)) == event.cdevice.which) {
+                SDL_GameControllerClose(controller_);
+                controller_ = nullptr;
+                held_.fill(false);
+                pressed_.fill(false);
+            }
+            if (event.type == SDL_CONTROLLERBUTTONDOWN || event.type == SDL_CONTROLLERBUTTONUP) {
+                const auto key = gml_button(static_cast<SDL_GameControllerButton>(event.cbutton.button));
+                if (key >= 0) {
+                    const auto index = static_cast<std::size_t>(key);
+                    held_[index] = event.type == SDL_CONTROLLERBUTTONDOWN;
+                    if (event.type == SDL_CONTROLLERBUTTONDOWN)
+                        pressed_[index] = true;
+                }
+                if (event.type == SDL_CONTROLLERBUTTONDOWN && event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)
+                    return false;
             }
         }
         return true;
@@ -119,11 +156,36 @@ class VideoWindow {
     }
 
   private:
+    static int gml_button(SDL_GameControllerButton button) {
+        switch (button) {
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+            return 37;
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+            return 38;
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+            return 39;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+            return 40;
+        case SDL_CONTROLLER_BUTTON_A:
+            return 'Z';
+        case SDL_CONTROLLER_BUTTON_B:
+            return 'X';
+        case SDL_CONTROLLER_BUTTON_X:
+        case SDL_CONTROLLER_BUTTON_Y:
+            return 'C';
+        case SDL_CONTROLLER_BUTTON_START:
+            return 13;
+        default:
+            return -1;
+        }
+    }
     // Members destroy in reverse order; SDL lifetime ends after all GPU/window resources.
     SdlLifetime lifetime_;
     std::unique_ptr<SDL_Window, WindowDelete> window_;
     std::unique_ptr<SDL_Renderer, RendererDelete> renderer_;
     std::unique_ptr<SDL_Texture, TextureDelete> texture_;
+    SDL_GameController *controller_ = nullptr;
+    bool controller_subsystem_ = false;
     KeyboardState held_{}, pressed_{};
     bool escape_quits_ = true;
 };
@@ -220,6 +282,22 @@ PlayReport play_demo(const PlayOptions &options) {
             {}};
 }
 PlayReport play_game(const std::filesystem::path &package, const PlayOptions &options) {
+    std::ofstream trace;
+    if (!options.trace_log.empty()) {
+        trace.open(options.trace_log, std::ios::trunc);
+        if (!trace)
+            throw Error(ErrorKind::io, "runtime trace cannot be opened");
+    }
+    auto trace_stage = [&](std::string_view stage, const GameSession *session = nullptr) {
+        if (!trace.is_open())
+            return;
+        trace << stage;
+        if (session)
+            trace << " frame=" << session->frames() << " instructions=" << session->instructions()
+                  << " room=" << session->room_name();
+        trace << '\n';
+        trace.flush();
+    };
     if (!std::isfinite(options.speed_multiplier) || options.speed_multiplier < 0.01 ||
         options.speed_multiplier > 1000.0)
         throw Error(ErrorKind::usage, "speed multiplier must be between 0.01 and 1000");
@@ -227,7 +305,9 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
         throw Error(ErrorKind::usage, "hidden/headless requires --frames");
     if (options.frame_limit > 1'000'000)
         throw Error(ErrorKind::usage, "frame limit exceeds 1000000");
+    trace_stage("load.begin");
     GameSession session(package, options.seed, options.save_directory);
+    trace_stage("load.end", &session);
     std::map<std::size_t, KeyboardState> replay;
     if (!options.input_script.empty()) {
         std::ifstream file(options.input_script);
@@ -267,16 +347,24 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             session.tick(!replay.empty() ? input() : options.autoplay ? demo_autoplay(i) : KeyboardState{}, {});
     } else {
 #if REGML_WITH_SDL2
+        trace_stage("video.begin", &session);
         VideoWindow window(options.hidden, false);
+        trace_stage("audio.begin", &session);
         AudioDevice audio(options.speed_multiplier);
+        trace_stage("audio.end", &session);
         auto next = std::chrono::steady_clock::now();
         while (options.frame_limit == 0 || session.frames() < options.frame_limit) {
+            trace_stage("poll", &session);
             if (!window.poll())
                 break;
             input();
+            trace_stage("tick", &session);
             window.tick_game(session, replay.empty() ? nullptr : &replay_keys);
+            trace_stage("present", &session);
             window.present(session.canvas());
+            trace_stage("audio.queue", &session);
             audio.queue(session.audio());
+            trace_stage("delay", &session);
             const auto frame_time = std::chrono::duration<double>(1.0 / (session.speed() * options.speed_multiplier));
             next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(frame_time);
             if (!options.hidden)

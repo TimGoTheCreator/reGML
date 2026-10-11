@@ -11,6 +11,7 @@ struct PlayOptions {
     double speed_multiplier = 1.0;
     std::filesystem::path screenshot;
     std::filesystem::path input_script;
+    std::filesystem::path trace_log;
     std::optional<std::uint32_t> seed;
     std::filesystem::path save_directory;
 };

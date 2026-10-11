@@ -158,6 +158,53 @@ void Canvas::draw_surface(const Canvas &source, double x, double y, double sx, d
     finite(opacity);
     if (sx == 0 || sy == 0 || source.width_ == 0 || source.height_ == 0)
         return;
+    // The common GameMaker sprite path is an unscaled, unrotated, untinted draw.
+    // Avoid per-pixel trigonometry, rounding, and the general alpha compositor there.
+    // Keep self-blits on the generic path because they can overlap in-place.
+    if (this != &source && sx == 1 && sy == 1 && angle == 0 && tint == 0xffffff && opacity == 1) {
+        // Fully off-screen surfaces can be rejected before converting coordinates to int.
+        if (x < -static_cast<double>(source.width_) - 1 || x > width_ + 1.0 ||
+            y < -static_cast<double>(source.height_) - 1 || y > height_ + 1.0)
+            return;
+        const auto origin_x = static_cast<int>(std::lround(x));
+        const auto origin_y = static_cast<int>(std::lround(y));
+        const int source_x = std::max(0, -origin_x);
+        const int source_y = std::max(0, -origin_y);
+        const int dest_x = std::max(0, origin_x);
+        const int dest_y = std::max(0, origin_y);
+        const int copy_width = std::min(source.width_ - source_x, width_ - dest_x);
+        const int copy_height = std::min(source.height_ - source_y, height_ - dest_y);
+        if (copy_width <= 0 || copy_height <= 0)
+            return;
+
+        for (int row = 0; row < copy_height; ++row) {
+            const auto *src =
+                source.pixels_.data() + static_cast<std::size_t>(source_y + row) * source.width_ + source_x;
+            auto *dst = pixels_.data() + static_cast<std::size_t>(dest_y + row) * width_ + dest_x;
+            for (int column = 0; column < copy_width; ++column) {
+                const auto rgba = src[column];
+                const auto alpha = rgba >> 24;
+                if (alpha == 255) {
+                    dst[column] = rgba;
+                } else if (alpha != 0) {
+                    const auto previous = dst[column];
+                    if ((previous >> 24) != 255) {
+                        rgba_pixel_tinted(dest_x + column, dest_y + row, rgba, 0xffffff, 1);
+                        continue;
+                    }
+                    const auto inverse_alpha = 255 - alpha;
+                    unsigned result = 0xff000000;
+                    for (unsigned shift : {0U, 8U, 16U}) {
+                        const auto source_channel = (rgba >> shift) & 255;
+                        const auto dest_channel = (previous >> shift) & 255;
+                        result |= ((source_channel * alpha + dest_channel * inverse_alpha + 127) / 255) << shift;
+                    }
+                    dst[column] = result;
+                }
+            }
+        }
+        return;
+    }
     const double radians = angle * 3.14159265358979323846 / 180.0;
     const double cs = std::cos(radians), sn = std::sin(radians);
     const unsigned rgb = to_rgb(tint);
