@@ -5,10 +5,8 @@
 #include <string>
 #include <utility>
 namespace regml {
-// Runtime scalars and legacy VM arrays.
 struct ArrayValue;
-// VM values stay on the simulation thread. Avoid platform atomic reference-count
-// operations for arrays, including when unrelated audio worker threads exist.
+// Not thread-safe. Arrays are owned by the VM thread.
 class ArrayPtr {
   public:
     ArrayPtr() = default;
@@ -65,8 +63,7 @@ struct VariableBinding {
     VariableScope scope;
     std::string name;
 };
-// Bindings address instruction offsets, not raw occurrence-chain payloads.
-// Package VARI/FUNC linking is separate; original fixtures supply their own bindings.
+// Binding offsets refer to instructions, not occurrence-chain words.
 struct VmBindings {
     std::unordered_map<std::size_t, VariableBinding> variables;
     std::unordered_map<std::size_t, std::string> functions;

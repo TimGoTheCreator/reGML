@@ -179,7 +179,7 @@ class VideoWindow {
             return -1;
         }
     }
-    // Members destroy in reverse order; SDL lifetime ends after all GPU/window resources.
+    // Keep SDL alive until the window and renderer are destroyed.
     SdlLifetime lifetime_;
     std::unique_ptr<SDL_Window, WindowDelete> window_;
     std::unique_ptr<SDL_Renderer, RendererDelete> renderer_;
@@ -194,8 +194,7 @@ class AudioDevice {
     explicit AudioDevice(double speed) {
         sdl_ok(SDL_InitSubSystem(SDL_INIT_AUDIO), "audio initialization");
         SDL_AudioSpec want{}, got{};
-        // SDL devices commonly top out around 192 kHz. Simulation speed remains
-        // unrestricted by the audio device's supported sample-rate range.
+        // Clamp the device rate without clamping simulation speed.
         want.freq = static_cast<int>(std::clamp(48000.0 * speed, 8000.0, 192000.0));
         want.format = AUDIO_F32SYS;
         want.channels = 2;
@@ -250,7 +249,7 @@ PlayReport play_demo(const PlayOptions &options) {
             const auto now = Clock::now();
             accumulated += std::min(std::chrono::duration<double>(now - previous).count(), 0.25);
             previous = now;
-            // Bounded catch-up preserves per-step input edges without unbounded work after a stall.
+            // Limit catch-up after a stall; retain input edges for each step.
             std::size_t steps = 0;
             while (accumulated >= step && steps < 5 &&
                    (options.frame_limit == 0 || session.frames() < options.frame_limit)) {

@@ -11,10 +11,10 @@ struct PackageSymbol {
 struct LinkedPackage {
     std::vector<Program> programs;
     std::vector<PackageSymbol> variables, functions;
-    // Absolute instruction addresses. Raw chain payloads are never symbol IDs.
+    // Chain words contain addresses, not symbol IDs.
     std::unordered_map<std::size_t, std::size_t> variable_at, function_at;
     std::size_t instruction_count = 0;
 };
-// Legacy v15/v16 profile only. Resolves names, not runtime scope/array semantics.
+// v15/v16 only. Scope and array handling belong to the VM.
 LinkedPackage link_legacy_package(const Package &package, LoadLimits limits = {});
 } // namespace regml

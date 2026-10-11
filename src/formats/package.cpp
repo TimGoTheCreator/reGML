@@ -68,7 +68,7 @@ void Package::parse(LoadLimits limits) {
         if (!seen.emplace(c.name()).second)
             throw Error(ErrorKind::unsupported, "duplicate chunk tags are not supported", offset);
         chunks_.push_back(c);
-        // Payload size includes padding. Do not impose generic IFF alignment.
+        // Chunk sizes already include padding.
         offset = c.data_offset + c.size;
     }
     if (const auto *c = find_chunk("GEN8"))
@@ -129,7 +129,7 @@ void Package::parse_strings(const Chunk &c, LoadLimits limits) {
         if (data.u8(pointer + 4 + length) != 0)
             throw Error(ErrorKind::malformed, "STRG string has no NUL terminator", pointer + 4 + length);
         strings_.push_back({pointer, length});
-        // STRG table addresses the length; other references address content.
+        // STRG pointers include the length prefix; other string pointers skip it.
         string_lookup_.emplace(pointer + 4, i);
     }
 }

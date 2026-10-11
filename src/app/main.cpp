@@ -282,8 +282,6 @@ int command(int argc, char **argv) {
 } // namespace
 int main(int argc, char **argv) {
 #if REGML_WIIU
-    // Wii U homebrew launches don't have a useful shell for passing CLI args.
-    // Keep the package on the SD card beside this fixed homebrew path.
     const std::filesystem::path package = argc > 1 ? argv[1] : "/vol/external01/reGML/data.win";
     regml::PlayOptions options;
     options.save_directory = "/vol/external01/wiiu/apps/reGML/saves";

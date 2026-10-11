@@ -10,8 +10,6 @@ option(REGML_WIIU "Build a Wii U homebrew RPX with devkitPro wut" OFF)
 set(REGML_UNDERTALE_DATA "" CACHE FILEPATH "Optional Undertale data.win path for audio integration testing")
 
 if(REGML_WIIU)
-    # devkitPro's Wii U portlibs expose their dependencies through pkg-config.
-    # SDL2 is built on wut and supplies the window, input, renderer, and audio backends.
     set(REGML_SDL2 ON CACHE BOOL "Enable SDL2 windowed frontend" FORCE)
     # Wii U portlibs are static, so include their private link dependencies too.
     set(PKG_CONFIG_ARGN --static)
@@ -68,7 +66,7 @@ endif()
 if(REGML_SDL2)
     target_compile_definitions(regml_engine PUBLIC REGML_WITH_SDL2=1 SDL_MAIN_HANDLED)
     if(REGML_WIIU)
-        # SDL is already linked from devkitPro's pkg-config metadata above.
+        # Linked through pkg-config above.
     elseif(TARGET SDL2::SDL2)
         target_link_libraries(regml_engine PUBLIC SDL2::SDL2)
     else()

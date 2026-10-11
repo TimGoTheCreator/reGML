@@ -6,7 +6,7 @@
 #include <string_view>
 #include <vector>
 namespace regml {
-// Deterministic CPU framebuffer. SDL presents these same pixels on screen.
+// CPU framebuffer; SDL only handles presentation.
 class Canvas {
   public:
     Canvas(int width, int height);

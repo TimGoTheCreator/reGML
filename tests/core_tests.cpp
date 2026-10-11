@@ -289,7 +289,6 @@ int main(int argc, char **argv) {
                          "       regml_tests --flowey-regression <data.win> <replay> <artifact-directory>\n";
             return 2;
         }
-        // Explicitly requested test artifact only; never extracts game files.
         const auto bytes = fixture().bytes;
         std::ofstream file(argv[2], std::ios::binary | std::ios::trunc);
         if (!file) {

@@ -8,8 +8,6 @@ struct BoundProgram {
     Program program;
     VmBindings bindings;
 };
-// An original arcade fixture whose Create/Step/Draw programs run on the VM.
-// This is not a substituted implementation of a commercial game's logic.
 class DemoSession {
   public:
     DemoSession();

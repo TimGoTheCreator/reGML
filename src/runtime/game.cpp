@@ -276,8 +276,7 @@ struct GameSession::Impl {
                 const bool closed = header.u32(8) != 0;
                 if (closed && path.points.size() > 1)
                     path.points.push_back(path.points.front());
-                // Smooth GMS paths are cubic curves through their control points. Store
-                // a small arc-length lookup table so path movement stays distance based.
+                // Arc-length lookup keeps speed independent of curve parameterization.
                 if (path.smooth && path.points.size() > 1) {
                     const auto controls = std::move(path.points);
                     path.points.clear();
@@ -842,7 +841,7 @@ struct GameSession::Impl {
                 case Opcode::pop: {
                     if (ins.type1 == DataType::int16)
                         throw Error(ErrorKind::unsupported, "native stack swap pending");
-                    // For store.v.* the value is above the scope/index operands; store.*.v has it below.
+                    // store.v.* puts the value above scope/index; store.*.v puts it below.
                     if (ins.type1 != DataType::variable) {
                         auto v = pop();
                         variable(true, v);
@@ -2286,8 +2285,6 @@ struct GameSession::Impl {
             const int type = static_cast<int>(n(0)), subtype = static_cast<int>(n(1));
             if (type < 0 || type > 12)
                 throw Error(ErrorKind::vm, "event_perform event type out of range");
-            // This runs the requested event code on the current instance. It does not
-            // synthesize input, advance alarms, or otherwise trigger engine behavior.
             event(self, type, subtype);
             return std::monostate{};
         }
@@ -2636,8 +2633,7 @@ struct GameSession::Impl {
                         if (ended) {
                             if (action == 1 || action == 2) {
                                 if (action == 2) {
-                                    // Continue repeats the path relative to its endpoint rather
-                                    // than returning to the original start or stopping there.
+                                    // Continue offsets the next traversal by the endpoint delta.
                                     const double cycles = std::floor(distance / path.length);
                                     continuation_x = (path.points.back().x - path.points.front().x) * scale * cycles;
                                     continuation_y = (path.points.back().y - path.points.front().y) * scale * cycles;
@@ -2678,8 +2674,7 @@ struct GameSession::Impl {
                         event(i, 9, static_cast<int>(k));
                 }
             }
-        // Outside-room events fire when the entire sprite leaves the room.
-        // Guest code uses this event to advance attacks after projectiles are dodged.
+        // Fire once when the whole sprite crosses the room boundary.
         const double room_width = value_number(engine.at("room_width")),
                      room_height = value_number(engine.at("room_height"));
         for (const auto &i : snapshot)
@@ -2693,8 +2688,7 @@ struct GameSession::Impl {
                 if (entered)
                     event(i, 7, 0);
             }
-        // Objects without collision events must not scan every other instance.
-        // Include inherited events so child objects retain their parent's behavior.
+        // Check parents before skipping objects without collision handlers.
         const auto has_collision_event = [&](int object) {
             for (std::size_t guard = 0; object >= 0 && static_cast<std::size_t>(object) < objects.size() &&
                                         guard < objects.size(); ++guard) {
@@ -2706,7 +2700,7 @@ struct GameSession::Impl {
             }
             return false;
         };
-        // Resolve the handler before testing geometry: unrelated objects cannot fire an event.
+        // Avoid geometry checks for pairs without a collision handler.
         for (const auto &i : snapshot)
             if (i->alive && has_collision_event(i->object))
                 for (const auto &j : snapshot)

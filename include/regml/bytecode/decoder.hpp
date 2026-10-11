@@ -57,7 +57,7 @@ struct Instruction {
     Opcode opcode{};
     DataType type1{}, type2{};
     std::uint8_t comparison = 0, extra = 0;
-    // Numeric immediates only; string/variable/function words remain unresolved.
+    // Symbol words are left for the linker.
     std::variant<std::monostate, std::int32_t, std::int64_t, double> immediate;
     std::optional<std::uint32_t> reference;
     std::optional<std::size_t> branch_target;
@@ -69,7 +69,7 @@ struct Program {
     std::vector<Instruction> instructions;
     std::unordered_map<std::size_t, std::size_t> index_by_offset;
 };
-// Decodes v15/v16 wire formats. Linking variables/functions is a later milestone.
+// v15/v16 only.
 struct DecodeLimits {
     std::size_t max_instructions = 1'000'000;
 };

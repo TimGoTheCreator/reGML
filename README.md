@@ -1,97 +1,104 @@
-# reGML
+﻿# reGML
 
 GameMaker VM runner in C++20
 
-Currently tested against Undertale, with incomplete compatibility and no verified full playthrough
+Bytecode 15 and 16, no YYC support
 
-Bring your own `data.win` and game assets
+Tested with Undertale on Windows and with the Wii U build in Cemu 2.6
+Linux builds are checked in CI
 
-<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/regml.png" alt="Undertale running in reGML" width="680">
-
-Undertale running in reGML
-
-## Requirements
-
-- C++20 compiler
-- libpng
-- libvorbisfile
-- SDL2 for windowed builds
-- CMake 3.24 or newer for CMake builds
-
-The Windows script expects dependencies in the compiler's toolchain prefix
-
-- `-SdlPrefix` to use SDL2 from another prefix
-- `-DependencyPrefix` to use PNG, Vorbis, and zlib from another prefix
-- `-NoVideo` for a headless build
+Compatibility is incomplete, no full playthrough verified
+Wii U hardware is untested and particle effects are slow
 
 ## Build
 
-Windows PowerShell:
+Requires C++20, CMake 3.24+, libpng, zlib, libvorbisfile and SDL2
+
+### Windows
 
 ```powershell
 .\tools\build.ps1 -Configuration Release -Test
 ```
 
-CMake:
+Dependencies default to the compiler's toolchain prefix
+Use `-DependencyPrefix <path>` for PNG, Vorbis and zlib, and `-SdlPrefix <path>` for SDL2
+Use `-NoVideo` for a headless build
+
+### CMake
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-ctest --test-dir build --output-on-failure
+cmake --build build --config Release
+ctest --test-dir build --output-on-failure -C Release
 ```
 
-Headless: `-DREGML_SDL2=OFF`
-
-## Wii U
-
-Install devkitPro, then run this in its MSYS2 terminal:
-
-```sh
-pacman -Syu
-pacman -S --needed cmake ninja wiiu-dev wiiu-sdl2 ppc-libpng ppc-libvorbis
-/opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake -S . -B build-wiiu -DCMAKE_BUILD_TYPE=Release -DREGML_WIIU=ON -DBUILD_TESTING=OFF
-cmake --build build-wiiu --config Release
-```
-
-Run the build commands from the repository root
-
-- Aroma: copy `build-wiiu/regml.wuhb` to `sd:/wiiu/apps/reGML/` and launch through Homebrew on Menu
-- Tiramisu: copy `build-wiiu/regml.rpx` to `sd:/wiiu/apps/reGML/` and launch through the Homebrew Launcher
-- Put your game's `data.win` and external audio files in `sd:/reGML/`
-- Saves go to `sd:/wiiu/apps/reGML/saves/`
-
-For Cemu 2.6, put the game files in `sdcard/reGML/` inside the Cemu folder, then open `build-wiiu/regml.wuhb` with File > Load
-
-In Cemu, configure an emulated Wii U GamePad in Input settings and enable TV audio in General settings > Audio
-
-Controls: D-pad for movement, A for Z, B for X, X/Y for C, Start for Enter
-
-Tested in Cemu 2.6, real hardware untested, performance still poor in some scenes
-
-Tracing and scripted input: [docs/wiiu.md](docs/wiiu.md)
+For headless builds, add `-DREGML_SDL2=OFF` when configuring
 
 ## Run
-
 
 ```powershell
 .\build\direct\regml.exe run 'C:\path\to\data.win'
 ```
 
-4x speed:
+Keep external audio files in the same directory as `data.win`
+Game files are not included
+
+The PowerShell build outputs `build/direct/regml.exe`
+CMake outputs `build/regml`, `build/regml.exe` or `build/Release/regml.exe`
+
+For 4x speed:
 
 ```powershell
 .\build\direct\regml.exe run 'C:\path\to\data.win' --speed 4x
 ```
 
-`--speed`: `0.01`–`1000`, fractions allowed, optional `x` suffix
+`--speed` accepts values from `0.01` to `1000`, with an optional `x` suffix
+Hidden and headless runs have no frame delay
 
-Hidden and headless runs use no real-time pacing
+## Wii U
 
-Keep the game's external audio files alongside `data.win`
+Install devkitPro and run these in its MSYS2 terminal
+Run the build commands from the repository root
 
-CMake output: `build/regml`, `build/regml.exe`, or `build/Release/regml.exe`, depending on platform and generator
+```sh
+pacman -Syu
+pacman -S --needed cmake ninja wiiu-dev wiiu-sdl2 ppc-libpng ppc-libvorbis
 
-## Inspect
+/opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake -S . -B build-wiiu -DCMAKE_BUILD_TYPE=Release -DREGML_WIIU=ON -DBUILD_TESTING=OFF
+cmake --build build-wiiu --config Release
+```
+
+Outputs: `build-wiiu/regml.rpx` and `build-wiiu/regml.wuhb`
+
+### SD card
+
+Put `data.win` and external audio files in `sd:/reGML/`
+
+- Aroma: copy `regml.wuhb` to `sd:/wiiu/apps/reGML/` and launch with Homebrew on Menu
+- Tiramisu: copy `regml.rpx` to `sd:/wiiu/apps/reGML/` and launch with the Homebrew Launcher
+
+Saves: `sd:/wiiu/apps/reGML/saves/`
+
+### Cemu
+
+Tested with Cemu 2.6
+
+1. Put `data.win` and external audio files in `sdcard/reGML/` inside the Cemu directory
+2. Configure a Wii U GamePad in Input settings
+3. Enable TV audio in General settings > Audio
+4. Open `build-wiiu/regml.wuhb` through File > Load
+
+| Controller | GML key |
+| --- | --- |
+| D-pad | Arrow keys |
+| A | Z |
+| B | X |
+| X / Y | C |
+| Start | Enter |
+
+Trace logs and input scripts: [docs/wiiu.md](docs/wiiu.md)
+
+## Tools
 
 ```powershell
 .\build\direct\regml.exe inspect 'C:\path\to\data.win' --code --strings
@@ -99,15 +106,15 @@ CMake output: `build/regml`, `build/regml.exe`, or `build/Release/regml.exe`, de
 .\build\direct\regml.exe disasm 'C:\path\to\data.win' 0 --linked
 ```
 
-## Test
+## Tests
 
-Undertale checks:
+Undertale regression checks:
 
 ```powershell
 .\tools\test-undertale.ps1 -DataFile 'C:\path\to\data.win'
 ```
 
-Audio and collision mask tests:
+Audio decoding, mixing and collision mask checks:
 
 ```powershell
 cmake -S . -B build/audio-test -DREGML_UNDERTALE_DATA='C:\path\to\data.win'
@@ -115,12 +122,22 @@ cmake --build build/audio-test --config Release
 ctest --test-dir build/audio-test --output-on-failure -C Release
 ```
 
-Audio coverage: decoding and mixing only
+Audio tests do not check playback through a physical output device
 
 ## Contributing
 
-- Include the game version, reproduction steps, and runner error in bug reports
-- Keep fixes general to GameMaker
-- Add regression tests where practical
-- Build and run tests before submitting a PR
-- No game files, extracted assets, saves, or screenshots in commits
+Include the game version, reproduction steps and error output in bug reports
+Keep runtime fixes general to GameMaker
+Build and run the relevant tests before submitting changes
+
+Do not commit game files, extracted assets, saves or screenshots
+
+## Screenshots
+
+Undertale on desktop
+
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/regml.png" alt="Undertale running in reGML on desktop" width="680">
+
+Undertale with the Wii U build in Cemu
+
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/wiiu.png" alt="Undertale running in reGML's Wii U build in Cemu" width="680">

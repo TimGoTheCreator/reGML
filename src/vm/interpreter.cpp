@@ -158,7 +158,7 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                 throw Error(ErrorKind::vm, "not enough call arguments on the stack", absolute);
             std::vector<Value> arguments;
             arguments.reserve(count);
-            // VM call arguments are pushed in reverse order; argument zero is popped first.
+            // Argument zero is at the top of the stack.
             for (std::size_t i = 0; i < count; ++i)
                 arguments.push_back(pop());
             try {

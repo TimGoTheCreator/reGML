@@ -6,7 +6,7 @@
 #include <span>
 #include <string_view>
 namespace regml {
-// Method offsets are relative to this view; errors retain absolute file offsets.
+// Reads use view-relative offsets; errors use file offsets.
 class BinaryView {
 public:
     explicit BinaryView(std::span<const std::uint8_t> bytes, std::size_t origin = 0)

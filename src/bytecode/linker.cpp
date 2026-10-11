@@ -17,7 +17,7 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits) {
         result.programs.push_back(decode(package.code_bytes(i), version));
         const auto &program = result.programs.back();
         result.instruction_count += program.instructions.size();
-        // Keep total work bounded independently of per-program decoder limits.
+        // Decoder limits apply per program; bound the package total too.
         if (result.instruction_count > 10'000'000)
             throw Error(ErrorKind::unsupported, "package instruction limit exceeded");
         for (const auto &ins : program.instructions) {
@@ -63,7 +63,7 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits) {
             throw Error(ErrorKind::malformed, "truncated function table", chunk->data_offset);
         for (std::size_t i = 0; i < count; ++i)
             result.functions.push_back(read_symbol(chunk->data_offset + 4 + i * 12, false));
-        // The remaining legacy FUNC code-local records are not needed to resolve chains.
+        // FUNC local records do not affect chain resolution.
     }
     auto resolve = [&](const std::vector<PackageSymbol> &symbols, bool variable) {
         auto &bindings = variable ? result.variable_at : result.function_at;

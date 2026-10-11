@@ -180,7 +180,7 @@ Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
                 ins.environment_exit = true;
                 break;
             }
-            // v15+ encodes a signed 23-bit word displacement relative to this instruction.
+            // Signed 23-bit displacement in words, relative to this instruction.
             if ((encoded & 0x800000) != 0)
                 throw Error(ErrorKind::malformed, "invalid branch sign encoding", code.origin() + offset);
             auto words = static_cast<std::int64_t>(encoded & 0x7fffff);

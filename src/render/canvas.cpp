@@ -12,7 +12,7 @@ void finite(double value) {
     if (!std::isfinite(value))
         throw Error(ErrorKind::vm, "drawing coordinate must be finite");
 }
-// Original 5x7 bitmap glyphs: one row per byte, most significant of five bits first.
+// 5x7 glyphs, one row per byte, most significant bit first.
 std::array<unsigned, 7> glyph(char c) {
     if (c >= 'a' && c <= 'z')
         c = static_cast<char>(c - 'a' + 'A');
@@ -158,11 +158,9 @@ void Canvas::draw_surface(const Canvas &source, double x, double y, double sx, d
     finite(opacity);
     if (sx == 0 || sy == 0 || source.width_ == 0 || source.height_ == 0)
         return;
-    // The common GameMaker sprite path is an unscaled, unrotated, untinted draw.
-    // Avoid per-pixel trigonometry, rounding, and the general alpha compositor there.
-    // Keep self-blits on the generic path because they can overlap in-place.
+    // Overlapping self-blits need the generic path.
     if (this != &source && sx == 1 && sy == 1 && angle == 0 && tint == 0xffffff && opacity == 1) {
-        // Fully off-screen surfaces can be rejected before converting coordinates to int.
+        // Cull before narrowing coordinates to int.
         if (x < -static_cast<double>(source.width_) - 1 || x > width_ + 1.0 ||
             y < -static_cast<double>(source.height_) - 1 || y > height_ + 1.0)
             return;
@@ -249,7 +247,6 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
     finite(y1);
     finite(x2);
     finite(y2);
-    // Half-open pixel coverage is the fixture profile, not a claim about all GM versions.
     const auto left = std::floor(std::min(x1, x2)), right = std::ceil(std::max(x1, x2));
     const auto top = std::floor(std::min(y1, y2)), bottom = std::ceil(std::max(y1, y2));
     const int l = static_cast<int>(std::clamp(left, 0.0, static_cast<double>(width_)));
