@@ -3,6 +3,7 @@ param(
     [ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug',
     [switch]$Test,
     [string]$SdlPrefix = '',
+    [string]$DependencyPrefix = '',
     [switch]$NoVideo,
     [switch]$AppOnly
 )
@@ -30,14 +31,27 @@ if (-not $NoVideo) {
     $videoFlags = @('-DREGML_WITH_SDL2=1', '-DSDL_MAIN_HANDLED', '-I', (Join-Path $SdlPrefix 'include'))
     $videoLibraries = @('-L', (Join-Path $SdlPrefix 'lib'), '-lSDL2')
 }
-$pngPrefix = Split-Path -Parent (Split-Path -Parent $compilerCommand.Source)
-$pngFlags = @('-I', (Join-Path $pngPrefix 'include'), '-L', (Join-Path $pngPrefix 'lib'), '-lpng', '-lvorbisfile')
+if ($DependencyPrefix -eq '') { $DependencyPrefix = Split-Path -Parent (Split-Path -Parent $compilerCommand.Source) }
+$pngPrefix = $DependencyPrefix
+function Find-DependencyLibrary([string[]]$Names) {
+    foreach ($name in $Names) {
+        $candidate = Join-Path $DependencyPrefix "lib\$name"
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+    throw "Missing dependency library in $DependencyPrefix\lib: $($Names -join ', ')"
+}
+$pngFlags = @('-I', (Join-Path $pngPrefix 'include'),
+    (Find-DependencyLibrary @('libpng16.lib', 'png.lib', 'libpng.dll.a', 'libpng.a')),
+    (Find-DependencyLibrary @('vorbisfile.lib', 'libvorbisfile.dll.a', 'libvorbisfile.a')),
+    (Find-DependencyLibrary @('vorbis.lib', 'libvorbis.dll.a', 'libvorbis.a')),
+    (Find-DependencyLibrary @('ogg.lib', 'libogg.dll.a', 'libogg.a')),
+    (Find-DependencyLibrary @('zlib.lib', 'libz.dll.a', 'libz.a')))
 & $compilerCommand.Source @flags @videoFlags @coreSources (Join-Path $projectRoot 'src\app\main.cpp') (Join-Path $projectRoot 'src\platform\sdl_host.cpp') @videoLibraries @pngFlags '-o' $appExe
 if ($LASTEXITCODE -ne 0) { throw "Application compilation failed: $LASTEXITCODE" }
 if (-not $NoVideo) { Copy-Item -LiteralPath $sdlDll -Destination (Join-Path $outputDir 'SDL2.dll') -Force }
-Copy-Item -LiteralPath (Join-Path $pngPrefix 'bin\libpng16-16.dll') -Destination $outputDir -Force
-Copy-Item -LiteralPath (Join-Path $pngPrefix 'bin\zlib1.dll') -Destination $outputDir -Force
-foreach ($audioDll in @('libvorbisfile-3.dll', 'libvorbis-0.dll', 'libogg-0.dll')) { Copy-Item -LiteralPath (Join-Path $pngPrefix "bin\$audioDll") -Destination $outputDir -Force }
+Get-ChildItem -LiteralPath (Join-Path $pngPrefix 'bin') -Filter '*.dll' -File |
+    Where-Object { $_.Name -match '^(lib)?(png\d*|vorbisfile|vorbis|ogg|zlib|z)(-\d+)?\.dll$' } |
+    Copy-Item -Destination $outputDir -Force
 if (-not $AppOnly -or $Test) {
     & $compilerCommand.Source @flags @coreSources (Join-Path $projectRoot 'tests\core_tests.cpp') @pngFlags '-o' $testExe
     if ($LASTEXITCODE -ne 0) { throw "Test compilation failed: $LASTEXITCODE" }

@@ -52,14 +52,14 @@ jobs:
         shell: pwsh
         run: |
           # Install dependencies required by the project
-          vcpkg install libpng libvorbis sdl2:x64-windows
+          vcpkg install libpng:x64-windows libvorbis:x64-windows sdl2:x64-windows
 
       - name: Run Build Script
         shell: pwsh
         run: |
           # Pass the vcpkg installed prefix to tools/build.ps1
           $vcpkgPrefix = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows"
-          .\tools\build.ps1 -Configuration Release -Test -SdlPrefix $vcpkgPrefix
+          .\tools\build.ps1 -Configuration Release -Test -SdlPrefix $vcpkgPrefix -DependencyPrefix $vcpkgPrefix
   # win
   build-windows-cmake:
     name: Windows / CMake (MSVC)
@@ -71,7 +71,7 @@ jobs:
 
       - name: Install dependencies via vcpkg
         run: |
-          vcpkg install libpng libvorbis sdl2:x64-windows
+          vcpkg install libpng:x64-windows libvorbis:x64-windows sdl2:x64-windows
 
       - name: Configure CMake
         run: |

@@ -15,13 +15,13 @@ Undertale running in reGML
 - C++20 compiler
 - libpng
 - libvorbisfile
-- pkg-config
 - SDL2 for windowed builds
 - CMake 3.24 or newer for CMake builds
 
 The Windows script expects dependencies in the compiler's toolchain prefix
 
 - `-SdlPrefix` to use SDL2 from another prefix
+- `-DependencyPrefix` to use PNG, Vorbis, and zlib from another prefix
 - `-NoVideo` for a headless build
 
 ## Build

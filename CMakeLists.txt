@@ -8,11 +8,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(REGML_SDL2 "Enable SDL2 windowed frontend" ON)
 set(REGML_UNDERTALE_DATA "" CACHE FILEPATH "Optional Undertale data.win path for audio integration testing")
 
-find_package(PkgConfig REQUIRED)
 find_package(PNG REQUIRED)
 find_package(ZLIB REQUIRED)
 
-pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
+find_path(VORBISFILE_INCLUDE_DIR NAMES vorbis/vorbisfile.h REQUIRED)
+find_library(VORBISFILE_LIBRARY NAMES vorbisfile REQUIRED)
+add_library(regml_vorbisfile UNKNOWN IMPORTED)
+set_target_properties(regml_vorbisfile PROPERTIES
+    IMPORTED_LOCATION "${VORBISFILE_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${VORBISFILE_INCLUDE_DIR}"
+)
 
 if(REGML_SDL2)
     find_package(SDL2 REQUIRED)
@@ -38,7 +43,7 @@ target_include_directories(regml_engine PUBLIC
 target_link_libraries(regml_engine PUBLIC
     PNG::PNG
     ZLIB::ZLIB
-    PkgConfig::VORBISFILE
+    regml_vorbisfile
 )
 
 if(REGML_SDL2)
