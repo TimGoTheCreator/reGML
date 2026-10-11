@@ -49,6 +49,7 @@ class GameAssets {
     };
     struct Region {
         int x = 0, y = 0, w = 0, h = 0, tx = 0, ty = 0, tw = 0, th = 0, page = 0;
+        mutable std::int8_t alpha_mode = -1;
     };
     struct Glyph {
         int x = 0, y = 0, w = 0, h = 0, shift = 0, offset = 0;
@@ -57,12 +58,15 @@ class GameAssets {
         std::size_t region = 0;
         int size = 0;
         std::unordered_map<unsigned, Glyph> glyphs;
+        const Region *atlas = nullptr;
     };
     const Package &package_;
     double view_x_ = 0, view_y_ = 0, view_sx_ = 1, view_sy_ = 1, port_x_ = 0, port_y_ = 0;
     std::vector<Sprite> sprites_;
     std::vector<Page> pages_;
     std::unordered_map<std::size_t, Region> regions_;
+    std::vector<std::vector<const Region *>> sprite_regions_;
+    std::vector<const Region *> background_regions_;
     std::vector<Font> fonts_;
     std::vector<std::size_t> backgrounds_;
     void load_page(int id);

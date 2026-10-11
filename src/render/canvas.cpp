@@ -132,10 +132,15 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
     if (x < 0 || y < 0 || x >= width_ || y >= height_)
         return;
     const unsigned source_alpha =
-        static_cast<unsigned>(std::lround(static_cast<double>(rgba >> 24) * std::clamp(opacity, 0.0, 1.0)));
+        opacity == 1 ? rgba >> 24
+                     : static_cast<unsigned>(std::lround(static_cast<double>(rgba >> 24) * std::clamp(opacity, 0.0, 1.0)));
     if (source_alpha == 0)
         return;
     auto &dest = pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
+    if (source_alpha == 255 && tint == 0xffffff) {
+        dest = rgba;
+        return;
+    }
     const unsigned destination_alpha = dest >> 24;
     const unsigned output_alpha = source_alpha + (destination_alpha * (255 - source_alpha) + 127) / 255;
     unsigned result = output_alpha << 24;
@@ -147,6 +152,62 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
         result |= ((premultiplied + output_alpha / 2) / output_alpha) << shift;
     }
     dest = result;
+}
+void Canvas::blit_rgba(std::span<const std::uint32_t> source, int source_width, int source_x, int source_y,
+                       int destination_x, int destination_y, int width, int height, unsigned tint,
+                       double opacity, std::int8_t source_alpha_mode) noexcept {
+    const bool plain = tint == 0xffffff && opacity == 1;
+    for (int row = 0; row < height; ++row) {
+        const auto *src = source.data() + static_cast<std::size_t>(source_y + row) *
+                                              static_cast<std::size_t>(source_width) +
+                          static_cast<std::size_t>(source_x);
+        auto *dst = pixels_.data() + static_cast<std::size_t>(destination_y + row) *
+                                        static_cast<std::size_t>(width_) +
+                    static_cast<std::size_t>(destination_x);
+        if (plain && source_alpha_mode == 2) {
+            std::copy_n(src, width, dst);
+            continue;
+        }
+        if (plain && source_alpha_mode == 1) {
+            int column = 0;
+            while (column < width) {
+                const int start = column;
+                if ((src[column] >> 24) == 255) {
+                    do {
+                        ++column;
+                    } while (column < width && (src[column] >> 24) == 255);
+                    std::copy_n(src + start, column - start, dst + start);
+                } else {
+                    do {
+                        ++column;
+                    } while (column < width && (src[column] >> 24) == 0);
+                }
+            }
+            continue;
+        }
+        for (int column = 0; column < width; ++column) {
+            const auto pixel = src[column];
+            const auto alpha = pixel >> 24;
+            if (alpha == 0)
+                continue;
+            if (plain && alpha == 255) {
+                dst[column] = pixel;
+                continue;
+            }
+            if (plain && (dst[column] >> 24) == 255) {
+                const unsigned inverse = 255 - alpha;
+                const auto previous = dst[column];
+                unsigned result = 0xff000000;
+                for (unsigned shift : {0U, 8U, 16U})
+                    result |= (((pixel >> shift & 255) * alpha + (previous >> shift & 255) * inverse + 127) /
+                               255)
+                              << shift;
+                dst[column] = result;
+                continue;
+            }
+            rgba_pixel_tinted(destination_x + column, destination_y + row, pixel, tint, opacity);
+        }
+    }
 }
 void Canvas::draw_surface(const Canvas &source, double x, double y, double sx, double sy, double angle,
                           std::uint32_t tint, double opacity) {

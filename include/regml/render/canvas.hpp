@@ -25,6 +25,9 @@ class Canvas {
     void triangle(double x1, double y1, double x2, double y2, double x3, double y3, bool outline);
     void draw_surface(const Canvas &source, double x, double y, double sx = 1, double sy = 1, double angle = 0,
                       std::uint32_t tint = 0xffffff, double opacity = 1);
+    void blit_rgba(std::span<const std::uint32_t> source, int source_width, int source_x, int source_y,
+                   int destination_x, int destination_y, int width, int height, unsigned tint,
+                   double opacity, std::int8_t source_alpha_mode = 0) noexcept;
     void text(double x, double y, std::string_view text);
     void rgba_pixel(int x, int y, std::uint32_t rgba, std::uint32_t bgr, double opacity);
     void rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, double opacity) noexcept;

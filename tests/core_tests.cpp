@@ -721,6 +721,46 @@ int main(int argc, char **argv) {
              error_is(regml::ErrorKind::vm, [&] { canvas.alpha(std::numeric_limits<double>::quiet_NaN()); });
              error_is(regml::ErrorKind::unsupported, [&] { regml::Canvas invalid(0, 16); });
          }},
+        {"sprite row blit matches per-pixel compositing",
+         [] {
+             const std::array<std::uint32_t, 12> source = {
+                 0x00000000, 0x01abcdef, 0x7f123456, 0xffabcdef, 0x80112233, 0xff010203,
+                 0x4000ff00, 0x00ffffff, 0xff804020, 0x7fffffff, 0xff000000, 0x20f0e0d0};
+             for (const auto [tint, opacity] :
+                  {std::pair{0xffffffU, 1.0}, std::pair{0x3366ccU, 1.0}, std::pair{0xffffffU, 0.37}}) {
+                 regml::Canvas fast(5, 4), reference(5, 4);
+                 fast.clear(0x342516);
+                 reference.clear(0x342516);
+                 fast.blit_rgba(source, 4, 1, 0, 0, 1, 3, 3, tint, opacity);
+                 for (int y = 0; y < 3; ++y)
+                     for (int x = 0; x < 3; ++x)
+                         reference.rgba_pixel_tinted(x, y + 1, source[static_cast<std::size_t>(y) * 4 + x + 1],
+                                                     tint, opacity);
+                 check(fast.hash() == reference.hash(), "specialized blit must preserve pixel compositing");
+             }
+             const std::array<std::uint32_t, 6> opaque = {0xff123456, 0xffabcdef, 0xff000000,
+                                                          0xfffedcba, 0xff654321, 0xffffffff};
+             regml::Canvas fast(3, 2), reference(3, 2);
+             fast.clear_transparent();
+             reference.clear_transparent();
+             fast.blit_rgba(opaque, 3, 0, 0, 0, 0, 3, 2, 0xffffff, 1, 2);
+             for (int y = 0; y < 2; ++y)
+                 for (int x = 0; x < 3; ++x)
+                     reference.rgba_pixel_tinted(x, y, opaque[static_cast<std::size_t>(y) * 3 + x], 0xffffff, 1);
+             check(fast.hash() == reference.hash(), "opaque row copy must match alpha compositing");
+             const std::array<std::uint32_t, 8> binary = {
+                 0x00000000, 0xff102030, 0xff405060, 0x00000000,
+                 0xff708090, 0x00000000, 0x00000000, 0xffa0b0c0};
+             regml::Canvas binary_fast(4, 2), binary_reference(4, 2);
+             binary_fast.clear(0x203040);
+             binary_reference.clear(0x203040);
+             binary_fast.blit_rgba(binary, 4, 0, 0, 0, 0, 4, 2, 0xffffff, 1, 1);
+             for (int y = 0; y < 2; ++y)
+                 for (int x = 0; x < 4; ++x)
+                     binary_reference.rgba_pixel_tinted(x, y, binary[static_cast<std::size_t>(y) * 4 + x],
+                                                        0xffffff, 1);
+             check(binary_fast.hash() == binary_reference.hash(), "binary-alpha runs must match compositing");
+         }},
         {"playable VM fixture controls, bounds and scoring",
          [] {
              regml::DemoSession demo;

@@ -3,6 +3,16 @@
 #include <cmath>
 #include <png.h>
 namespace regml {
+namespace {
+std::size_t frame_index(double frame, std::size_t count) {
+    if (frame >= 0 && frame < static_cast<double>(count))
+        return static_cast<std::size_t>(frame);
+    double wrapped = std::fmod(std::floor(frame), static_cast<double>(count));
+    if (wrapped < 0)
+        wrapped += static_cast<double>(count);
+    return static_cast<std::size_t>(wrapped);
+}
+} // namespace
 GameAssets::GameAssets(const Package &package) : package_(package) {
     const auto data = package.view();
     auto list = [&](std::size_t at, const Chunk &c) {
@@ -103,6 +113,18 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
         }
         fonts_.push_back(std::move(font));
     }
+    sprite_regions_.reserve(sprites_.size());
+    for (const auto &sprite : sprites_) {
+        auto &frame_regions = sprite_regions_.emplace_back();
+        frame_regions.reserve(sprite.frames.size());
+        for (const auto pointer : sprite.frames)
+            frame_regions.push_back(pointer ? &regions_.at(pointer) : nullptr);
+    }
+    background_regions_.reserve(backgrounds_.size());
+    for (const auto pointer : backgrounds_)
+        background_regions_.push_back(pointer ? &regions_.at(pointer) : nullptr);
+    for (auto &font : fonts_)
+        font.atlas = &regions_.at(font.region);
 }
 const GameAssets::Sprite &GameAssets::sprite(int id) const {
     if (id < 0 || static_cast<std::size_t>(id) >= sprites_.size())
@@ -128,7 +150,10 @@ std::pair<int, int> GameAssets::background_size(int id) const {
     const auto ptr = backgrounds_[static_cast<std::size_t>(id)];
     if (!ptr)
         return {0, 0};
-    const auto &r = regions_.at(ptr);
+    const auto *region = background_regions_[static_cast<std::size_t>(id)];
+    if (!region)
+        return {0, 0};
+    const auto &r = *region;
     return {r.tw, r.th};
 }
 void GameAssets::load_page(int id) {
@@ -159,9 +184,10 @@ void GameAssets::load_page(int id) {
                          (static_cast<unsigned>(rgba[i * 4 + 1]) << 8) | rgba[i * 4 + 2];
 }
 void GameAssets::prefetch(int id) {
-    for (auto r : sprite(id).frames)
-        if (r)
-            load_page(regions_.at(r).page);
+    (void)sprite(id);
+    for (const auto *region : sprite_regions_[static_cast<std::size_t>(id)])
+        if (region)
+            load_page(region->page);
 }
 void GameAssets::draw_background(Canvas &canvas, int id, double x, double y) {
     if (id < 0 || static_cast<std::size_t>(id) >= backgrounds_.size())
@@ -169,7 +195,10 @@ void GameAssets::draw_background(Canvas &canvas, int id, double x, double y) {
     const auto ptr = backgrounds_[static_cast<std::size_t>(id)];
     if (!ptr)
         return;
-    const auto &r = regions_.at(ptr);
+    const auto *region = background_regions_[static_cast<std::size_t>(id)];
+    if (!region)
+        return;
+    const auto &r = *region;
     blit(canvas, r, x + r.tx, y + r.ty, 1, 1, 0, 0xffffff, 1);
 }
 void GameAssets::draw_background_stretched(Canvas &canvas, int id, double x, double y, double width, double height) {
@@ -178,7 +207,10 @@ void GameAssets::draw_background_stretched(Canvas &canvas, int id, double x, dou
     const auto ptr = backgrounds_[static_cast<std::size_t>(id)];
     if (!ptr)
         return;
-    const auto &r = regions_.at(ptr);
+    const auto *region = background_regions_[static_cast<std::size_t>(id)];
+    if (!region)
+        return;
+    const auto &r = *region;
     if (r.tw > 0 && r.th > 0)
         blit(canvas, r, x, y, width / r.tw, height / r.th, 0, 0xffffff, 1);
 }
@@ -189,7 +221,10 @@ void GameAssets::draw_background_part_ext(Canvas &canvas, int id, double left, d
     const auto ptr = backgrounds_[static_cast<std::size_t>(id)];
     if (!ptr)
         return;
-    const auto &r = regions_.at(ptr);
+    const auto *region = background_regions_[static_cast<std::size_t>(id)];
+    if (!region)
+        return;
+    const auto &r = *region;
     const double l = std::max(0.0, left), t = std::max(0.0, top);
     const double rr = std::min(static_cast<double>(r.tw), left + width),
                  bb = std::min(static_cast<double>(r.th), top + height);
@@ -206,6 +241,7 @@ void GameAssets::draw_background_part_ext(Canvas &canvas, int id, double left, d
                 ir - ix,
                 ib - iy,
                 r.page};
+    crop.alpha_mode = r.alpha_mode;
     blit(canvas, crop, x + ix * sx, y + iy * sy, sx, sy, 0, color, alpha);
 }
 void GameAssets::draw_tile(Canvas &canvas, int id, int source_x, int source_y, int width, int height, double x,
@@ -215,13 +251,17 @@ void GameAssets::draw_tile(Canvas &canvas, int id, int source_x, int source_y, i
     const auto ptr = backgrounds_[static_cast<std::size_t>(id)];
     if (!ptr)
         return;
-    const auto &r = regions_.at(ptr);
+    const auto *region = background_regions_[static_cast<std::size_t>(id)];
+    if (!region)
+        return;
+    const auto &r = *region;
     const int left = std::max(source_x, r.tx), top = std::max(source_y, r.ty),
               right = std::min(source_x + width, r.tx + r.tw), bottom = std::min(source_y + height, r.ty + r.th);
     if (right <= left || bottom <= top)
         return;
     Region cut{r.x + (left - r.tx), r.y + (top - r.ty), right - left, bottom - top, 0, 0,
                right - left,        bottom - top,       r.page};
+    cut.alpha_mode = r.alpha_mode;
     blit(canvas, cut, x + (left - source_x) * sx, y + (top - source_y) * sy, sx, sy, 0, color & 0xffffff,
          static_cast<double>(color >> 24) / 255);
 }
@@ -253,6 +293,65 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
     const auto &page = pages_.at(static_cast<std::size_t>(r.page));
     if (r.x < 0 || r.y < 0 || r.x + r.w > page.width || r.y + r.h > page.height)
         throw Error(ErrorKind::malformed, "texture region outside page");
+    const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
+    std::int8_t source_alpha_mode = 0;
+    if (tint == 0xffffff && alpha == 1 && angle == 0 && sx == 1 && sy == 1 && r.tw == r.w && r.th == r.h) {
+        if (r.alpha_mode < 0) {
+            r.alpha_mode = 2;
+            for (int row = 0; row < r.h && r.alpha_mode != 0; ++row) {
+                const auto at = static_cast<std::size_t>(r.y + row) * static_cast<std::size_t>(page.width) +
+                                static_cast<std::size_t>(r.x);
+                for (int column = 0; column < r.w; ++column) {
+                    const auto pixel_alpha = page.pixels[at + static_cast<std::size_t>(column)] >> 24;
+                    if (pixel_alpha == 0)
+                        r.alpha_mode = 1;
+                    else if (pixel_alpha != 255) {
+                        r.alpha_mode = 0;
+                        break;
+                    }
+                }
+            }
+        }
+        source_alpha_mode = r.alpha_mode;
+    }
+    if (angle == 0 && sx == 1 && sy == 1 && r.tw == r.w && r.th == r.h) {
+        const auto left = std::clamp(std::ceil(x - 0.5), 0.0, static_cast<double>(canvas.width()));
+        const auto top = std::clamp(std::ceil(y - 0.5), 0.0, static_cast<double>(canvas.height()));
+        const auto right = std::clamp(std::ceil(x + r.tw - 0.5), 0.0, static_cast<double>(canvas.width()));
+        const auto bottom = std::clamp(std::ceil(y + r.th - 0.5), 0.0, static_cast<double>(canvas.height()));
+        const int dx = static_cast<int>(left), dy = static_cast<int>(top);
+        const int width = static_cast<int>(right) - dx, height = static_cast<int>(bottom) - dy;
+        if (width <= 0 || height <= 0)
+            return;
+        const int source_x = static_cast<int>(std::floor(dx + 0.5 - x));
+        const int source_y = static_cast<int>(std::floor(dy + 0.5 - y));
+        canvas.blit_rgba(page.pixels, page.width, r.x + source_x, r.y + source_y, dx, dy, width, height,
+                         tint, alpha, source_alpha_mode);
+        return;
+    }
+    if (angle == 0 && sx > 0 && sy > 0) {
+        const double w = r.tw * sx, h = r.th * sy;
+        const int left = static_cast<int>(std::clamp(std::ceil(x - 0.5), 0.0, static_cast<double>(canvas.width())));
+        const int top = static_cast<int>(std::clamp(std::ceil(y - 0.5), 0.0, static_cast<double>(canvas.height())));
+        const int right = static_cast<int>(
+            std::clamp(std::ceil(x + w - 0.5), 0.0, static_cast<double>(canvas.width())));
+        const int bottom = static_cast<int>(
+            std::clamp(std::ceil(y + h - 0.5), 0.0, static_cast<double>(canvas.height())));
+        if (left >= right || top >= bottom)
+            return;
+        for (int dy = top; dy < bottom; ++dy) {
+            const double ty = (dy + 0.5 - y) / sy;
+            const int uy = r.y + static_cast<int>(ty * r.h / r.th);
+            const auto row = static_cast<std::size_t>(uy) * static_cast<std::size_t>(page.width);
+            for (int dx = left; dx < right; ++dx) {
+                const double tx = (dx + 0.5 - x) / sx;
+                const int ux = r.x + static_cast<int>(tx * r.w / r.tw);
+                const auto pixel = page.pixels[row + static_cast<std::size_t>(ux)];
+                canvas.rgba_pixel_tinted(dx, dy, pixel, tint, alpha);
+            }
+        }
+        return;
+    }
     const auto radians = angle * 3.141592653589793 / 180;
     const auto c = std::cos(radians), s = std::sin(radians);
     const double w = r.tw * sx, h = r.th * sy;
@@ -266,7 +365,6 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
         std::clamp(std::floor(*std::min_element(yy, yy + 4)), 0.0, static_cast<double>(canvas.height())));
     const auto bottom = static_cast<int>(
         std::clamp(std::ceil(*std::max_element(yy, yy + 4)), 0.0, static_cast<double>(canvas.height())));
-    const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
     for (int dy = top; dy < bottom; ++dy)
         for (int dx = left; dx < right; ++dx) {
             const auto px = dx + 0.5 - x, py = dy + 0.5 - y;
@@ -287,16 +385,19 @@ void GameAssets::draw_sprite(Canvas &canvas, int id, double frame, double x, dou
         return;
     if (!std::isfinite(frame))
         throw Error(ErrorKind::vm, "nonfinite sprite frame");
-    const auto index =
-        static_cast<std::size_t>(std::fmod(std::floor(frame) + static_cast<double>(spr.frames.size()) * 1'000'000,
-                                           static_cast<double>(spr.frames.size())));
-    const auto pointer = spr.frames.at(index);
-    if (!pointer)
+    const auto index = frame_index(frame, spr.frames.size());
+    const auto *region = sprite_regions_[static_cast<std::size_t>(id)][index];
+    if (!region)
         return;
-    const auto &r = regions_.at(pointer);
-    const double ox = (r.tx - spr.ox) * sx, oy = (r.ty - spr.oy) * sy, rad = angle * 3.141592653589793 / 180;
-    blit(canvas, r, x + ox * std::cos(rad) + oy * std::sin(rad), y - ox * std::sin(rad) + oy * std::cos(rad), sx, sy,
-         angle, color, alpha);
+    const auto &r = *region;
+    const double ox = (r.tx - spr.ox) * sx, oy = (r.ty - spr.oy) * sy;
+    if (angle == 0) {
+        blit(canvas, r, x + ox, y + oy, sx, sy, 0, color, alpha);
+        return;
+    }
+    const double rad = angle * 3.141592653589793 / 180;
+    blit(canvas, r, x + ox * std::cos(rad) + oy * std::sin(rad), y - ox * std::sin(rad) + oy * std::cos(rad), sx,
+         sy, angle, color, alpha);
 }
 void GameAssets::draw_sprite_part(Canvas &canvas, int id, double frame, double left, double top, double width,
                                   double height, double x, double y, double sx, double sy, unsigned color,
@@ -308,13 +409,11 @@ void GameAssets::draw_sprite_part(Canvas &canvas, int id, double frame, double l
         throw Error(ErrorKind::vm, "nonfinite sprite-part argument");
     if (width <= 0 || height <= 0 || sx == 0 || sy == 0)
         return;
-    const auto index =
-        static_cast<std::size_t>(std::fmod(std::floor(frame) + static_cast<double>(spr.frames.size()) * 1'000'000,
-                                           static_cast<double>(spr.frames.size())));
-    const auto pointer = spr.frames.at(index);
-    if (!pointer)
+    const auto index = frame_index(frame, spr.frames.size());
+    const auto *region = sprite_regions_[static_cast<std::size_t>(id)][index];
+    if (!region)
         return;
-    const auto &r = regions_.at(pointer);
+    const auto &r = *region;
     const double l = std::max({left, 0.0, static_cast<double>(r.tx)}),
                  t = std::max({top, 0.0, static_cast<double>(r.ty)});
     const double rr = std::min({left + width, static_cast<double>(spr.width), static_cast<double>(r.tx + r.tw)}),
@@ -332,6 +431,7 @@ void GameAssets::draw_sprite_part(Canvas &canvas, int id, double frame, double l
                 ir - ix,
                 ib - iy,
                 r.page};
+    crop.alpha_mode = r.alpha_mode;
     blit(canvas, crop, x + (ix - spr.ox) * sx, y + (iy - spr.oy) * sy, sx, sy, 0, color, alpha);
 }
 double GameAssets::text_width(int font, std::string_view text) const {
@@ -362,10 +462,11 @@ void GameAssets::draw_text(Canvas &canvas, int font, double x, double y, std::st
         return;
     }
     const auto &f = fonts_[static_cast<std::size_t>(font)];
-    const auto &atlas = regions_.at(f.region);
+    const auto &atlas = *f.atlas;
     const double start = -text_width(font, text) * halign / 2.0;
     double lx = start, ly = -text_height(font) * valign / 2.0;
-    const auto rad = angle * 3.141592653589793 / 180, c = std::cos(rad), s = std::sin(rad);
+    const auto rad = angle * 3.141592653589793 / 180;
+    const auto c = angle == 0 ? 1.0 : std::cos(rad), s = angle == 0 ? 0.0 : std::sin(rad);
     for (char raw : text) {
         const auto ch = static_cast<unsigned char>(raw);
         if (ch == '\n' || ch == '#') {

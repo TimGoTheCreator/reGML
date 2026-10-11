@@ -658,6 +658,7 @@ struct GameSession::Impl {
         }
         std::vector<Value> stack;
         std::size_t pc = 0;
+        std::size_t instruction_index = 0;
         struct Environment {
             InstancePtr saved, saved_other;
             std::vector<InstancePtr> choices;
@@ -681,7 +682,7 @@ struct GameSession::Impl {
                 if (++event_budget > 2'000'000)
                     throw Error(ErrorKind::vm, "event instruction budget exhausted", program.origin + pc);
                 ++instruction_count;
-                const auto &ins = program.instructions.at(program.index_by_offset.at(pc));
+                const auto &ins = program.instructions[instruction_index];
                 std::size_t next = pc + ins.size;
                 auto variable = [&](bool writing, Value value = std::monostate{}) -> Value {
                     const auto address = program.origin + pc;
@@ -1048,6 +1049,10 @@ struct GameSession::Impl {
                     throw Error(ErrorKind::unsupported,
                                 "native opcode pending: " + std::string(opcode_name(ins.opcode)));
                 }
+                if (next != pc + ins.size && next != program.byte_length)
+                    instruction_index = program.index_by_offset.at(next);
+                else
+                    ++instruction_index;
                 pc = next;
             }
         } catch (const Error &e) {
@@ -2604,19 +2609,33 @@ struct GameSession::Impl {
         for (auto &i : snapshot)
             if (i->alive && !i->deactivated) {
                 double h = value_number(i->vars.at("hspeed")), v = value_number(i->vars.at("vspeed"));
-                const double speed = std::hypot(h, v), friction = value_number(i->vars.at("friction"));
-                if (speed != 0) {
+                const double friction = value_number(i->vars.at("friction"));
+                if (friction != 0 && (h != 0 || v != 0)) {
+                    const double speed = std::hypot(h, v);
                     const double next = std::max(0.0, speed - friction);
                     h *= next / speed;
                     v *= next / speed;
                 }
-                const double gravity = value_number(i->vars.at("gravity")),
-                             angle = value_number(i->vars.at("gravity_direction")) * 3.141592653589793 / 180;
-                h += gravity * std::cos(angle);
-                v -= gravity * std::sin(angle);
+                const double gravity = value_number(i->vars.at("gravity"));
+                if (gravity != 0) {
+                    const double direction = value_number(i->vars.at("gravity_direction"));
+                    if (direction == 0 || direction == 360)
+                        h += gravity;
+                    else if (direction == 90)
+                        v -= gravity;
+                    else if (direction == 180)
+                        h -= gravity;
+                    else if (direction == 270)
+                        v += gravity;
+                    else {
+                        const double angle = direction * 3.141592653589793 / 180;
+                        h += gravity * std::cos(angle);
+                        v -= gravity * std::sin(angle);
+                    }
+                }
                 i->vars["hspeed"] = h;
                 i->vars["vspeed"] = v;
-                i->vars["speed"] = std::hypot(h, v);
+                i->vars["speed"] = h == 0 && v == 0 ? 0 : std::hypot(h, v);
                 if (h != 0 || v != 0)
                     i->vars["direction"] = std::fmod(std::atan2(-v, h) * 180 / 3.141592653589793 + 360, 360);
                 const int path_id = number(i->vars.at("path_index"));
