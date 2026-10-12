@@ -719,6 +719,10 @@ int main(int argc, char **argv) {
              composite.clear(0);
              composite.draw_surface(surface, -1, 1);
              check(composite.pixel(0, 1) == 0xffff0000, "fast surface path clips and blends correctly");
+             const auto unchanged = composite.hash();
+             composite.draw_surface(surface, 1, 1, -4, 4, 37, 0x3366cc, 0);
+             composite.draw_surface(surface, 1, 1, 2, -2, 0, 0xffffff, -0.2);
+             check(composite.hash() == unchanged, "invisible surface draws preserve the destination");
              error_is(regml::ErrorKind::vm, [&] { canvas.alpha(std::numeric_limits<double>::quiet_NaN()); });
              error_is(regml::ErrorKind::unsupported, [&] { regml::Canvas invalid(0, 16); });
          }},
@@ -763,13 +767,34 @@ int main(int argc, char **argv) {
                              check(fast.hash() == reference.hash(), "rectangle span changed coverage or blending");
                          }
          }},
+        {"pixel spans preserve clipping and source-over compositing",
+         [] {
+             for (const auto pixel : {0x00112233U, 0x017f2345U, 0x7fabcd12U, 0xff123456U})
+                 for (unsigned tint : {0xffffffU, 0x3366ccU})
+                     for (double opacity : {0.0, 0.37, 1.0, 2.0})
+                         for (int x : {-7, -1, 0, 4, 7}) {
+                             regml::Canvas actual(7, 2), expected(7, 2);
+                             actual.clear_transparent();
+                             expected.clear_transparent();
+                             for (int dx = 0; dx < 7; ++dx) {
+                                 const unsigned alpha = dx % 2 ? 255 : 96;
+                                 actual.rgba_pixel_tinted(dx, 1, (alpha << 24) | 0xabc123, 0xffffff, 1);
+                                 expected.rgba_pixel_tinted(dx, 1, (alpha << 24) | 0xabc123, 0xffffff, 1);
+                             }
+                             actual.rgba_span(x, 1, 6, pixel, tint, opacity);
+                             for (int dx = x; dx < x + 6; ++dx)
+                                 expected.rgba_pixel_tinted(dx, 1, pixel, tint, opacity);
+                             check(actual.hash() == expected.hash(), "span changed pixel compositing or clipping");
+                         }
+         }},
         {"sprite row blit matches per-pixel compositing",
          [] {
              const std::array<std::uint32_t, 12> source = {
                  0x00000000, 0x01abcdef, 0x7f123456, 0xffabcdef, 0x80112233, 0xff010203,
                  0x4000ff00, 0x00ffffff, 0xff804020, 0x7fffffff, 0xff000000, 0x20f0e0d0};
              for (const auto [tint, opacity] :
-                  {std::pair{0xffffffU, 1.0}, std::pair{0x3366ccU, 1.0}, std::pair{0xffffffU, 0.37}}) {
+                  {std::pair{0xffffffU, 1.0}, std::pair{0x3366ccU, 1.0}, std::pair{0xffffffU, 0.37},
+                   std::pair{0x3366ccU, 0.0}, std::pair{0xffffffU, -0.2}}) {
                  regml::Canvas fast(5, 4), reference(5, 4);
                  fast.clear(0x342516);
                  reference.clear(0x342516);

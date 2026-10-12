@@ -13,6 +13,7 @@ struct PlayOptions {
     std::filesystem::path screenshot;
     std::filesystem::path input_script;
     std::filesystem::path trace_log;
+    std::filesystem::path profile_log;
     std::optional<std::uint32_t> seed;
     std::filesystem::path save_directory;
 };

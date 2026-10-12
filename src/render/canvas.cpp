@@ -137,8 +137,15 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
     if (source_alpha == 0)
         return;
     auto &dest = pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
-    if (source_alpha == 255 && tint == 0xffffff) {
-        dest = rgba;
+    if (source_alpha == 255) {
+        if (tint == 0xffffff) {
+            dest = rgba;
+            return;
+        }
+        const unsigned red = ((rgba >> 16) & 255) * ((tint >> 16) & 255) / 255;
+        const unsigned green = ((rgba >> 8) & 255) * ((tint >> 8) & 255) / 255;
+        const unsigned blue = (rgba & 255) * (tint & 255) / 255;
+        dest = 0xff000000 | (red << 16) | (green << 8) | blue;
         return;
     }
     const unsigned destination_alpha = dest >> 24;
@@ -150,9 +157,10 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
         const unsigned previous_red = (dest >> 16) & 255;
         const unsigned previous_green = (dest >> 8) & 255;
         const unsigned previous_blue = dest & 255;
-        dest = 0xff000000 | ((red * source_alpha + previous_red * inverse + 127) / 255 << 16) |
-               ((green * source_alpha + previous_green * inverse + 127) / 255 << 8) |
-               ((blue * source_alpha + previous_blue * inverse + 127) / 255);
+        const unsigned output_red = (red * source_alpha + previous_red * inverse + 127) / 255;
+        const unsigned output_green = (green * source_alpha + previous_green * inverse + 127) / 255;
+        const unsigned output_blue = (blue * source_alpha + previous_blue * inverse + 127) / 255;
+        dest = 0xff000000 | (output_red << 16) | (output_green << 8) | output_blue;
         return;
     }
     const unsigned output_alpha = source_alpha + (destination_alpha * (255 - source_alpha) + 127) / 255;
@@ -166,9 +174,44 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
     }
     dest = result;
 }
+void Canvas::rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tint, double opacity) noexcept {
+    if (y < 0 || y >= height_ || count <= 0 || x >= width_ || opacity <= 0)
+        return;
+    const int end = static_cast<int>(std::min(static_cast<std::int64_t>(x) + count,
+                                            static_cast<std::int64_t>(width_)));
+    x = std::max(x, 0);
+    if (x >= end)
+        return;
+    const unsigned alpha = opacity == 1 ? rgba >> 24
+        : static_cast<unsigned>(static_cast<double>(rgba >> 24) * std::clamp(opacity, 0.0, 1.0) + 0.5);
+    if (!alpha)
+        return;
+    const unsigned red = ((rgba >> 16) & 255) * ((tint >> 16) & 255) / 255;
+    const unsigned green = ((rgba >> 8) & 255) * ((tint >> 8) & 255) / 255;
+    const unsigned blue = (rgba & 255) * (tint & 255) / 255;
+    auto *row = pixels_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width_);
+    if (alpha == 255) {
+        std::fill(row + x, row + end, 0xff000000 | (red << 16) | (green << 8) | blue);
+        return;
+    }
+    const unsigned inverse = 255 - alpha;
+    const unsigned source_red = red * alpha, source_green = green * alpha, source_blue = blue * alpha;
+    for (; x < end; ++x) {
+        const auto previous = row[x];
+        if ((previous >> 24) != 255) {
+            rgba_pixel_tinted(x, y, rgba, tint, opacity);
+            continue;
+        }
+        row[x] = 0xff000000 | (((source_red + ((previous >> 16) & 255) * inverse + 127) / 255) << 16) |
+                 (((source_green + ((previous >> 8) & 255) * inverse + 127) / 255) << 8) |
+                 ((source_blue + (previous & 255) * inverse + 127) / 255);
+    }
+}
 void Canvas::blit_rgba(std::span<const std::uint32_t> source, int source_width, int source_x, int source_y,
                        int destination_x, int destination_y, int width, int height, unsigned tint,
                        double opacity, std::int8_t source_alpha_mode) noexcept {
+    if (opacity <= 0)
+        return;
     const bool plain = tint == 0xffffff && opacity == 1;
     for (int row = 0; row < height; ++row) {
         const auto *src = source.data() + static_cast<std::size_t>(source_y + row) *
@@ -230,7 +273,7 @@ void Canvas::draw_surface(const Canvas &source, double x, double y, double sx, d
     finite(sy);
     finite(angle);
     finite(opacity);
-    if (sx == 0 || sy == 0 || source.width_ == 0 || source.height_ == 0)
+    if (sx == 0 || sy == 0 || source.width_ == 0 || source.height_ == 0 || opacity <= 0)
         return;
     // Overlapping self-blits need the generic path.
     if (this != &source && sx == 1 && sy == 1 && angle == 0 && tint == 0xffffff && opacity == 1) {

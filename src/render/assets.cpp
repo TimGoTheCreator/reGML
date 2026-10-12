@@ -293,7 +293,7 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
     sy *= view_sy_;
     if (!std::isfinite(x + y + sx + sy + angle + alpha))
         throw Error(ErrorKind::vm, "nonfinite sprite transform");
-    if (sx == 0 || sy == 0 || r.w == 0 || r.h == 0)
+    if (sx == 0 || sy == 0 || r.w == 0 || r.h == 0 || alpha <= 0)
         return;
     load_page(r.page);
     const auto &page = pages_.at(static_cast<std::size_t>(r.page));
@@ -301,7 +301,7 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
         throw Error(ErrorKind::malformed, "texture region outside page");
     const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
     std::int8_t source_alpha_mode = 0;
-    if (tint == 0xffffff && alpha == 1 && angle == 0 && sx > 0 && sy > 0 && r.tw == r.w && r.th == r.h) {
+    if (tint == 0xffffff && alpha == 1 && angle == 0 && r.tw == r.w && r.th == r.h) {
         if (r.alpha_mode < 0) {
             r.alpha_mode = 2;
             for (int row = 0; row < r.h && r.alpha_mode != 0; ++row) {
@@ -335,14 +335,19 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
                          tint, alpha, source_alpha_mode);
         return;
     }
-    if (angle == 0 && sx > 0 && sy > 0) {
+    if (angle == 0) {
         const double w = r.tw * sx, h = r.th * sy;
-        const int left = static_cast<int>(std::clamp(std::ceil(x - 0.5), 0.0, static_cast<double>(canvas.width())));
-        const int top = static_cast<int>(std::clamp(std::ceil(y - 0.5), 0.0, static_cast<double>(canvas.height())));
+        // A reflected axis includes the origin edge and excludes the far edge.
+        const double x_begin = sx > 0 ? std::ceil(x - 0.5) : std::floor(x + w - 0.5) + 1;
+        const double x_end = sx > 0 ? std::ceil(x + w - 0.5) : std::floor(x - 0.5) + 1;
+        const double y_begin = sy > 0 ? std::ceil(y - 0.5) : std::floor(y + h - 0.5) + 1;
+        const double y_end = sy > 0 ? std::ceil(y + h - 0.5) : std::floor(y - 0.5) + 1;
+        const int left = static_cast<int>(std::clamp(x_begin, 0.0, static_cast<double>(canvas.width())));
+        const int top = static_cast<int>(std::clamp(y_begin, 0.0, static_cast<double>(canvas.height())));
         const int right = static_cast<int>(
-            std::clamp(std::ceil(x + w - 0.5), 0.0, static_cast<double>(canvas.width())));
+            std::clamp(x_end, 0.0, static_cast<double>(canvas.width())));
         const int bottom = static_cast<int>(
-            std::clamp(std::ceil(y + h - 0.5), 0.0, static_cast<double>(canvas.height())));
+            std::clamp(y_end, 0.0, static_cast<double>(canvas.height())));
         if (left >= right || top >= bottom)
             return;
         auto destination = canvas.pixels();
@@ -362,9 +367,41 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
             scaled_y_[static_cast<std::size_t>(dy - top)] =
                 r.y + static_cast<int>(ty * r.h / r.th);
         }
+        const bool spans = std::abs(sx) >= 2 &&
+                           !(tint == 0xffffff && alpha == 1 && source_alpha_mode != 0);
+        if (spans) {
+            scaled_runs_.clear();
+            for (int dx = left; dx < right;) {
+                const int ux = scaled_x_[static_cast<std::size_t>(dx - left)];
+                int end = dx + 1;
+                while (end < right && scaled_x_[static_cast<std::size_t>(end - left)] == ux)
+                    ++end;
+                scaled_runs_.push_back({dx - left, end - dx, ux});
+                dx = end;
+            }
+        }
+        int previous_source_y = -1;
+        const double opacity = std::clamp(alpha, 0.0, 1.0);
         for (int dy = top; dy < bottom; ++dy) {
             const int uy = scaled_y_[static_cast<std::size_t>(dy - top)];
             const auto row = static_cast<std::size_t>(uy) * static_cast<std::size_t>(page.width);
+            if (spans) {
+                if (uy != previous_source_y) {
+                    for (auto &run : scaled_runs_) {
+                        const auto pixel = page.pixels[row + static_cast<std::size_t>(run.source_x)];
+                        const unsigned a = alpha == 1 ? pixel >> 24
+                            : static_cast<unsigned>(static_cast<double>(pixel >> 24) * opacity + 0.5);
+                        const unsigned red = ((pixel >> 16) & 255) * ((tint >> 16) & 255) / 255;
+                        const unsigned green = ((pixel >> 8) & 255) * ((tint >> 8) & 255) / 255;
+                        const unsigned blue = (pixel & 255) * (tint & 255) / 255;
+                        run.rgba = (a << 24) | (red << 16) | (green << 8) | blue;
+                    }
+                    previous_source_y = uy;
+                }
+                for (const auto &run : scaled_runs_)
+                    canvas.rgba_span(left + run.offset, dy, run.count, run.rgba, 0xffffff, 1);
+                continue;
+            }
             for (int dx = left; dx < right; ++dx) {
                 const int ux = scaled_x_[static_cast<std::size_t>(dx - left)];
                 const auto pixel = page.pixels[row + static_cast<std::size_t>(ux)];

@@ -74,6 +74,11 @@ class GameAssets {
     std::vector<std::size_t> backgrounds_;
     std::vector<int> scaled_x_;
     std::vector<int> scaled_y_;
+    struct ScaledRun {
+        int offset, count, source_x;
+        std::uint32_t rgba = 0;
+    };
+    std::vector<ScaledRun> scaled_runs_;
     void load_page(int id);
     void blit(Canvas &canvas, const Region &r, double x, double y, double sx, double sy, double angle, unsigned color,
               double alpha);

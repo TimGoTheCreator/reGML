@@ -40,6 +40,7 @@ void help() {
                  "  regml run <data.win> [--frames N] [--headless | --hidden]\n"
                  "                  [--screenshot output.bmp] [--input-script file]\n"
                  "                  [--seed N] [--save-dir directory] [--speed Nx] [--speed-control]\n"
+                 "                  [--profile-log file]\n"
                  "                  --speed-control enables [ / ] to halve or double speed during play.\n"
                  "                  Speed affects real-time playback; hidden/headless runs are unthrottled.\n"
                  "  regml --help | --version\n\n"
@@ -242,7 +243,7 @@ int command(int argc, char **argv) {
             else if (flag == "--speed-control")
                 options.speed_controls = true;
             else if (flag == "--frames" || flag == "--screenshot" || flag == "--input-script" || flag == "--seed" ||
-                     flag == "--save-dir" || flag == "--speed") {
+                     flag == "--save-dir" || flag == "--speed" || flag == "--profile-log") {
                 if (++i >= argc)
                     throw regml::Error(regml::ErrorKind::usage, "missing value for " + std::string(flag));
                 if (flag == "--frames") {
@@ -253,6 +254,8 @@ int command(int argc, char **argv) {
                     options.screenshot = argv[i];
                 else if (flag == "--save-dir")
                     options.save_directory = argv[i];
+                else if (flag == "--profile-log")
+                    options.profile_log = argv[i];
                 else if (flag == "--seed") {
                     const auto seed = parse_index(argv[i]);
                     if (seed > UINT32_MAX)
@@ -295,6 +298,8 @@ int main(int argc, char **argv) {
         options.input_script = game_directory / "regml-input.txt";
     if (std::filesystem::exists(game_directory / "regml-trace.enabled"))
         options.trace_log = game_directory / "regml-trace.log";
+    if (std::filesystem::exists(game_directory / "regml-profile.enabled"))
+        options.profile_log = game_directory / "regml-profile.csv";
     try {
         const auto report = regml::play_game(package, options);
         std::cout << "reGML Wii U\nFrames: " << report.frames << "\nVM instructions: " << report.instructions

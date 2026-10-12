@@ -14,6 +14,54 @@
 #endif
 namespace regml {
 namespace {
+class FrameProfileLog {
+  public:
+    explicit FrameProfileLog(const std::filesystem::path &path) {
+        if (path.empty())
+            return;
+        file_.open(path, std::ios::trunc);
+        if (!file_)
+            throw Error(ErrorKind::io, "frame profile cannot be opened");
+        file_ << "frame,room,samples,frame_ms,tick_ms,present_ms,max_tick_ms,max_present_ms,instructions_per_frame\n";
+        file_ << std::fixed << std::setprecision(3);
+    }
+    ~FrameProfileLog() { flush(); }
+    bool enabled() const noexcept { return file_.is_open(); }
+    void sample(std::size_t frame, const std::string &room, std::size_t instructions,
+                double frame_ms, double tick_ms, double present_ms) {
+        if (room != room_) {
+            flush();
+            room_ = room;
+        }
+        frame_ = frame;
+        ++samples_;
+        instructions_ += instructions;
+        frame_ms_ += frame_ms;
+        tick_ms_ += tick_ms;
+        present_ms_ += present_ms;
+        max_tick_ms_ = std::max(max_tick_ms_, tick_ms);
+        max_present_ms_ = std::max(max_present_ms_, present_ms);
+        if (samples_ == 30)
+            flush();
+    }
+  private:
+    void flush() {
+        if (!samples_)
+            return;
+        const auto count = static_cast<double>(samples_);
+        file_ << frame_ << ',' << std::quoted(room_) << ',' << samples_ << ','
+              << frame_ms_ / count << ',' << tick_ms_ / count << ',' << present_ms_ / count << ','
+              << max_tick_ms_ << ',' << max_present_ms_ << ','
+              << static_cast<double>(instructions_) / count << '\n';
+        file_.flush();
+        samples_ = instructions_ = 0;
+        frame_ms_ = tick_ms_ = present_ms_ = max_tick_ms_ = max_present_ms_ = 0;
+    }
+    std::ofstream file_;
+    std::string room_;
+    std::size_t frame_ = 0, samples_ = 0, instructions_ = 0;
+    double frame_ms_ = 0, tick_ms_ = 0, present_ms_ = 0, max_tick_ms_ = 0, max_present_ms_ = 0;
+};
 #if REGML_WITH_SDL2
 void sdl_ok(int status, std::string_view operation) {
     if (status < 0)
@@ -308,6 +356,7 @@ PlayReport play_demo(const PlayOptions &options) {
             {}};
 }
 PlayReport play_game(const std::filesystem::path &package, const PlayOptions &options) {
+    FrameProfileLog profile(options.profile_log);
     std::ofstream trace;
     if (!options.trace_log.empty()) {
         trace.open(options.trace_log, std::ios::trunc);
@@ -371,9 +420,17 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
     if (options.headless) {
         std::vector<float> silent_audio;
         for (std::size_t i = 0; i < options.frame_limit; ++i) {
+            using Clock = std::chrono::steady_clock;
+            const auto start = profile.enabled() ? Clock::now() : Clock::time_point{};
+            const auto instructions_begin = session.instructions();
             session.tick(!replay.empty() ? input() : options.autoplay ? demo_autoplay(i) : KeyboardState{}, {});
+            const auto tick_end = profile.enabled() ? Clock::now() : Clock::time_point{};
             silent_audio.resize(static_cast<std::size_t>(96000 / session.speed()));
             session.mix_audio(silent_audio);
+            if (profile.enabled())
+                profile.sample(session.frames(), session.room_name(), session.instructions() - instructions_begin,
+                               std::chrono::duration<double, std::milli>(Clock::now() - start).count(),
+                               std::chrono::duration<double, std::milli>(tick_end - start).count(), 0);
         }
     } else {
 #if REGML_WITH_SDL2
@@ -385,6 +442,9 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
         auto next = std::chrono::steady_clock::now();
         auto speed_multiplier = options.speed_multiplier;
         while (options.frame_limit == 0 || session.frames() < options.frame_limit) {
+            using Clock = std::chrono::steady_clock;
+            const auto frame_begin = profile.enabled() ? Clock::now() : Clock::time_point{};
+            const auto instructions_begin = session.instructions();
             trace_stage("poll", &session);
             const auto previous_speed_multiplier = speed_multiplier;
             if (!window.poll(&speed_multiplier))
@@ -393,9 +453,12 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
                 audio.set_speed(speed_multiplier);
             input();
             trace_stage("tick", &session);
+            const auto tick_begin = profile.enabled() ? Clock::now() : Clock::time_point{};
             window.tick_game(session, replay.empty() ? nullptr : &replay_keys);
+            const auto tick_end = profile.enabled() ? Clock::now() : Clock::time_point{};
             trace_stage("present", &session);
             window.present(session.canvas());
+            const auto present_end = profile.enabled() ? Clock::now() : Clock::time_point{};
             trace_stage("delay", &session);
             const auto frame_time = std::chrono::duration<double>(1.0 / (session.speed() * speed_multiplier));
             next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(frame_time);
@@ -403,6 +466,14 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
                 // Drop missed deadlines instead of replaying the backlog at full speed.
                 next = std::max(next, std::chrono::steady_clock::now());
                 std::this_thread::sleep_until(next);
+            }
+            if (profile.enabled()) {
+                const auto ms = [](auto duration) {
+                    return std::chrono::duration<double, std::milli>(duration).count();
+                };
+                profile.sample(session.frames(), session.room_name(), session.instructions() - instructions_begin,
+                               ms(Clock::now() - frame_begin), ms(tick_end - tick_begin),
+                               ms(present_end - tick_end));
             }
         }
 #else

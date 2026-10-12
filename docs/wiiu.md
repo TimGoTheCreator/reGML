@@ -51,6 +51,10 @@ Create an empty `regml-trace.enabled` beside `data.win` to enable logging
 The output is `regml-trace.log` in the same directory, with frame counts, instruction counts, room names and loop stages
 Remove the marker when finished; logging flushes to disk at each stage
 
+Create `regml-profile.enabled` beside `data.win` for frame timings in `regml-profile.csv`
+It records average frame, game tick and presentation times in milliseconds, plus the slowest tick and presentation in each group of 30 frames
+Desktop: `--profile-log output.csv`
+
 For an input replay, put `regml-input.txt` beside `data.win`
 Each line is a frame number followed by held GML key codes
 

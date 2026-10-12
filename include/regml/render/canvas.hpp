@@ -32,6 +32,7 @@ class Canvas {
     void text(double x, double y, std::string_view text);
     void rgba_pixel(int x, int y, std::uint32_t rgba, std::uint32_t bgr, double opacity);
     void rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, double opacity) noexcept;
+    void rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tint, double opacity) noexcept;
     void save_bmp(const std::filesystem::path &path) const;
     [[nodiscard]] std::uint64_t hash() const noexcept;
 
