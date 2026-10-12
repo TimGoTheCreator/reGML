@@ -11,6 +11,8 @@
 #include <string>
 
 namespace {
+constexpr std::string_view version = "0.2.1";
+
 std::string escaped(std::string_view text, std::size_t limit = 160) {
     std::ostringstream out;
     out << '"';
@@ -30,7 +32,7 @@ std::string escaped(std::string_view text, std::size_t limit = 160) {
     return out.str();
 }
 void help() {
-    std::cout << "reGML 0.2.0 - GameMaker VM runner\n"
+    std::cout << "reGML " << version << " - GameMaker VM runner\n"
                  "Usage:\n"
                  "  regml inspect <data.win> [--strings] [--code]\n"
                  "  regml disasm <data.win> <code-index> [--linked]\n"
@@ -147,7 +149,7 @@ int command(int argc, char **argv) {
         if (name == "--help")
             help();
         else
-            std::cout << "reGML 0.2.0\n";
+            std::cout << "reGML " << version << '\n';
         return 0;
     }
     if (name == "inspect") {
@@ -302,7 +304,7 @@ int main(int argc, char **argv) {
         options.profile_log = game_directory / "regml-profile.csv";
     try {
         const auto report = regml::play_game(package, options);
-        std::cout << "reGML Wii U\nFrames: " << report.frames << "\nVM instructions: " << report.instructions
+        std::cout << "reGML " << version << " Wii U\nFrames: " << report.frames << "\nVM instructions: " << report.instructions
                   << "\nRoom: " << report.room << '\n';
         return 0;
     } catch (const std::exception &error) {
