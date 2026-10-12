@@ -45,9 +45,9 @@ void help() {
                  "  regml --help | --version\n\n"
                  "Inspection is read-only. Resource tables: v14-v17 prefix/layout.\n"
                  "Instruction decoding: v15/v16. VM demo: numeric scalar subset.\n"
-                 "Native legacy-game execution is experimental. Undertale intro,\n"
-                 "naming and first-room movement have been exercised; full progression\n"
-                 "is not verified. F10 closes the native game window.\n";
+                 "Native game execution is experimental and compatibility is incomplete.\n"
+                 "Undertale has been tested on Windows and in Cemu; no full playthrough\n"
+                 "is verified. F10 closes the native game window.\n";
 }
 void print_instruction(const regml::Instruction &ins, std::size_t origin, bool resolved = false) {
     std::cout << "  0x" << std::hex << std::setw(8) << std::setfill('0') << origin + ins.offset << "  " << std::setw(8)
