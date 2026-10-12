@@ -30,7 +30,7 @@ std::string escaped(std::string_view text, std::size_t limit = 160) {
     return out.str();
 }
 void help() {
-    std::cout << "reGML 0.1.0 - GameMaker VM runner\n"
+    std::cout << "reGML 0.2.0 - GameMaker VM runner\n"
                  "Usage:\n"
                  "  regml inspect <data.win> [--strings] [--code]\n"
                  "  regml disasm <data.win> <code-index> [--linked]\n"
@@ -146,7 +146,7 @@ int command(int argc, char **argv) {
         if (name == "--help")
             help();
         else
-            std::cout << "reGML 0.1.0\n";
+            std::cout << "reGML 0.2.0\n";
         return 0;
     }
     if (name == "inspect") {
