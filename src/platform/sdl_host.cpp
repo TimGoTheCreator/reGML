@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -56,7 +57,8 @@ int gml_key(SDL_Keycode key) {
 }
 class VideoWindow {
   public:
-    explicit VideoWindow(bool hidden, bool escape_quits = true) : escape_quits_(escape_quits) {
+    explicit VideoWindow(bool hidden, bool escape_quits = true, bool speed_controls = false)
+        : escape_quits_(escape_quits), speed_controls_(speed_controls) {
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
         const auto flags = static_cast<Uint32>(SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
                                                (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN));
@@ -92,7 +94,7 @@ class VideoWindow {
         if (controller_subsystem_)
             SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
     }
-    bool poll() {
+    bool poll(double *speed_multiplier = nullptr) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT)
@@ -100,6 +102,16 @@ class VideoWindow {
             if (event.type == SDL_KEYDOWN &&
                 (event.key.keysym.sym == SDLK_F10 || (escape_quits_ && event.key.keysym.sym == SDLK_ESCAPE)))
                 return false;
+            if (speed_controls_ && speed_multiplier && event.type == SDL_KEYDOWN && !event.key.repeat) {
+                if (event.key.keysym.sym == SDLK_LEFTBRACKET || event.key.keysym.sym == SDLK_RIGHTBRACKET) {
+                    *speed_multiplier = std::clamp(
+                        *speed_multiplier * (event.key.keysym.sym == SDLK_LEFTBRACKET ? 0.5 : 2.0), 0.01, 1000.0);
+                    std::ostringstream title;
+                    title << "reGML - Game (" << std::setprecision(3) << *speed_multiplier << "x)";
+                    SDL_SetWindowTitle(window_.get(), title.str().c_str());
+                    continue;
+                }
+            }
             if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
                 held_.fill(false);
                 pressed_.fill(false);
@@ -188,33 +200,48 @@ class VideoWindow {
     bool controller_subsystem_ = false;
     KeyboardState held_{}, pressed_{};
     bool escape_quits_ = true;
+    bool speed_controls_ = false;
 };
 class AudioDevice {
   public:
-    explicit AudioDevice(double speed) {
+    AudioDevice(GameSession &session, double speed) : session_(session) {
         sdl_ok(SDL_InitSubSystem(SDL_INIT_AUDIO), "audio initialization");
         SDL_AudioSpec want{}, got{};
-        // Clamp the device rate without clamping simulation speed.
         want.freq = static_cast<int>(std::clamp(48000.0 * speed, 8000.0, 192000.0));
         want.format = AUDIO_F32SYS;
         want.channels = 2;
         want.samples = 1024;
+        want.callback = &AudioDevice::callback;
+        want.userdata = this;
         device_ = SDL_OpenAudioDevice(nullptr, 0, &want, &got, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
         if (!device_)
             throw Error(ErrorKind::io, std::string("audio device: ") + SDL_GetError());
+        obtained_frequency_ = got.freq;
+        playback_rate_ = speed * 48000.0 / obtained_frequency_;
         SDL_PauseAudioDevice(device_, 0);
     }
     ~AudioDevice() {
         if (device_)
             SDL_CloseAudioDevice(device_);
     }
-    void queue(std::span<const float> samples) {
-        if (SDL_GetQueuedAudioSize(device_) > 48000 * 2 * sizeof(float))
-            SDL_ClearQueuedAudio(device_);
-        sdl_ok(SDL_QueueAudio(device_, samples.data(), static_cast<Uint32>(samples.size_bytes())), "audio queue");
+    void set_speed(double speed) {
+        SDL_LockAudioDevice(device_);
+        playback_rate_ = speed * 48000.0 / obtained_frequency_;
+        SDL_UnlockAudioDevice(device_);
     }
-
   private:
+    static void callback(void *context, Uint8 *stream, int length) noexcept {
+        auto &device = *static_cast<AudioDevice *>(context);
+        const auto bytes = static_cast<std::size_t>(std::max(0, length));
+        const auto sample_count = bytes / sizeof(float);
+        auto output = std::span<float>(reinterpret_cast<float *>(stream), sample_count);
+        device.session_.mix_audio(output, device.playback_rate_);
+        if (bytes % sizeof(float) != 0)
+            stream[bytes - 1] = 0;
+    }
+    GameSession &session_;
+    double playback_rate_ = 1;
+    int obtained_frequency_ = 48000;
     SDL_AudioDeviceID device_ = 0;
 };
 #endif
@@ -342,29 +369,35 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
         return replay_keys;
     };
     if (options.headless) {
-        for (std::size_t i = 0; i < options.frame_limit; ++i)
+        std::vector<float> silent_audio;
+        for (std::size_t i = 0; i < options.frame_limit; ++i) {
             session.tick(!replay.empty() ? input() : options.autoplay ? demo_autoplay(i) : KeyboardState{}, {});
+            silent_audio.resize(static_cast<std::size_t>(96000 / session.speed()));
+            session.mix_audio(silent_audio);
+        }
     } else {
 #if REGML_WITH_SDL2
         trace_stage("video.begin", &session);
-        VideoWindow window(options.hidden, false);
+        VideoWindow window(options.hidden, false, options.speed_controls);
         trace_stage("audio.begin", &session);
-        AudioDevice audio(options.speed_multiplier);
+        AudioDevice audio(session, options.speed_multiplier);
         trace_stage("audio.end", &session);
         auto next = std::chrono::steady_clock::now();
+        auto speed_multiplier = options.speed_multiplier;
         while (options.frame_limit == 0 || session.frames() < options.frame_limit) {
             trace_stage("poll", &session);
-            if (!window.poll())
+            const auto previous_speed_multiplier = speed_multiplier;
+            if (!window.poll(&speed_multiplier))
                 break;
+            if (speed_multiplier != previous_speed_multiplier)
+                audio.set_speed(speed_multiplier);
             input();
             trace_stage("tick", &session);
             window.tick_game(session, replay.empty() ? nullptr : &replay_keys);
             trace_stage("present", &session);
             window.present(session.canvas());
-            trace_stage("audio.queue", &session);
-            audio.queue(session.audio());
             trace_stage("delay", &session);
-            const auto frame_time = std::chrono::duration<double>(1.0 / (session.speed() * options.speed_multiplier));
+            const auto frame_time = std::chrono::duration<double>(1.0 / (session.speed() * speed_multiplier));
             next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(frame_time);
             if (!options.hidden) {
                 // Drop missed deadlines instead of replaying the backlog at full speed.

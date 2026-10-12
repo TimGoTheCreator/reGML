@@ -133,7 +133,7 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
         return;
     const unsigned source_alpha =
         opacity == 1 ? rgba >> 24
-                     : static_cast<unsigned>(std::lround(static_cast<double>(rgba >> 24) * std::clamp(opacity, 0.0, 1.0)));
+                     : static_cast<unsigned>(static_cast<double>(rgba >> 24) * std::clamp(opacity, 0.0, 1.0) + 0.5);
     if (source_alpha == 0)
         return;
     auto &dest = pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
@@ -142,6 +142,19 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
         return;
     }
     const unsigned destination_alpha = dest >> 24;
+    if (destination_alpha == 255) {
+        const unsigned inverse = 255 - source_alpha;
+        const unsigned red = ((rgba >> 16) & 255) * ((tint >> 16) & 255) / 255;
+        const unsigned green = ((rgba >> 8) & 255) * ((tint >> 8) & 255) / 255;
+        const unsigned blue = (rgba & 255) * (tint & 255) / 255;
+        const unsigned previous_red = (dest >> 16) & 255;
+        const unsigned previous_green = (dest >> 8) & 255;
+        const unsigned previous_blue = dest & 255;
+        dest = 0xff000000 | ((red * source_alpha + previous_red * inverse + 127) / 255 << 16) |
+               ((green * source_alpha + previous_green * inverse + 127) / 255 << 8) |
+               ((blue * source_alpha + previous_blue * inverse + 127) / 255);
+        return;
+    }
     const unsigned output_alpha = source_alpha + (destination_alpha * (255 - source_alpha) + 127) / 255;
     unsigned result = output_alpha << 24;
     for (unsigned shift : {0U, 8U, 16U}) {
@@ -295,6 +308,10 @@ void Canvas::plot(int x, int y) {
     if (x < 0 || y < 0 || x >= width_ || y >= height_)
         return;
     auto &dest = pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
+    if (alpha_ == 255) {
+        dest = 0xff000000 | rgb_;
+        return;
+    }
     std::uint32_t result = 0xff000000;
     for (unsigned shift : {0U, 8U, 16U}) {
         const auto source = (rgb_ >> shift) & 255;
@@ -314,11 +331,34 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
     const int r = static_cast<int>(std::clamp(right, 0.0, static_cast<double>(width_)));
     const int t = static_cast<int>(std::clamp(top, 0.0, static_cast<double>(height_)));
     const int b = static_cast<int>(std::clamp(bottom, 0.0, static_cast<double>(height_)));
-    for (int y = t; y < b; ++y)
-        for (int x = l; x < r; ++x) {
-            if (!outline || x == left || x == right - 1 || y == top || y == bottom - 1)
-                plot(x, y);
+    if (l >= r || t >= b)
+        return;
+    const auto span = [&](int y, int first, int last) {
+        auto *row = pixels_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width_);
+        if (alpha_ == 255) {
+            std::fill(row + first, row + last, 0xff000000 | rgb_);
+            return;
         }
+        const unsigned inverse = 255 - alpha_;
+        const unsigned red = (rgb_ >> 16 & 255) * alpha_,
+                       green = (rgb_ >> 8 & 255) * alpha_, blue = (rgb_ & 255) * alpha_;
+        for (int x = first; x < last; ++x) {
+            const auto previous = row[x];
+            row[x] = 0xff000000 | (((red + (previous >> 16 & 255) * inverse + 127) / 255) << 16) |
+                     (((green + (previous >> 8 & 255) * inverse + 127) / 255) << 8) |
+                     ((blue + (previous & 255) * inverse + 127) / 255);
+        }
+    };
+    for (int y = t; y < b; ++y) {
+        if (!outline || y == top || y == bottom - 1) {
+            span(y, l, r);
+        } else {
+            if (l == left)
+                span(y, l, l + 1);
+            if (r - 1 == right - 1 && r - 1 != left)
+                span(y, r - 1, r);
+        }
+    }
 }
 void Canvas::circle(double x, double y, double radius, bool outline) {
     finite(x);

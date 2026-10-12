@@ -11,16 +11,16 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits) {
     if (engine[0] >= 2)
         throw Error(ErrorKind::unsupported, "legacy linker currently requires a GameMaker 1.x profile");
     LinkedPackage result;
-    std::unordered_map<std::size_t, const Instruction *> instructions;
+    std::unordered_map<std::size_t, Instruction *> instructions;
     result.programs.reserve(package.code().size());
     for (std::size_t i = 0; i < package.code().size(); ++i) {
         result.programs.push_back(decode(package.code_bytes(i), version));
-        const auto &program = result.programs.back();
+        auto &program = result.programs.back();
         result.instruction_count += program.instructions.size();
         // Decoder limits apply per program; bound the package total too.
         if (result.instruction_count > 10'000'000)
             throw Error(ErrorKind::unsupported, "package instruction limit exceeded");
-        for (const auto &ins : program.instructions) {
+        for (auto &ins : program.instructions) {
             if (!instructions.emplace(program.origin + ins.offset, &ins).second)
                 throw Error(ErrorKind::unsupported, "overlapping CODE blobs require a shared-code profile",
                             program.origin + ins.offset);
@@ -74,7 +74,7 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits) {
                 const auto it = instructions.find(address);
                 if (it == instructions.end())
                     throw Error(ErrorKind::malformed, "reference chain does not target an instruction", address);
-                const auto &ins = *it->second;
+                auto &ins = *it->second;
                 const bool variable_op = ins.opcode == Opcode::pop ||
                                          ((ins.opcode == Opcode::push || ins.opcode == Opcode::push_local ||
                                            ins.opcode == Opcode::push_global || ins.opcode == Opcode::push_builtin) &&
@@ -83,6 +83,10 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits) {
                     throw Error(ErrorKind::malformed, "reference chain targets wrong instruction kind", address);
                 if (!bindings.emplace(address, id).second)
                     throw Error(ErrorKind::malformed, "reference chain overlaps another occurrence", address);
+                if (variable)
+                    ins.variable_id = id;
+                else
+                    ins.function_id = id;
                 const auto next = *ins.reference & 0x07ffffffU;
                 if (n + 1 < symbol.occurrences) {
                     if (next == 0 || next % 4 != 0 || next > package.size() || address > package.size() - next)

@@ -52,7 +52,11 @@ struct Object {
     std::string name;
     int sprite = -1, mask = -1, parent = -1, depth = 0;
     bool visible = false, persistent = false, solid = false;
+    bool has_collision_events = false, has_keyboard_events = false;
     std::map<std::pair<int, int>, std::vector<int>> events;
+    std::map<std::pair<int, int>, int> event_owners;
+    std::array<int, 3> step_owners{-1, -1, -1};
+    int draw_owner = -1;
 };
 struct Placement {
     int object = -1, id = 0, create = -1, precreate = -1;
@@ -140,13 +144,22 @@ struct GameSession::Impl {
     GameAssets assets;
     GameAudio audio;
     Canvas canvas{640, 480};
-    std::vector<float> audio_frame;
     std::vector<Path> paths;
     std::vector<Object> objects;
+    struct CollisionRoute { int source = -1, target = -1; };
+    std::unordered_map<std::uint64_t, CollisionRoute> collision_routes;
     std::vector<Room> rooms;
     std::vector<int> order, scripts;
-    std::unordered_map<std::string, int> script_names;
+    std::unordered_map<std::string, int, VariableStoreHash, std::equal_to<>> script_names;
     std::vector<InstancePtr> instances;
+    std::vector<InstancePtr> tick_instances;
+    std::vector<InstancePtr> placed_instances;
+    struct DrawEntry {
+        InstancePtr instance;
+        double depth;
+        std::size_t order;
+    };
+    std::vector<DrawEntry> draw_entries;
     struct SavedRoom {
         std::vector<InstancePtr> instances;
         VariableStore engine;
@@ -351,6 +364,24 @@ struct GameSession::Impl {
                 }
             objects.push_back(std::move(o));
         }
+        for (auto &object : objects) {
+            const Object *definition = &object;
+            for (std::size_t guard = 0; definition && guard < objects.size(); ++guard) {
+                for (const auto &[key, code] : definition->events) {
+                    object.has_collision_events |= key.first == 4;
+                    object.has_keyboard_events |= key.first == 5 || key.first == 9;
+                    object.event_owners.try_emplace(key, static_cast<int>(definition - objects.data()));
+                }
+                const int parent = definition->parent;
+                definition = parent >= 0 && static_cast<std::size_t>(parent) < objects.size()
+                                 ? &objects[static_cast<std::size_t>(parent)] : nullptr;
+            }
+            for (int step = 0; step < 3; ++step)
+                if (const auto found = object.event_owners.find({3, step}); found != object.event_owners.end())
+                    object.step_owners[static_cast<std::size_t>(step)] = found->second;
+            if (const auto found = object.event_owners.find({8, 0}); found != object.event_owners.end())
+                object.draw_owner = found->second;
+        }
         for (auto p : list(ro->data_offset, *ro)) {
             const auto r = record(p, *ro, 88);
             Room room;
@@ -420,12 +451,16 @@ struct GameSession::Impl {
         }
     }
     InstancePtr make(const Placement &p) {
+        static constexpr std::array<std::string_view, 12> alarm_variables = {
+            "alarm[0]", "alarm[1]", "alarm[2]", "alarm[3]", "alarm[4]", "alarm[5]",
+            "alarm[6]", "alarm[7]", "alarm[8]", "alarm[9]", "alarm[10]", "alarm[11]"};
         if (instances.size() >= 10000)
             throw Error(ErrorKind::vm, "instance limit reached");
         const auto &obj = objects.at(static_cast<std::size_t>(p.object));
         auto inst = InstancePtr(new Instance());
         inst->id = p.id;
         inst->object = p.object;
+        inst->vars.reserve(48);
         inst->vars = {{"x", p.x},
                       {"y", p.y},
                       {"xprevious", p.x},
@@ -457,9 +492,8 @@ struct GameSession::Impl {
                       {"path_index", std::int32_t{-1}},
                       {"path_position", 0.0},
                       {"path_speed", 0.0}};
-        for (int a = 0; a < 12; ++a) {
-            inst->vars["alarm[" + std::to_string(a) + "]"] = std::int32_t{-1};
-        }
+        for (const auto name : alarm_variables)
+            inst->vars[name] = std::int32_t{-1};
         instances.push_back(inst);
         return inst;
     }
@@ -475,11 +509,16 @@ struct GameSession::Impl {
             return {x, x, y, y, false};
         const auto &s = assets.sprite(id);
         const double sx = value_number(i.vars.at("image_xscale")), sy = value_number(i.vars.at("image_yscale"));
-        const double a = value_number(i.vars.at("image_angle")) * 3.141592653589793 / 180, c = std::cos(a),
-                     sn = std::sin(a);
-        Bounds out{INFINITY, -INFINITY, INFINITY, -INFINITY, true};
         const int left = full_sprite ? 0 : s.left, right = full_sprite ? s.width : s.right + 1,
                   top = full_sprite ? 0 : s.top, bottom = full_sprite ? s.height : s.bottom + 1;
+        const double a = value_number(i.vars.at("image_angle")) * 3.141592653589793 / 180;
+        if (a == 0) {
+            const double x1 = x + (left - s.ox) * sx, x2 = x + (right - s.ox) * sx,
+                         y1 = y + (top - s.oy) * sy, y2 = y + (bottom - s.oy) * sy;
+            return {std::min(x1, x2), std::max(x1, x2), std::min(y1, y2), std::max(y1, y2), true};
+        }
+        const double c = std::cos(a), sn = std::sin(a);
+        Bounds out{INFINITY, -INFINITY, INFINITY, -INFINITY, true};
         for (double px : {double(left - s.ox), double(right - s.ox)})
             for (double py : {double(top - s.oy), double(bottom - s.oy)}) {
                 const double tx = x + px * sx * c + py * sy * sn, ty = y - px * sx * sn + py * sy * c;
@@ -497,19 +536,52 @@ struct GameSession::Impl {
         const int mask = number(i.vars.at("mask_index"));
         return mask >= 0 ? mask : number(i.vars.at("sprite_index"));
     }
-    bool mask_contains(const Instance &i, double world_x, double world_y, double x, double y) const {
+    struct CollisionMask {
+        const GameAssets::Sprite *sprite = nullptr;
+        std::span<const std::uint8_t> pixels;
+        std::size_t stride = 0;
+        double x = 0, y = 0, sx = 1, sy = 1, c = 1, sn = 0;
+    };
+    CollisionMask collision_mask(const Instance &i, double x, double y) const {
+        CollisionMask mask;
         const int id = collision_sprite(i);
         if (id < 0)
-            return false;
+            return mask;
         const auto &sprite = assets.sprite(id);
         const double sx = value_number(i.vars.at("image_xscale")), sy = value_number(i.vars.at("image_yscale"));
         if (sx == 0 || sy == 0)
-            return false;
+            return mask;
         const double angle = value_number(i.vars.at("image_angle")) * 3.141592653589793 / 180;
-        const double dx = world_x - x, dy = world_y - y, c = std::cos(angle), sn = std::sin(angle);
-        const int px = static_cast<int>(std::floor((dx * c - dy * sn) / sx + sprite.ox));
-        const int py = static_cast<int>(std::floor((dx * sn + dy * c) / sy + sprite.oy));
-        return assets.mask_pixel(id, value_number(i.vars.at("image_index")), px, py);
+        mask.sprite = &sprite;
+        mask.x = x;
+        mask.y = y;
+        mask.sx = sx;
+        mask.sy = sy;
+        mask.c = angle == 0 ? 1 : std::cos(angle);
+        mask.sn = angle == 0 ? 0 : std::sin(angle);
+        if (sprite.precise && !sprite.masks.empty()) {
+            const double frame = value_number(i.vars.at("image_index"));
+            const auto count = static_cast<double>(sprite.masks.size());
+            const auto index = static_cast<std::size_t>(std::fmod(std::fmod(std::floor(frame), count) + count, count));
+            mask.pixels = sprite.masks[index];
+            mask.stride = (static_cast<std::size_t>(sprite.width) + 7) / 8;
+        }
+        return mask;
+    }
+    static bool mask_contains(const CollisionMask &mask, double world_x, double world_y) {
+        if (!mask.sprite)
+            return false;
+        const auto &sprite = *mask.sprite;
+        const double dx = world_x - mask.x, dy = world_y - mask.y;
+        const int px = static_cast<int>(std::floor((dx * mask.c - dy * mask.sn) / mask.sx + sprite.ox));
+        const int py = static_cast<int>(std::floor((dx * mask.sn + dy * mask.c) / mask.sy + sprite.oy));
+        if (px < sprite.left || px > sprite.right || py < sprite.top || py > sprite.bottom ||
+            px < 0 || py < 0 || px >= sprite.width || py >= sprite.height)
+            return false;
+        if (mask.pixels.empty())
+            return true;
+        const auto byte = mask.pixels[static_cast<std::size_t>(py) * mask.stride + static_cast<std::size_t>(px) / 8];
+        return (byte & (0x80U >> (px & 7))) != 0;
     }
     bool collides(const Instance &a, double x, double y, const Instance &b) const {
         const auto first = bounds(a, x, y), second = bounds(b);
@@ -519,13 +591,14 @@ struct GameSession::Impl {
         if (!assets.sprite(collision_sprite(a)).precise && !assets.sprite(collision_sprite(b)).precise)
             return true;
         const double bx = value_number(b.vars.at("x")), by = value_number(b.vars.at("y"));
+        const auto first_mask = collision_mask(a, x, y), second_mask = collision_mask(b, bx, by);
         const int left = static_cast<int>(std::floor(std::max(first.left, second.left))),
                   right = static_cast<int>(std::ceil(std::min(first.right, second.right))),
                   top = static_cast<int>(std::floor(std::max(first.top, second.top))),
                   bottom = static_cast<int>(std::ceil(std::min(first.bottom, second.bottom)));
         for (int py = top; py < bottom; ++py)
             for (int px = left; px < right; ++px)
-                if (mask_contains(a, px + 0.5, py + 0.5, x, y) && mask_contains(b, px + 0.5, py + 0.5, bx, by))
+                if (mask_contains(first_mask, px + 0.5, py + 0.5) && mask_contains(second_mask, px + 0.5, py + 0.5))
                     return true;
         return false;
     }
@@ -552,32 +625,59 @@ struct GameSession::Impl {
                 out.push_back(i);
         return out;
     }
+    CollisionRoute collision_event(int source, int target) {
+        const auto key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(source)) << 32) |
+                         static_cast<std::uint32_t>(target);
+        if (const auto found = collision_routes.find(key); found != collision_routes.end())
+            return found->second;
+        const auto remember = [&](CollisionRoute route) {
+            if (collision_routes.size() < 65536)
+                collision_routes.emplace(key, route);
+            return route;
+        };
+        for (std::size_t guard = 0; source >= 0 && static_cast<std::size_t>(source) < objects.size() &&
+                                    guard < objects.size(); ++guard) {
+            int other = target;
+            for (std::size_t tg = 0; other >= 0 && static_cast<std::size_t>(other) < objects.size() &&
+                                    tg < objects.size(); ++tg) {
+                if (objects[static_cast<std::size_t>(source)].events.contains({4, other}))
+                    return remember({source, other});
+                other = objects[static_cast<std::size_t>(other)].parent;
+            }
+            source = objects[static_cast<std::size_t>(source)].parent;
+        }
+        return remember({});
+    }
     void event(InstancePtr inst, int type, int subtype, int object = -1, InstancePtr other = {}) {
         if (!inst->alive || inst->deactivated)
             return;
-        int n = object < 0 ? inst->object : object;
-        for (std::size_t guard = 0; n >= 0 && static_cast<std::size_t>(n) < objects.size() && guard < objects.size();
-             ++guard) {
-            const auto &obj = objects[static_cast<std::size_t>(n)];
-            const auto it = obj.events.find({type, subtype});
-            if (it != obj.events.end()) {
-                event_stack.push_back({type, subtype, n});
-                struct Guard {
-                    std::vector<EventFrame> &frames;
-                    ~Guard() { frames.pop_back(); }
-                } guard{event_stack};
-                for (auto code : it->second) {
-                    execute(code, inst, {}, other);
-                }
-                return;
-            }
-            n = obj.parent;
-        }
+        const int start = object < 0 ? inst->object : object;
+        if (start < 0 || static_cast<std::size_t>(start) >= objects.size())
+            return;
+        const auto &definition = objects[static_cast<std::size_t>(start)];
+        int owner = -1;
+        if (type == 3 && subtype >= 0 && subtype < 3)
+            owner = definition.step_owners[static_cast<std::size_t>(subtype)];
+        else if (type == 8 && subtype == 0)
+            owner = definition.draw_owner;
+        else if (const auto found = definition.event_owners.find({type, subtype}); found != definition.event_owners.end())
+            owner = found->second;
+        if (owner < 0)
+            return;
+        const auto &code = objects[static_cast<std::size_t>(owner)].events.at({type, subtype});
+        event_stack.push_back({type, subtype, owner});
+        struct Guard {
+            std::vector<EventFrame> &frames;
+            ~Guard() { frames.pop_back(); }
+        } guard{event_stack};
+        for (const auto entry : code)
+            execute(entry, inst, {}, other);
     }
     void enter(int id) {
         if (id < 0 || static_cast<std::size_t>(id) >= rooms.size())
             throw Error(ErrorKind::vm, "room ID out of range");
-        const auto previous = instances;
+        tick_instances.assign(instances.begin(), instances.end());
+        const auto &previous = tick_instances;
         for (auto &i : previous)
             if (i->alive)
                 event(i, 7, 5);
@@ -607,7 +707,11 @@ struct GameSession::Impl {
         for (const auto &[key, value] : room.views)
             engine[key] = value;
         event_budget = 0;
-        std::vector<InstancePtr> placed;
+        placed_instances.clear();
+        if (placed_instances.capacity() < room.instances.size())
+            placed_instances.reserve(room.instances.size());
+        if (instances.size() < 10000)
+            instances.reserve(std::min<std::size_t>(10000, instances.size() + room.instances.size()));
         const auto saved = saved_rooms.find(id);
         if (saved != saved_rooms.end()) {
             instances.insert(instances.end(), saved->second.instances.begin(), saved->second.instances.end());
@@ -616,19 +720,20 @@ struct GameSession::Impl {
             saved_rooms.erase(saved);
         } else {
             for (const auto &p : room.instances)
-                placed.push_back(make(p));
-            for (std::size_t i = 0; i < placed.size(); ++i) {
+                placed_instances.push_back(make(p));
+            for (std::size_t i = 0; i < placed_instances.size(); ++i) {
                 const auto &p = room.instances[i];
                 if (p.precreate >= 0)
-                    execute(p.precreate, placed[i], {});
-                event(placed[i], 0, 0);
+                    execute(p.precreate, placed_instances[i], {});
+                event(placed_instances[i], 0, 0);
                 if (p.create >= 0)
-                    execute(p.create, placed[i], {});
+                    execute(p.create, placed_instances[i], {});
             }
-            if (room.create >= 0 && !placed.empty())
-                execute(room.create, placed[0], {});
+            if (room.create >= 0 && !placed_instances.empty())
+                execute(room.create, placed_instances[0], {});
         }
-        const auto snapshot = instances;
+        tick_instances.assign(instances.begin(), instances.end());
+        const auto &snapshot = tick_instances;
         if (!game_started) {
             game_started = true;
             for (auto &i : snapshot)
@@ -685,8 +790,7 @@ struct GameSession::Impl {
                 const auto &ins = program.instructions[instruction_index];
                 std::size_t next = pc + ins.size;
                 auto variable = [&](bool writing, Value value = std::monostate{}) -> Value {
-                    const auto address = program.origin + pc;
-                    const auto id = linked.variable_at.at(address);
+                    const auto id = ins.variable_id;
                     const auto &symbol = linked.variables[id];
                     std::string name = symbol.name;
                     const auto kind = (*ins.reference >> 24) & 0xf8;
@@ -983,7 +1087,7 @@ struct GameSession::Impl {
                         push(static_cast<std::int32_t>(~number(pop())));
                     break;
                 case Opcode::call: {
-                    const auto &name = linked.functions.at(linked.function_at.at(program.origin + pc)).name;
+                    const auto &name = linked.functions.at(ins.function_id).name;
                     const auto count = static_cast<std::size_t>(ins.word & 0xffff);
                     std::vector<Value> args;
                     for (std::size_t i = 0; i < count; ++i)
@@ -2437,13 +2541,13 @@ struct GameSession::Impl {
         }
         if (name == "action_create_object") {
             Placement p;
-            p.x = n(0);
-            p.y = n(1);
+            p.object = static_cast<int>(n(0));
+            p.x = n(1);
+            p.y = n(2);
             if (auto it = globals.find("__argument_relative"); it != globals.end() && value_number(it->second) != 0) {
                 p.x += value_number(self->vars.at("x"));
                 p.y += value_number(self->vars.at("y"));
             }
-            p.object = static_cast<int>(n(2));
             p.id = next_id++;
             auto instance = make(p);
             event(instance, 0, 0);
@@ -2572,6 +2676,10 @@ struct GameSession::Impl {
         throw Error(ErrorKind::unsupported, "engine built-in pending: " + std::string(name));
     }
     void tick(const KeyboardState &input, const KeyboardState &edges) {
+        audio.service();
+        static const std::array<std::string, 12> alarm_names = {
+            "alarm[0]", "alarm[1]", "alarm[2]", "alarm[3]", "alarm[4]", "alarm[5]",
+            "alarm[6]", "alarm[7]", "alarm[8]", "alarm[9]", "alarm[10]", "alarm[11]"};
         held = input;
         pressed = edges;
         for (std::size_t k = 0; k < 256; ++k) {
@@ -2595,7 +2703,7 @@ struct GameSession::Impl {
         for (auto &i : snapshot)
             if (i->alive && !i->deactivated)
                 for (int a = 0; a < 12; ++a) {
-                    auto &v = i->vars.at("alarm[" + std::to_string(a) + "]");
+                    auto &v = i->vars.at(alarm_names[static_cast<std::size_t>(a)]);
                     const auto timer = number(v);
                     if (timer > 0) {
                         v = std::int32_t{timer - 1};
@@ -2698,11 +2806,13 @@ struct GameSession::Impl {
                 }
                 i->vars["x"] = value_number(i->vars["x"]) + h;
                 i->vars["y"] = value_number(i->vars["y"]) + v;
-                for (std::size_t k = 0; k < 256; ++k) {
-                    if (held[k])
-                        event(i, 5, static_cast<int>(k));
-                    if (pressed[k])
-                        event(i, 9, static_cast<int>(k));
+                if (objects[static_cast<std::size_t>(i->object)].has_keyboard_events) {
+                    for (std::size_t k = 0; k < 256; ++k) {
+                        if (held[k])
+                            event(i, 5, static_cast<int>(k));
+                        if (pressed[k])
+                            event(i, 9, static_cast<int>(k));
+                    }
                 }
             }
         // Fire once when the whole sprite crosses the room boundary.
@@ -2719,42 +2829,15 @@ struct GameSession::Impl {
                 if (entered)
                     event(i, 7, 0);
             }
-        // Check parents before skipping objects without collision handlers.
-        const auto has_collision_event = [&](int object) {
-            for (std::size_t guard = 0; object >= 0 && static_cast<std::size_t>(object) < objects.size() &&
-                                        guard < objects.size(); ++guard) {
-                const auto &definition = objects[static_cast<std::size_t>(object)];
-                for (const auto &entry : definition.events)
-                    if (entry.first.first == 4)
-                        return true;
-                object = definition.parent;
-            }
-            return false;
-        };
         // Avoid geometry checks for pairs without a collision handler.
         for (const auto &i : snapshot)
-            if (i->alive && has_collision_event(i->object))
+            if (i->alive && objects[static_cast<std::size_t>(i->object)].has_collision_events)
                 for (const auto &j : snapshot)
                     if (j->alive && i != j) {
-                        bool handled = false;
-                        int source = i->object;
-                        for (std::size_t guard = 0; source >= 0 && static_cast<std::size_t>(source) < objects.size() &&
-                                                    guard < objects.size() && !handled;
-                             ++guard) {
-                            int target = j->object;
-                            for (std::size_t tg = 0; target >= 0 && static_cast<std::size_t>(target) < objects.size() &&
-                                                     tg < objects.size();
-                                 ++tg) {
-                                if (objects[static_cast<std::size_t>(source)].events.contains({4, target})) {
-                                    if (collides(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), *j))
-                                        event(i, 4, target, source, j);
-                                    handled = true;
-                                    break;
-                                }
-                                target = objects[static_cast<std::size_t>(target)].parent;
-                            }
-                            source = objects[static_cast<std::size_t>(source)].parent;
-                        }
+                        const auto route = collision_event(i->object, j->object);
+                        if (route.source >= 0 &&
+                            collides(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), *j))
+                            event(i, 4, route.target, route.source, j);
                     }
         for (const auto &i : snapshot)
             event(i, 3, 2);
@@ -2815,25 +2898,22 @@ struct GameSession::Impl {
                              t.color);
         };
         std::size_t tile = 0;
-        auto drawing = snapshot;
-        std::stable_sort(drawing.begin(), drawing.end(), [](const auto &a, const auto &b) {
-            return value_number(a->vars.at("depth")) > value_number(b->vars.at("depth"));
+        draw_entries.clear();
+        if (draw_entries.capacity() < snapshot.size())
+            draw_entries.reserve(snapshot.size());
+        for (std::size_t index = 0; index < snapshot.size(); ++index) {
+            const auto &instance = snapshot[index];
+            draw_entries.push_back({instance, value_number(instance->vars.at("depth")), index});
+        }
+        std::sort(draw_entries.begin(), draw_entries.end(), [](const auto &a, const auto &b) {
+            return a.depth != b.depth ? a.depth > b.depth : a.order < b.order;
         });
-        for (auto &i : drawing)
+        for (auto &entry : draw_entries) {
+            auto &i = entry.instance;
             if (i->alive && !i->deactivated && number(i->vars.at("visible"))) {
                 while (tile < room.tiles.size() && room.tiles[tile].depth >= value_number(i->vars.at("depth")))
                     draw_tile(room.tiles[tile++]);
-                int obj = i->object;
-                bool custom = false;
-                for (std::size_t guard = 0;
-                     obj >= 0 && static_cast<std::size_t>(obj) < objects.size() && guard < objects.size(); ++guard) {
-                    if (objects[static_cast<std::size_t>(obj)].events.contains({8, 0})) {
-                        custom = true;
-                        break;
-                    }
-                    obj = objects[static_cast<std::size_t>(obj)].parent;
-                }
-                if (custom)
+                if (objects[static_cast<std::size_t>(i->object)].draw_owner >= 0)
                     event(i, 8, 0);
                 else {
                     const auto sprite = number(i->vars.at("sprite_index"));
@@ -2864,6 +2944,7 @@ struct GameSession::Impl {
                     }
                 }
             }
+        }
         while (tile < room.tiles.size())
             draw_tile(room.tiles[tile++]);
         for (const auto &b : room.backgrounds)
@@ -2872,7 +2953,6 @@ struct GameSession::Impl {
         std::erase_if(instances, [](const auto &i) { return !i->alive; });
         ++frame;
         engine["current_time"] = static_cast<double>(frame) * 1000.0 / value_number(engine["room_speed"]);
-        audio_frame = audio.mix(static_cast<std::size_t>(48000 / value_number(engine["room_speed"])));
     }
 };
 GameSession::GameSession(const std::filesystem::path &path, std::optional<std::uint32_t> seed,
@@ -2894,8 +2974,8 @@ std::size_t GameSession::instructions() const {
 std::string GameSession::room_name() const {
     return impl_->rooms.at(static_cast<std::size_t>(impl_->current_room)).name;
 }
-std::span<const float> GameSession::audio() const {
-    return impl_->audio_frame;
+void GameSession::mix_audio(std::span<float> output, double playback_rate) noexcept {
+    impl_->audio.mix(output, playback_rate);
 }
 double GameSession::speed() const {
     return value_number(impl_->engine.at("room_speed"));

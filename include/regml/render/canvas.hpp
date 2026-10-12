@@ -12,6 +12,7 @@ class Canvas {
     Canvas(int width, int height);
     [[nodiscard]] int width() const noexcept { return width_; }
     [[nodiscard]] int height() const noexcept { return height_; }
+    [[nodiscard]] std::span<std::uint32_t> pixels() noexcept { return pixels_; }
     [[nodiscard]] std::span<const std::uint32_t> pixels() const noexcept { return pixels_; }
     [[nodiscard]] std::uint32_t pixel(int x, int y) const;
     void clear(std::uint32_t gml_bgr);

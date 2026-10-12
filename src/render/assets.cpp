@@ -1,5 +1,6 @@
 ﻿#include "regml/render/assets.hpp"
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <png.h>
 namespace regml {
@@ -109,7 +110,11 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
             throw Error(ErrorKind::malformed, "font TPAG reference invalid", p + 28);
         for (auto q : list(p + 40, *fo)) {
             const auto g = rec(q, *fo, 16);
-            font.glyphs[g.u16(0)] = {g.u16(2), g.u16(4), g.u16(6), g.u16(8), g.i16(10), g.i16(12)};
+            const auto character = g.u16(0);
+            if (character < font.glyphs.size()) {
+                font.glyphs[character] = {g.u16(2), g.u16(4), g.u16(6), g.u16(8), g.i16(10), g.i16(12)};
+                font.has_glyph[character] = true;
+            }
         }
         fonts_.push_back(std::move(font));
     }
@@ -172,16 +177,17 @@ void GameAssets::load_page(int id) {
     } guard{image};
     if (image.width > 8192 || image.height > 8192 || !image.width || !image.height)
         throw Error(ErrorKind::unsupported, "texture dimensions exceed limit", page.png);
-    image.format = PNG_FORMAT_RGBA;
-    std::vector<unsigned char> rgba(PNG_IMAGE_SIZE(image));
-    if (!png_image_finish_read(&image, nullptr, rgba.data(), 0, nullptr))
+    if constexpr (std::endian::native == std::endian::little)
+        image.format = PNG_FORMAT_BGRA;
+    else
+        image.format = PNG_FORMAT_ARGB;
+    const auto width = static_cast<std::size_t>(image.width), height = static_cast<std::size_t>(image.height);
+    std::vector<std::uint32_t> pixels(width * height);
+    if (!png_image_finish_read(&image, nullptr, reinterpret_cast<unsigned char *>(pixels.data()), 0, nullptr))
         throw Error(ErrorKind::malformed, "texture PNG decode failed", page.png);
-    page.width = static_cast<int>(image.width);
-    page.height = static_cast<int>(image.height);
-    page.pixels.resize(static_cast<std::size_t>(page.width) * static_cast<std::size_t>(page.height));
-    for (std::size_t i = 0; i < page.pixels.size(); ++i)
-        page.pixels[i] = (static_cast<unsigned>(rgba[i * 4 + 3]) << 24) | (static_cast<unsigned>(rgba[i * 4]) << 16) |
-                         (static_cast<unsigned>(rgba[i * 4 + 1]) << 8) | rgba[i * 4 + 2];
+    page.width = static_cast<int>(width);
+    page.height = static_cast<int>(height);
+    page.pixels = std::move(pixels);
 }
 void GameAssets::prefetch(int id) {
     (void)sprite(id);
@@ -295,7 +301,7 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
         throw Error(ErrorKind::malformed, "texture region outside page");
     const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
     std::int8_t source_alpha_mode = 0;
-    if (tint == 0xffffff && alpha == 1 && angle == 0 && sx == 1 && sy == 1 && r.tw == r.w && r.th == r.h) {
+    if (tint == 0xffffff && alpha == 1 && angle == 0 && sx > 0 && sy > 0 && r.tw == r.w && r.th == r.h) {
         if (r.alpha_mode < 0) {
             r.alpha_mode = 2;
             for (int row = 0; row < r.h && r.alpha_mode != 0; ++row) {
@@ -339,15 +345,57 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
             std::clamp(std::ceil(y + h - 0.5), 0.0, static_cast<double>(canvas.height())));
         if (left >= right || top >= bottom)
             return;
+        auto destination = canvas.pixels();
+        const auto sample_width = static_cast<std::size_t>(right - left);
+        const auto sample_height = static_cast<std::size_t>(bottom - top);
+        if (scaled_x_.size() < sample_width)
+            scaled_x_.resize(sample_width);
+        if (scaled_y_.size() < sample_height)
+            scaled_y_.resize(sample_height);
+        for (int dx = left; dx < right; ++dx) {
+            const double tx = (dx + 0.5 - x) / sx;
+            scaled_x_[static_cast<std::size_t>(dx - left)] =
+                r.x + static_cast<int>(tx * r.w / r.tw);
+        }
         for (int dy = top; dy < bottom; ++dy) {
             const double ty = (dy + 0.5 - y) / sy;
-            const int uy = r.y + static_cast<int>(ty * r.h / r.th);
+            scaled_y_[static_cast<std::size_t>(dy - top)] =
+                r.y + static_cast<int>(ty * r.h / r.th);
+        }
+        for (int dy = top; dy < bottom; ++dy) {
+            const int uy = scaled_y_[static_cast<std::size_t>(dy - top)];
             const auto row = static_cast<std::size_t>(uy) * static_cast<std::size_t>(page.width);
             for (int dx = left; dx < right; ++dx) {
-                const double tx = (dx + 0.5 - x) / sx;
-                const int ux = r.x + static_cast<int>(tx * r.w / r.tw);
+                const int ux = scaled_x_[static_cast<std::size_t>(dx - left)];
                 const auto pixel = page.pixels[row + static_cast<std::size_t>(ux)];
-                canvas.rgba_pixel_tinted(dx, dy, pixel, tint, alpha);
+                const auto destination_index =
+                    static_cast<std::size_t>(dy) * static_cast<std::size_t>(canvas.width()) +
+                    static_cast<std::size_t>(dx);
+                if (source_alpha_mode == 2) {
+                    destination[destination_index] = pixel;
+                } else if (source_alpha_mode == 1) {
+                    if ((pixel >> 24) == 255)
+                        destination[destination_index] = pixel;
+                } else if (tint == 0xffffff && alpha == 1) {
+                    const auto source_alpha = pixel >> 24;
+                    if (source_alpha == 255) {
+                        destination[destination_index] = pixel;
+                    } else if (source_alpha != 0 && (destination[destination_index] >> 24) == 255) {
+                        const auto previous = destination[destination_index];
+                        const auto inverse = 255 - source_alpha;
+                        unsigned result = 0xff000000;
+                        for (unsigned shift : {0U, 8U, 16U})
+                            result |= (((pixel >> shift & 255) * source_alpha +
+                                        (previous >> shift & 255) * inverse + 127) /
+                                       255)
+                                      << shift;
+                        destination[destination_index] = result;
+                    } else if (source_alpha != 0) {
+                        canvas.rgba_pixel_tinted(dx, dy, pixel, tint, alpha);
+                    }
+                } else {
+                    canvas.rgba_pixel_tinted(dx, dy, pixel, tint, alpha);
+                }
             }
         }
         return;
@@ -432,7 +480,8 @@ void GameAssets::draw_sprite_part(Canvas &canvas, int id, double frame, double l
                 ib - iy,
                 r.page};
     crop.alpha_mode = r.alpha_mode;
-    blit(canvas, crop, x + (ix - spr.ox) * sx, y + (iy - spr.oy) * sy, sx, sy, 0, color, alpha);
+    // draw_sprite_part positions the cropped region by its own top-left; sprite origins do not apply.
+    blit(canvas, crop, x + (ix - left) * sx, y + (iy - top) * sy, sx, sy, 0, color, alpha);
 }
 double GameAssets::text_width(int font, std::string_view text) const {
     if (font < 0 || static_cast<std::size_t>(font) >= fonts_.size())
@@ -444,8 +493,8 @@ double GameAssets::text_width(int font, std::string_view text) const {
         if (c == '\n' || c == '#') {
             max = std::max(max, line);
             line = 0;
-        } else if (auto it = f.glyphs.find(c); it != f.glyphs.end())
-            line += it->second.shift;
+        } else if (f.has_glyph[c])
+            line += f.glyphs[c].shift;
     }
     return std::max(line, max);
 }
@@ -474,13 +523,14 @@ void GameAssets::draw_text(Canvas &canvas, int font, double x, double y, std::st
             ly += text_height(font) + 2;
             continue;
         }
-        const auto it = f.glyphs.find(ch);
-        if (it == f.glyphs.end())
+        if (!f.has_glyph[ch])
             continue;
-        const auto &g = it->second;
+        const auto &g = f.glyphs[ch];
         Region r{atlas.x + g.x, atlas.y + g.y, g.w, g.h, 0, 0, g.w, g.h, atlas.page};
+        r.alpha_mode = g.alpha_mode;
         const auto ox = (lx + g.offset) * sx, oy = ly * sy;
         blit(canvas, r, x + ox * c + oy * s, y - ox * s + oy * c, sx, sy, angle, color, alpha);
+        g.alpha_mode = r.alpha_mode;
         lx += g.shift;
     }
 }

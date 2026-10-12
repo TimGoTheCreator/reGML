@@ -2,7 +2,10 @@
 #include "regml/bytecode/decoder.hpp"
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 namespace regml {
 struct ArrayValue;
@@ -57,7 +60,44 @@ inline ArrayPtr::~ArrayPtr() {
 inline std::size_t ArrayPtr::use_count() const noexcept {
     return value_ ? value_->references_ : 0;
 }
-using VariableStore = std::unordered_map<std::string, Value>;
+struct VariableStoreHash {
+    using is_transparent = void;
+    [[nodiscard]] std::size_t operator()(std::string_view value) const noexcept {
+        return std::hash<std::string_view>{}(value);
+    }
+};
+class VariableStore : public std::unordered_map<std::string, Value, VariableStoreHash, std::equal_to<>> {
+    using Base = std::unordered_map<std::string, Value, VariableStoreHash, std::equal_to<>>;
+
+  public:
+    using Base::Base;
+    using Base::operator=;
+    using Base::at;
+    using Base::operator[];
+
+    Value &at(std::string_view key) {
+        const auto found = this->find(key);
+        if (found == this->end())
+            throw std::out_of_range("variable not found");
+        return found->second;
+    }
+    const Value &at(std::string_view key) const {
+        const auto found = this->find(key);
+        if (found == this->end())
+            throw std::out_of_range("variable not found");
+        return found->second;
+    }
+    Value &at(const char *key) { return at(std::string_view(key)); }
+    const Value &at(const char *key) const { return at(std::string_view(key)); }
+
+    Value &operator[](std::string_view key) {
+        const auto found = this->find(key);
+        if (found != this->end())
+            return found->second;
+        return this->try_emplace(std::string(key)).first->second;
+    }
+    Value &operator[](const char *key) { return (*this)[std::string_view(key)]; }
+};
 enum class VariableScope { local, self, global };
 struct VariableBinding {
     VariableScope scope;

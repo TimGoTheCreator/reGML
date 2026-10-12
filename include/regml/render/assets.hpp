@@ -1,6 +1,7 @@
 #pragma once
 #include "regml/formats/package.hpp"
 #include "regml/render/canvas.hpp"
+#include <array>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -53,11 +54,13 @@ class GameAssets {
     };
     struct Glyph {
         int x = 0, y = 0, w = 0, h = 0, shift = 0, offset = 0;
+        mutable std::int8_t alpha_mode = -1;
     };
     struct Font {
         std::size_t region = 0;
         int size = 0;
-        std::unordered_map<unsigned, Glyph> glyphs;
+        std::array<Glyph, 256> glyphs{};
+        std::array<bool, 256> has_glyph{};
         const Region *atlas = nullptr;
     };
     const Package &package_;
@@ -69,6 +72,8 @@ class GameAssets {
     std::vector<const Region *> background_regions_;
     std::vector<Font> fonts_;
     std::vector<std::size_t> backgrounds_;
+    std::vector<int> scaled_x_;
+    std::vector<int> scaled_y_;
     void load_page(int id);
     void blit(Canvas &canvas, const Region &r, double x, double y, double sx, double sy, double angle, unsigned color,
               double alpha);

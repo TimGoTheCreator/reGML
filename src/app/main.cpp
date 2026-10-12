@@ -39,7 +39,8 @@ void help() {
                  "  regml play-demo [--frames N] [--headless | --hidden] [--autoplay]\n"
                  "  regml run <data.win> [--frames N] [--headless | --hidden]\n"
                  "                  [--screenshot output.bmp] [--input-script file]\n"
-                 "                  [--seed N] [--save-dir directory] [--speed Nx]\n"
+                 "                  [--seed N] [--save-dir directory] [--speed Nx] [--speed-control]\n"
+                 "                  --speed-control enables [ / ] to halve or double speed during play.\n"
                  "                  Speed affects real-time playback; hidden/headless runs are unthrottled.\n"
                  "  regml --help | --version\n\n"
                  "Inspection is read-only. Resource tables: v14-v17 prefix/layout.\n"
@@ -238,6 +239,8 @@ int command(int argc, char **argv) {
                 options.hidden = true;
             else if (flag == "--autoplay")
                 options.autoplay = true;
+            else if (flag == "--speed-control")
+                options.speed_controls = true;
             else if (flag == "--frames" || flag == "--screenshot" || flag == "--input-script" || flag == "--seed" ||
                      flag == "--save-dir" || flag == "--speed") {
                 if (++i >= argc)
@@ -264,6 +267,8 @@ int command(int argc, char **argv) {
         }
         if (options.headless && options.hidden)
             throw regml::Error(regml::ErrorKind::usage, "choose either --headless or --hidden");
+        if (options.speed_controls && (options.headless || options.hidden))
+            throw regml::Error(regml::ErrorKind::usage, "--speed-control requires a visible game window");
         const auto report = name == "run" ? regml::play_game(argv[2], options) : regml::play_demo(options);
         std::cout << (name == "run" ? "reGML package execution" : "reGML VM Arcade") << "\nFrames: " << report.frames
                   << "\nVM instructions: " << report.instructions;

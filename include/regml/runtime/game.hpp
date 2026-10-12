@@ -2,6 +2,7 @@
 #include "regml/runtime/demo.hpp"
 #include <memory>
 #include <optional>
+#include <span>
 namespace regml {
 class GameSession {
   public:
@@ -18,7 +19,7 @@ class GameSession {
     std::size_t frames() const;
     std::size_t instructions() const;
     std::string room_name() const;
-    std::span<const float> audio() const;
+    void mix_audio(std::span<float> output, double playback_rate = 1.0) noexcept;
     double speed() const;
     std::vector<InstanceState> instance_states() const;
 

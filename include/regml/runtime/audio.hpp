@@ -1,7 +1,9 @@
 #pragma once
 #include "regml/formats/package.hpp"
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <unordered_map>
 namespace regml {
@@ -24,6 +26,9 @@ class GameAudio {
     double position(int id) const;
     void position(int id, double seconds);
     std::vector<float> mix(std::size_t frames);
+    void mix(std::size_t frames, std::vector<float> &output);
+    void mix(std::span<float> output, double playback_rate = 1.0) noexcept;
+    void service();
 
   private:
 #if REGML_WIIU
@@ -51,6 +56,7 @@ class GameAudio {
     std::vector<std::size_t> embedded_;
     std::unordered_map<int, Sound> sounds_;
     std::unordered_map<int, Voice> voices_;
+    mutable std::mutex voices_mutex_;
     int next_stream_ = 100000, next_voice_ = 1000000, channels_ = 128;
     Clip *load(int id);
     std::vector<std::uint8_t> read_audio(int id) const;

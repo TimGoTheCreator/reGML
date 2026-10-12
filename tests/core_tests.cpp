@@ -7,6 +7,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <cmath>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -720,6 +721,47 @@ int main(int argc, char **argv) {
              check(composite.pixel(0, 1) == 0xffff0000, "fast surface path clips and blends correctly");
              error_is(regml::ErrorKind::vm, [&] { canvas.alpha(std::numeric_limits<double>::quiet_NaN()); });
              error_is(regml::ErrorKind::unsupported, [&] { regml::Canvas invalid(0, 16); });
+         }},
+        {"rectangle spans preserve clipped edges and alpha",
+         [] {
+             const std::array<std::array<double, 4>, 9> rectangles = {{
+                 {0, 0, 24, 19}, {-5, -4, 12, 8}, {5.3, 4.8, 20.2, 16.1}, {18, 15, 3, 2},
+                 {-100, -100, 100, 100}, {4, 3, 4, 12}, {4, 3, 5, 4}, {4, 3, 6, 5},
+                 {-1e100, 2, 1e100, 18}}};
+             for (const auto &rectangle : rectangles)
+                 for (const bool outline : {false, true})
+                     for (const bool transparent : {false, true})
+                         for (const double opacity : {0.0, 0.37, 1.0}) {
+                             regml::Canvas fast(24, 19), reference(24, 19);
+                             if (transparent) {
+                                 fast.clear_transparent();
+                                 reference.clear_transparent();
+                             } else {
+                                 fast.clear(0x342516);
+                                 reference.clear(0x342516);
+                             }
+                             fast.color(0x397ac5);
+                             fast.alpha(opacity);
+                             fast.rectangle(rectangle[0], rectangle[1], rectangle[2], rectangle[3], outline);
+                             const double left = std::floor(std::min(rectangle[0], rectangle[2])),
+                                          right = std::ceil(std::max(rectangle[0], rectangle[2])),
+                                          top = std::floor(std::min(rectangle[1], rectangle[3])),
+                                          bottom = std::ceil(std::max(rectangle[1], rectangle[3]));
+                             const unsigned alpha = static_cast<unsigned>(std::lround(opacity * 255));
+                             for (int y = 0; y < 19; ++y)
+                                 for (int x = 0; x < 24; ++x) {
+                                     if (x < left || x >= right || y < top || y >= bottom ||
+                                         (outline && x != left && x != right - 1 && y != top && y != bottom - 1))
+                                         continue;
+                                     auto &pixel = reference.pixels()[static_cast<std::size_t>(y) * 24 + x];
+                                     unsigned result = 0xff000000;
+                                     for (const unsigned shift : {0U, 8U, 16U})
+                                         result |= (((0xc57a39U >> shift & 255) * alpha +
+                                                     (pixel >> shift & 255) * (255 - alpha) + 127) / 255) << shift;
+                                     pixel = result;
+                                 }
+                             check(fast.hash() == reference.hash(), "rectangle span changed coverage or blending");
+                         }
          }},
         {"sprite row blit matches per-pixel compositing",
          [] {

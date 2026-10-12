@@ -52,6 +52,7 @@ enum class Opcode : std::uint8_t {
 std::string_view opcode_name(Opcode opcode) noexcept;
 std::string_view type_name(DataType type) noexcept;
 struct Instruction {
+    static constexpr std::size_t no_symbol = static_cast<std::size_t>(-1);
     std::size_t offset = 0, size = 4;
     std::uint32_t word = 0;
     Opcode opcode{};
@@ -60,6 +61,7 @@ struct Instruction {
     // Symbol words are left for the linker.
     std::variant<std::monostate, std::int32_t, std::int64_t, double> immediate;
     std::optional<std::uint32_t> reference;
+    std::size_t variable_id = no_symbol, function_id = no_symbol;
     std::optional<std::size_t> branch_target;
     bool environment_exit = false;
 };

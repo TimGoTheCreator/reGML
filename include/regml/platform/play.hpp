@@ -8,6 +8,7 @@ struct PlayOptions {
     bool headless = false;
     bool hidden = false;
     bool autoplay = false;
+    bool speed_controls = false;
     double speed_multiplier = 1.0;
     std::filesystem::path screenshot;
     std::filesystem::path input_script;
