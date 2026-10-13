@@ -1,4 +1,7 @@
 #include "play.hpp"
+#if REGML_MINIAUDIO
+#include "audio/miniaudio/output.hpp"
+#endif
 #if REGML_WII
 #include "platform/wii/host.hpp"
 #include "platform/wii/renderer.hpp"
@@ -297,6 +300,14 @@ class VideoWindow {
 #endif
 class AudioDevice {
   public:
+#if REGML_MINIAUDIO
+    AudioDevice(GameSession &session, double speed) : output_(session, speed) {}
+    void set_speed(double speed) { output_.set_speed(speed); }
+    void pump() {}
+
+  private:
+    MiniAudioOutput output_;
+#else
     AudioDevice(GameSession &session, double speed) : session_(session) {
         sdl_ok(SDL_InitSubSystem(SDL_INIT_AUDIO), "audio initialization");
         SDL_AudioSpec want{}, got{};
@@ -352,6 +363,7 @@ class AudioDevice {
     SDL_AudioDeviceID device_ = 0;
 #if REGML_WII
     std::array<float, 2048> audio_buffer_{};
+#endif
 #endif
 };
 #endif

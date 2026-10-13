@@ -1,4 +1,4 @@
-﻿# reGML
+# reGML
 
 GameMaker VM runner in C++20
 
@@ -33,6 +33,15 @@ ctest --test-dir build --output-on-failure -C Release
 ```
 
 For headless builds, add `-DREGML_SDL2=OFF` when configuring
+
+The optional miniaudio output backend can be tried in a separate desktop build:
+
+```sh
+cmake -S . -B build/miniaudio -DREGML_MINIAUDIO=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build/miniaudio --config Release
+```
+
+It only replaces the output device. Decoding and mixing still use `audio/sdl`; the default SDL output is unchanged. Wii and Wii U builds do not support this option.
 
 ## Run
 

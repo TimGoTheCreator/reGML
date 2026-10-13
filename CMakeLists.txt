@@ -6,12 +6,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(REGML_SDL2 "Enable SDL2 windowed frontend" ON)
+option(REGML_MINIAUDIO "Use the experimental miniaudio output backend on desktop" OFF)
 option(REGML_WIIU "Build a Wii U homebrew RPX with devkitPro wut" OFF)
 option(REGML_WII "Build a Nintendo Wii homebrew DOL with devkitPro libogc" OFF)
 set(REGML_UNDERTALE_DATA "" CACHE FILEPATH "Optional Undertale data.win path for audio integration testing")
 
 if(REGML_WIIU AND REGML_WII)
     message(FATAL_ERROR "REGML_WIIU and REGML_WII are separate targets")
+endif()
+
+if(REGML_MINIAUDIO AND (REGML_WIIU OR REGML_WII))
+    message(FATAL_ERROR "REGML_MINIAUDIO is experimental and currently desktop-only")
+endif()
+if(REGML_MINIAUDIO AND NOT REGML_SDL2)
+    message(FATAL_ERROR "REGML_MINIAUDIO currently requires the SDL2 frontend")
 endif()
 
 if(REGML_WIIU OR REGML_WII)
@@ -53,6 +61,12 @@ list(APPEND REGML_ENGINE_SOURCES ${REGML_AUDIO_SOURCES} ${REGML_DEMO_SOURCES})
 if(REGML_WIIU)
     list(APPEND REGML_ENGINE_SOURCES "src/platform/wiiu/audio_async.cpp")
 endif()
+if(REGML_MINIAUDIO)
+    list(APPEND REGML_ENGINE_SOURCES
+        "src/audio/miniaudio/output.cpp"
+        "src/audio/miniaudio/miniaudio_impl.cpp"
+    )
+endif()
 list(FILTER REGML_ENGINE_SOURCES EXCLUDE REGEX "/main\\.cpp$")
 
 add_library(regml_engine STATIC ${REGML_ENGINE_SOURCES})
@@ -60,6 +74,22 @@ add_library(regml_engine STATIC ${REGML_ENGINE_SOURCES})
 target_include_directories(regml_engine PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
+target_include_directories(regml_engine SYSTEM PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+
+if(REGML_MINIAUDIO)
+    target_compile_definitions(regml_engine PUBLIC REGML_MINIAUDIO=1)
+    if(WIN32)
+        target_link_libraries(regml_engine PUBLIC winmm ole32 ksuser version setupapi)
+    elseif(UNIX)
+        find_package(Threads REQUIRED)
+        target_link_libraries(regml_engine PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+        if(NOT APPLE)
+            target_link_libraries(regml_engine PUBLIC m)
+        endif()
+    endif()
+endif()
 
 if(REGML_WIIU OR REGML_WII)
     target_link_libraries(regml_engine PUBLIC
