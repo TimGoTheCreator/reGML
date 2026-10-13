@@ -98,6 +98,24 @@ Tested with Cemu 2.6
 
 Trace logs and input scripts: [docs/wiiu.md](docs/wiiu.md)
 
+## Wii (experimental)
+
+The Wii build uses devkitPro's SDL2 port. The VM and software framebuffer are shared with the desktop and Wii U builds; Wii SD setup is in `src/platform/wii_host.cpp`.
+
+Install devkitPro and run these in its MSYS2 terminal:
+
+```sh
+pacman -S --needed cmake ninja wii-dev wii-sdl2 ppc-libpng ppc-libvorbis ppc-zlib
+
+/opt/devkitpro/portlibs/wii/bin/powerpc-eabi-cmake -G Ninja -S . -B build/wii \
+  -DCMAKE_BUILD_TYPE=Release -DREGML_WII=ON -DBUILD_TESTING=OFF
+cmake --build build/wii --config Release
+```
+
+This produces `build/wii/regml.dol`. Copy it to `sd:/apps/reGML/boot.dol` and launch it from the Homebrew Channel. Put `data.win` and external audio files in `sd:/reGML/`.
+
+The DOL cross-builds; Wii hardware and Dolphin have not been tested. Rendering still uses the software framebuffer.
+
 ## Tools
 
 ```powershell

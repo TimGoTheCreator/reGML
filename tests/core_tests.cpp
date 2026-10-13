@@ -4,10 +4,10 @@
 #include "regml/runtime/game.hpp"
 #include "regml/vm/interpreter.hpp"
 #include <bit>
+#include <cmath>
 #include <fstream>
 #include <functional>
 #include <iostream>
-#include <cmath>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -377,6 +377,28 @@ int main(int argc, char **argv) {
              auto linked = regml::link_legacy_package(regml::Package::from_bytes(f.bytes));
              check(linked.variables.size() == 1 && linked.variable_at.size() == 2, "package chain linkage");
              check(linked.variable_at.at(f.blob + 12) == 0, "second occurrence");
+             auto lazy_linked = regml::link_legacy_package(regml::Package::from_bytes(f.bytes), {}, false, false, true);
+             check(lazy_linked.programs[0].instructions.empty(), "lazy linker releases decoded code after validation");
+             const auto package = regml::Package::from_bytes(f.bytes);
+             const auto &lazy_program = lazy_linked.program(package, 0);
+             for (std::size_t i = 0; i < linked.programs[0].instructions.size(); ++i)
+                 check(lazy_program.instructions[i].symbol_id == linked.programs[0].instructions[i].symbol_id,
+                       "lazy decoding restores resolved symbols");
+             lazy_linked.release_programs();
+             check(lazy_linked.program(package, 0).instructions.size() == linked.programs[0].instructions.size(),
+                   "lazy code reloads after room cache release");
+             const auto runtime_linked =
+                 regml::link_legacy_package(regml::Package::from_bytes(f.bytes), {}, false, false);
+             check(runtime_linked.variable_at.empty() && runtime_linked.function_at.empty(),
+                   "runtime omits audit maps");
+             for (std::size_t i = 0; i < linked.programs[0].instructions.size(); ++i) {
+                 check(runtime_linked.programs[0].instructions[i].symbol_id ==
+                           linked.programs[0].instructions[i].symbol_id,
+                       "runtime retains resolved symbols");
+                 const auto offset = linked.programs[0].instructions[i].offset;
+                 check(runtime_linked.programs[0].instruction_at(offset) == linked.programs[0].instruction_at(offset),
+                       "compact program resolves instruction boundaries");
+             }
              patch(f.bytes, f.blob + 8, 0xa0000000);
              error_is(regml::ErrorKind::malformed,
                       [&] { (void)regml::link_legacy_package(regml::Package::from_bytes(f.bytes)); });
@@ -431,7 +453,9 @@ int main(int argc, char **argv) {
                        package.code()[0].locals_flag,
                    "code header");
              check(package.general_info()->width == 640, "GEN8 metadata");
-             check(integer_result(regml::execute_numeric(regml::decode(package.code_bytes(0), 16))) == 42,
+             const auto code = package.code_bytes(0);
+             check(integer_result(regml::execute_numeric(
+                       regml::decode(regml::BinaryView(code, package.code()[0].bytecode_offset), 16))) == 42,
                    "loaded code execution");
              const auto copy = package;
              auto moved = copy;
@@ -442,7 +466,10 @@ int main(int argc, char **argv) {
          [] {
              const auto package = regml::Package::from_bytes(fixture(14).bytes);
              check(package.code().size() == 1, "v14 inline CODE inventory");
-             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(package.code_bytes(0), 14); });
+             error_is(regml::ErrorKind::unsupported, [&] {
+                 const auto code = package.code_bytes(0);
+                 (void)regml::decode(regml::BinaryView(code, package.code()[0].bytecode_offset), 14);
+             });
          }},
         {"truncated containers and trailing bytes",
          [] {
@@ -535,10 +562,14 @@ int main(int argc, char **argv) {
                                        0xffffffff, 0xffffffff, 0x9d000000});
              const auto program = regml::decode(regml::BinaryView(bytes, 200), 16);
              check(program.instructions.size() == 5, "variable instruction widths");
-             check(std::get<std::int32_t>(program.instructions[0].immediate) == -2, "signed pushi");
-             check(std::get<double>(program.instructions[2].immediate) == 1.0, "double payload");
-             check(std::get<std::int64_t>(program.instructions[3].immediate) == -1, "int64 payload");
+             check(program.instructions[0].immediate_i32() == -2, "signed pushi");
+             check(program.instructions[2].immediate_real() == 1.0, "double payload");
+             check(program.instructions[3].immediate_i64() == -1, "int64 payload");
              check(program.instructions[4].offset == 36, "instruction boundary");
+             const auto sentinel = regml::decode(regml::BinaryView(words({0xc0060000, 0xffffffff, 0x9d000000})), 16);
+             check(sentinel.instructions[0].has_reference() &&
+                       sentinel.instructions[0].reference_value() == 0xffffffffU,
+                   "all-ones reference is still present");
          }},
         {"truncated payload and unsupported opcode",
          [] {
@@ -560,7 +591,7 @@ int main(int argc, char **argv) {
              bytes = words({0xb6000002});
              error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); });
              bytes = words({0xbbf00000});
-             check(regml::decode(regml::BinaryView(bytes), 16).instructions[0].environment_exit,
+             check(regml::decode(regml::BinaryView(bytes), 16).instructions[0].environment_exit(),
                    "popenv exit sentinel");
          }},
         {"numeric result and operand order",
@@ -624,7 +655,8 @@ int main(int argc, char **argv) {
              f = fixture();
              patch(f.bytes, f.record + 4, 0);
              package = regml::Package::from_bytes(f.bytes);
-             const auto empty = regml::decode(package.code_bytes(0), 16);
+             const auto code = package.code_bytes(0);
+             const auto empty = regml::decode(regml::BinaryView(code, package.code()[0].bytecode_offset), 16);
              check(empty.instructions.empty() && !regml::execute_numeric(empty).returned, "zero-length code");
          }},
         {"resolved variable scopes and persistent state",
@@ -728,10 +760,15 @@ int main(int argc, char **argv) {
          }},
         {"rectangle spans preserve clipped edges and alpha",
          [] {
-             const std::array<std::array<double, 4>, 9> rectangles = {{
-                 {0, 0, 24, 19}, {-5, -4, 12, 8}, {5.3, 4.8, 20.2, 16.1}, {18, 15, 3, 2},
-                 {-100, -100, 100, 100}, {4, 3, 4, 12}, {4, 3, 5, 4}, {4, 3, 6, 5},
-                 {-1e100, 2, 1e100, 18}}};
+             const std::array<std::array<double, 4>, 9> rectangles = {{{0, 0, 24, 19},
+                                                                       {-5, -4, 12, 8},
+                                                                       {5.3, 4.8, 20.2, 16.1},
+                                                                       {18, 15, 3, 2},
+                                                                       {-100, -100, 100, 100},
+                                                                       {4, 3, 4, 12},
+                                                                       {4, 3, 5, 4},
+                                                                       {4, 3, 6, 5},
+                                                                       {-1e100, 2, 1e100, 18}}};
              for (const auto &rectangle : rectangles)
                  for (const bool outline : {false, true})
                      for (const bool transparent : {false, true})
@@ -761,7 +798,9 @@ int main(int argc, char **argv) {
                                      unsigned result = 0xff000000;
                                      for (const unsigned shift : {0U, 8U, 16U})
                                          result |= (((0xc57a39U >> shift & 255) * alpha +
-                                                     (pixel >> shift & 255) * (255 - alpha) + 127) / 255) << shift;
+                                                     (pixel >> shift & 255) * (255 - alpha) + 127) /
+                                                    255)
+                                                   << shift;
                                      pixel = result;
                                  }
                              check(fast.hash() == reference.hash(), "rectangle span changed coverage or blending");
@@ -789,9 +828,9 @@ int main(int argc, char **argv) {
          }},
         {"sprite row blit matches per-pixel compositing",
          [] {
-             const std::array<std::uint32_t, 12> source = {
-                 0x00000000, 0x01abcdef, 0x7f123456, 0xffabcdef, 0x80112233, 0xff010203,
-                 0x4000ff00, 0x00ffffff, 0xff804020, 0x7fffffff, 0xff000000, 0x20f0e0d0};
+             const std::array<std::uint32_t, 12> source = {0x00000000, 0x01abcdef, 0x7f123456, 0xffabcdef,
+                                                           0x80112233, 0xff010203, 0x4000ff00, 0x00ffffff,
+                                                           0xff804020, 0x7fffffff, 0xff000000, 0x20f0e0d0};
              for (const auto [tint, opacity] :
                   {std::pair{0xffffffU, 1.0}, std::pair{0x3366ccU, 1.0}, std::pair{0xffffffU, 0.37},
                    std::pair{0x3366ccU, 0.0}, std::pair{0xffffffU, -0.2}}) {
@@ -801,8 +840,8 @@ int main(int argc, char **argv) {
                  fast.blit_rgba(source, 4, 1, 0, 0, 1, 3, 3, tint, opacity);
                  for (int y = 0; y < 3; ++y)
                      for (int x = 0; x < 3; ++x)
-                         reference.rgba_pixel_tinted(x, y + 1, source[static_cast<std::size_t>(y) * 4 + x + 1],
-                                                     tint, opacity);
+                         reference.rgba_pixel_tinted(x, y + 1, source[static_cast<std::size_t>(y) * 4 + x + 1], tint,
+                                                     opacity);
                  check(fast.hash() == reference.hash(), "specialized blit must preserve pixel compositing");
              }
              const std::array<std::uint32_t, 6> opaque = {0xff123456, 0xffabcdef, 0xff000000,
@@ -815,17 +854,15 @@ int main(int argc, char **argv) {
                  for (int x = 0; x < 3; ++x)
                      reference.rgba_pixel_tinted(x, y, opaque[static_cast<std::size_t>(y) * 3 + x], 0xffffff, 1);
              check(fast.hash() == reference.hash(), "opaque row copy must match alpha compositing");
-             const std::array<std::uint32_t, 8> binary = {
-                 0x00000000, 0xff102030, 0xff405060, 0x00000000,
-                 0xff708090, 0x00000000, 0x00000000, 0xffa0b0c0};
+             const std::array<std::uint32_t, 8> binary = {0x00000000, 0xff102030, 0xff405060, 0x00000000,
+                                                          0xff708090, 0x00000000, 0x00000000, 0xffa0b0c0};
              regml::Canvas binary_fast(4, 2), binary_reference(4, 2);
              binary_fast.clear(0x203040);
              binary_reference.clear(0x203040);
              binary_fast.blit_rgba(binary, 4, 0, 0, 0, 0, 4, 2, 0xffffff, 1, 1);
              for (int y = 0; y < 2; ++y)
                  for (int x = 0; x < 4; ++x)
-                     binary_reference.rgba_pixel_tinted(x, y, binary[static_cast<std::size_t>(y) * 4 + x],
-                                                        0xffffff, 1);
+                     binary_reference.rgba_pixel_tinted(x, y, binary[static_cast<std::size_t>(y) * 4 + x], 0xffffff, 1);
              check(binary_fast.hash() == binary_reference.hash(), "binary-alpha runs must match compositing");
          }},
         {"playable VM fixture controls, bounds and scoring",

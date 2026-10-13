@@ -1,4 +1,7 @@
 #include "regml/platform/play.hpp"
+#if REGML_WII
+#include "regml/platform/wii_host.hpp"
+#endif
 #include "regml/runtime/game.hpp"
 #include <algorithm>
 #include <chrono>
@@ -27,8 +30,8 @@ class FrameProfileLog {
     }
     ~FrameProfileLog() { flush(); }
     bool enabled() const noexcept { return file_.is_open(); }
-    void sample(std::size_t frame, const std::string &room, std::size_t instructions,
-                double frame_ms, double tick_ms, double present_ms) {
+    void sample(std::size_t frame, const std::string &room, std::size_t instructions, double frame_ms, double tick_ms,
+                double present_ms) {
         if (room != room_) {
             flush();
             room_ = room;
@@ -44,14 +47,14 @@ class FrameProfileLog {
         if (samples_ == 30)
             flush();
     }
+
   private:
     void flush() {
         if (!samples_)
             return;
         const auto count = static_cast<double>(samples_);
-        file_ << frame_ << ',' << std::quoted(room_) << ',' << samples_ << ','
-              << frame_ms_ / count << ',' << tick_ms_ / count << ',' << present_ms_ / count << ','
-              << max_tick_ms_ << ',' << max_present_ms_ << ','
+        file_ << frame_ << ',' << std::quoted(room_) << ',' << samples_ << ',' << frame_ms_ / count << ','
+              << tick_ms_ / count << ',' << present_ms_ / count << ',' << max_tick_ms_ << ',' << max_present_ms_ << ','
               << static_cast<double>(instructions_) / count << '\n';
         file_.flush();
         samples_ = instructions_ = 0;
@@ -108,10 +111,17 @@ class VideoWindow {
     explicit VideoWindow(bool hidden, bool escape_quits = true, bool speed_controls = false)
         : escape_quits_(escape_quits), speed_controls_(speed_controls) {
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+#if REGML_WII
+        const auto flags = static_cast<Uint32>(SDL_WINDOW_FULLSCREEN | (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN));
+        constexpr int window_width = 640, window_height = 480;
+#else
         const auto flags = static_cast<Uint32>(SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
                                                (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN));
+        constexpr int window_width = 800, window_height = 600;
+#endif
         window_.reset(SDL_CreateWindow(escape_quits ? "reGML - VM Arcade" : "reGML - Game (experimental)",
-                                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 800, 600, flags));
+                                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, window_width, window_height,
+                                       flags));
         if (!window_)
             throw Error(ErrorKind::io, std::string("window creation: ") + SDL_GetError());
         renderer_.reset(SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_ACCELERATED));
@@ -259,8 +269,10 @@ class AudioDevice {
         want.format = AUDIO_F32SYS;
         want.channels = 2;
         want.samples = 1024;
+#if !REGML_WII
         want.callback = &AudioDevice::callback;
         want.userdata = this;
+#endif
         device_ = SDL_OpenAudioDevice(nullptr, 0, &want, &got, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
         if (!device_)
             throw Error(ErrorKind::io, std::string("audio device: ") + SDL_GetError());
@@ -277,6 +289,18 @@ class AudioDevice {
         playback_rate_ = speed * 48000.0 / obtained_frequency_;
         SDL_UnlockAudioDevice(device_);
     }
+    void pump() {
+#if REGML_WII
+        constexpr std::size_t block_samples = 2048;
+        constexpr std::size_t queued_bytes = 8192 * 2 * sizeof(float);
+        while (SDL_GetQueuedAudioSize(device_) < queued_bytes) {
+            session_.mix_audio(audio_buffer_, playback_rate_);
+            sdl_ok(SDL_QueueAudio(device_, audio_buffer_.data(), static_cast<Uint32>(block_samples * sizeof(float))),
+                   "audio queue");
+        }
+#endif
+    }
+
   private:
     static void callback(void *context, Uint8 *stream, int length) noexcept {
         auto &device = *static_cast<AudioDevice *>(context);
@@ -291,6 +315,9 @@ class AudioDevice {
     double playback_rate_ = 1;
     int obtained_frequency_ = 48000;
     SDL_AudioDeviceID device_ = 0;
+#if REGML_WII
+    std::array<float, 2048> audio_buffer_{};
+#endif
 };
 #endif
 } // namespace
@@ -455,9 +482,18 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             trace_stage("tick", &session);
             const auto tick_begin = profile.enabled() ? Clock::now() : Clock::time_point{};
             window.tick_game(session, replay.empty() ? nullptr : &replay_keys);
+            audio.pump();
             const auto tick_end = profile.enabled() ? Clock::now() : Clock::time_point{};
             trace_stage("present", &session);
             window.present(session.canvas());
+#if REGML_WII
+            if (!options.trace_log.empty()) {
+                if (session.frames() <= 10 || session.frames() % 30 == 0)
+                    report_wii_frame(session.frames(), session.room_name());
+                if (session.frames() == 30)
+                    session.canvas().save_bmp(package.parent_path() / "regml-frame.bmp");
+            }
+#endif
             const auto present_end = profile.enabled() ? Clock::now() : Clock::time_point{};
             trace_stage("delay", &session);
             const auto frame_time = std::chrono::duration<double>(1.0 / (session.speed() * speed_multiplier));
@@ -472,8 +508,7 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
                     return std::chrono::duration<double, std::milli>(duration).count();
                 };
                 profile.sample(session.frames(), session.room_name(), session.instructions() - instructions_begin,
-                               ms(Clock::now() - frame_begin), ms(tick_end - tick_begin),
-                               ms(present_end - tick_end));
+                               ms(Clock::now() - frame_begin), ms(tick_end - tick_begin), ms(present_end - tick_end));
             }
         }
 #else

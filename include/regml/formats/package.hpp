@@ -2,6 +2,7 @@
 #include "regml/core/binary_view.hpp"
 #include <array>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -38,8 +39,13 @@ class Package {
   public:
     static Package load(const std::filesystem::path &path, LoadLimits limits = {});
     static Package from_bytes(std::vector<std::uint8_t> bytes, LoadLimits limits = {});
-    [[nodiscard]] BinaryView view() const { return BinaryView(bytes_); }
-    [[nodiscard]] std::size_t size() const noexcept { return bytes_.size(); }
+    [[nodiscard]] BinaryView view() const {
+        if (bytes_.size() != size_)
+            throw Error(ErrorKind::unsupported, "file-backed package has no contiguous view; use read_bytes");
+        return BinaryView(bytes_);
+    }
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
+    [[nodiscard]] std::vector<std::uint8_t> read_bytes(std::size_t offset, std::size_t length) const;
     [[nodiscard]] const std::vector<Chunk> &chunks() const noexcept { return chunks_; }
     [[nodiscard]] const Chunk *find_chunk(std::string_view name) const noexcept;
     [[nodiscard]] const std::optional<GeneralInfo> &general_info() const noexcept { return info_; }
@@ -47,19 +53,24 @@ class Package {
     [[nodiscard]] const std::vector<CodeEntry> &code() const noexcept { return code_; }
     [[nodiscard]] std::string_view string_at(std::size_t index) const;
     [[nodiscard]] std::string_view string_pointer(std::uint32_t pointer) const;
-    [[nodiscard]] BinaryView code_bytes(std::size_t index) const;
+    [[nodiscard]] std::vector<std::uint8_t> code_bytes(std::size_t index) const;
     [[nodiscard]] std::string_view code_name(std::size_t index) const;
 
   private:
+    struct FileReader;
+    std::shared_ptr<FileReader> reader_;
     void parse(LoadLimits limits);
     void parse_strings(const Chunk &chunk, LoadLimits limits);
     void parse_info(const Chunk &chunk);
     void parse_code(const Chunk &chunk, LoadLimits limits);
     [[nodiscard]] std::size_t list_count(const Chunk &chunk, LoadLimits limits) const;
     std::vector<std::uint8_t> bytes_;
+    std::filesystem::path source_path_;
+    std::size_t size_ = 0;
     std::vector<Chunk> chunks_;
     std::optional<GeneralInfo> info_;
     std::vector<StringRecord> strings_;
+    std::vector<std::string> string_values_;
     std::unordered_map<std::size_t, std::size_t> string_lookup_;
     std::vector<CodeEntry> code_;
 };

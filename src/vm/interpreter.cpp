@@ -54,10 +54,10 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
     std::vector<Value> stack;
     std::size_t pc = 0;
     while (pc != program.byte_length) {
-        const auto found = program.index_by_offset.find(pc);
-        if (found == program.index_by_offset.end() || found->second >= program.instructions.size())
+        const auto found = program.instruction_at(pc);
+        if (!found || *found >= program.instructions.size())
             throw Error(ErrorKind::vm, "program counter is not an instruction boundary", program.origin + pc);
-        const auto &ins = program.instructions[found->second];
+        const auto &ins = program.instructions[*found];
         const auto absolute = program.origin + pc;
         if (result.instructions_executed >= options.instruction_budget)
             throw Error(ErrorKind::vm, "instruction budget exhausted", absolute);
@@ -119,7 +119,7 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
             throw Error(ErrorKind::unsupported, "variable instruction has no resolved binding", absolute);
         };
         std::size_t next = pc + ins.size;
-        switch (ins.opcode) {
+        switch (ins.opcode()) {
         case Opcode::push_i:
         case Opcode::push:
         case Opcode::push_local:
@@ -132,15 +132,15 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                 if (found_value == store.end())
                     throw Error(ErrorKind::vm, "variable is not initialized: " + binding.name, absolute);
                 push(found_value->second);
-            } else if (ins.type1 == DataType::string && ins.reference && context.bindings) {
-                const auto string = context.bindings->strings.find(*ins.reference);
+            } else if (ins.type1 == DataType::string && ins.has_reference() && context.bindings) {
+                const auto string = context.bindings->strings.find(ins.reference_value());
                 if (string == context.bindings->strings.end())
                     throw Error(ErrorKind::vm, "string constant is not resolved", absolute);
                 push(string->second);
-            } else if (const auto *value = std::get_if<std::int32_t>(&ins.immediate))
-                push(*value);
-            else if (const auto *value = std::get_if<double>(&ins.immediate))
-                push(*value);
+            } else if (ins.immediate_kind == Instruction::ImmediateKind::int32)
+                push(ins.immediate_i32());
+            else if (ins.immediate_kind == Instruction::ImmediateKind::real64)
+                push(ins.immediate_real());
             else
                 throw Error(ErrorKind::unsupported, "only int32/double constants are executable", absolute);
             break;
@@ -179,15 +179,15 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
         case Opcode::conv: {
             const auto value = pop();
             check_type(value, ins.type1);
-            if (ins.type1 == ins.type2)
+            if (ins.type1 == ins.type2())
                 push(value);
-            else if (ins.type2 == DataType::variable)
+            else if (ins.type2() == DataType::variable)
                 push(value);
-            else if (ins.type1 == DataType::variable && ins.type2 == DataType::real)
+            else if (ins.type1 == DataType::variable && ins.type2() == DataType::real)
                 push(value_number(value));
-            else if (ins.type2 == DataType::real && std::holds_alternative<std::int32_t>(value))
+            else if (ins.type2() == DataType::real && std::holds_alternative<std::int32_t>(value))
                 push(static_cast<double>(std::get<std::int32_t>(value)));
-            else if (ins.type2 == DataType::boolean && std::holds_alternative<std::int32_t>(value))
+            else if (ins.type2() == DataType::boolean && std::holds_alternative<std::int32_t>(value))
                 push(std::get<std::int32_t>(value) != 0);
             else
                 throw Error(ErrorKind::unsupported, "conversion is not implemented by the numeric VM", absolute);
@@ -200,10 +200,10 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
         case Opcode::cmp: {
             const auto right = pop();
             const auto left = pop();
-            if (ins.opcode == Opcode::add && std::holds_alternative<std::string>(left) &&
+            if (ins.opcode() == Opcode::add && std::holds_alternative<std::string>(left) &&
                 std::holds_alternative<std::string>(right)) {
                 check_type(right, ins.type1);
-                check_type(left, ins.type2);
+                check_type(left, ins.type2());
                 const auto &a = std::get<std::string>(left);
                 const auto &b = std::get<std::string>(right);
                 if (a.size() > 1'048'576 || b.size() > 1'048'576 - a.size())
@@ -211,18 +211,18 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                 push(a + b);
                 break;
             }
-            if (ins.type1 == DataType::variable || ins.type2 == DataType::variable) {
+            if (ins.type1 == DataType::variable || ins.type2() == DataType::variable) {
                 check_type(right, ins.type1);
-                check_type(left, ins.type2);
+                check_type(left, ins.type2());
                 const auto a = value_number(left);
                 const auto b = value_number(right);
-                if (ins.opcode == Opcode::cmp)
-                    push(compare(a, b, ins.comparison, absolute));
-                else if (ins.opcode == Opcode::add)
+                if (ins.opcode() == Opcode::cmp)
+                    push(compare(a, b, ins.comparison(), absolute));
+                else if (ins.opcode() == Opcode::add)
                     push(a + b);
-                else if (ins.opcode == Opcode::sub)
+                else if (ins.opcode() == Opcode::sub)
                     push(a - b);
-                else if (ins.opcode == Opcode::mul)
+                else if (ins.opcode() == Opcode::mul)
                     push(a * b);
                 else {
                     if (b == 0)
@@ -232,20 +232,20 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                 }
                 break;
             }
-            if (ins.type1 != ins.type2)
+            if (ins.type1 != ins.type2())
                 throw Error(ErrorKind::unsupported, "mixed arithmetic operand types are not implemented", absolute);
             check_type(right, ins.type1);
-            check_type(left, ins.type2);
+            check_type(left, ins.type2());
             if (ins.type1 == DataType::int32) {
                 const auto a = static_cast<std::int64_t>(std::get<std::int32_t>(left));
                 const auto b = static_cast<std::int64_t>(std::get<std::int32_t>(right));
-                if (ins.opcode == Opcode::cmp)
-                    push(compare(static_cast<double>(a), static_cast<double>(b), ins.comparison, absolute));
-                else if (ins.opcode == Opcode::add)
+                if (ins.opcode() == Opcode::cmp)
+                    push(compare(static_cast<double>(a), static_cast<double>(b), ins.comparison(), absolute));
+                else if (ins.opcode() == Opcode::add)
                     push(narrow(a + b));
-                else if (ins.opcode == Opcode::sub)
+                else if (ins.opcode() == Opcode::sub)
                     push(narrow(a - b));
-                else if (ins.opcode == Opcode::mul)
+                else if (ins.opcode() == Opcode::mul)
                     push(narrow(a * b));
                 else
                     throw Error(ErrorKind::unsupported, "integer-typed div result semantics are not implemented",
@@ -253,13 +253,13 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
             } else if (ins.type1 == DataType::real) {
                 const auto a = std::get<double>(left);
                 const auto b = std::get<double>(right);
-                if (ins.opcode == Opcode::cmp)
-                    push(compare(a, b, ins.comparison, absolute));
-                else if (ins.opcode == Opcode::add)
+                if (ins.opcode() == Opcode::cmp)
+                    push(compare(a, b, ins.comparison(), absolute));
+                else if (ins.opcode() == Opcode::add)
                     push(a + b);
-                else if (ins.opcode == Opcode::sub)
+                else if (ins.opcode() == Opcode::sub)
                     push(a - b);
-                else if (ins.opcode == Opcode::mul)
+                else if (ins.opcode() == Opcode::mul)
                     push(a * b);
                 else {
                     if (b == 0)
@@ -276,14 +276,14 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
         case Opcode::bit_xor: {
             const auto right = pop();
             const auto left = pop();
-            if (ins.type1 != DataType::boolean || ins.type2 != DataType::boolean)
+            if (ins.type1 != DataType::boolean || ins.type2() != DataType::boolean)
                 throw Error(ErrorKind::unsupported, "integer bit operations are not implemented", absolute);
             check_type(right, ins.type1);
-            check_type(left, ins.type2);
+            check_type(left, ins.type2());
             const bool a = std::get<bool>(left), b = std::get<bool>(right);
-            if (ins.opcode == Opcode::bit_or)
+            if (ins.opcode() == Opcode::bit_or)
                 push(a || b);
-            else if (ins.opcode == Opcode::bit_and)
+            else if (ins.opcode() == Opcode::bit_and)
                 push(a && b);
             else
                 push(a != b);
@@ -301,7 +301,7 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
             break;
         }
         case Opcode::dup:
-            if (ins.extra != 0 || ((ins.word >> 8) & 0xff) != 0)
+            if (ins.extra() != 0 || ((ins.word >> 8) & 0xff) != 0)
                 throw Error(ErrorKind::unsupported, "only the basic dup variant is implemented", absolute);
             if (stack.empty())
                 throw Error(ErrorKind::vm, "operand stack underflow", absolute);
@@ -317,15 +317,15 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
         case Opcode::branch_true:
         case Opcode::branch_false: {
             bool take = true;
-            if (ins.opcode != Opcode::branch) {
+            if (ins.opcode() != Opcode::branch) {
                 take = truth(pop());
-                if (ins.opcode == Opcode::branch_false)
+                if (ins.opcode() == Opcode::branch_false)
                     take = !take;
             }
             if (take) {
-                if (!ins.branch_target)
+                if (!ins.has_branch_target())
                     throw Error(ErrorKind::vm, "branch has no decoded target", absolute);
-                next = *ins.branch_target;
+                next = ins.branch_target_value();
             }
             break;
         }
@@ -339,7 +339,7 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
             return result;
         default:
             throw Error(ErrorKind::unsupported,
-                        std::string(opcode_name(ins.opcode)) + " is decoded but not executable by the numeric VM",
+                        std::string(opcode_name(ins.opcode())) + " is decoded but not executable by the numeric VM",
                         absolute);
         }
         pc = next;

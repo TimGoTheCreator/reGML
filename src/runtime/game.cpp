@@ -3,6 +3,9 @@
 #include "regml/render/assets.hpp"
 #include "regml/runtime/audio.hpp"
 #include "regml/vm/interpreter.hpp"
+#if REGML_WII
+#include "regml/platform/wii_host.hpp"
+#endif
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -13,10 +16,32 @@
 #include <map>
 #include <random>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 namespace regml {
 namespace {
+#if REGML_WII
+constexpr bool build_instruction_index = false;
+constexpr bool lazy_programs = true;
+#else
+constexpr bool build_instruction_index = true;
+constexpr bool lazy_programs = false;
+#endif
+template <class Factory> auto load_stage(std::string_view name, Factory factory) {
+#if REGML_WII
+    struct MemoryReport {
+        std::string_view name;
+        ~MemoryReport() { report_wii_memory(name); }
+    } report{name};
+    report_wii_memory(name);
+#endif
+    try {
+        return factory();
+    } catch (const std::bad_alloc &) {
+        throw Error(ErrorKind::io, "out of memory while loading " + std::string(name));
+    }
+}
 int number(const Value &v) {
     const auto n = value_number(v);
     if (!std::isfinite(n) || n < INT32_MIN || n > INT32_MAX)
@@ -146,7 +171,9 @@ struct GameSession::Impl {
     Canvas canvas{640, 480};
     std::vector<Path> paths;
     std::vector<Object> objects;
-    struct CollisionRoute { int source = -1, target = -1; };
+    struct CollisionRoute {
+        int source = -1, target = -1;
+    };
     std::unordered_map<std::uint64_t, CollisionRoute> collision_routes;
     std::vector<Room> rooms;
     std::vector<int> order, scripts;
@@ -196,17 +223,29 @@ struct GameSession::Impl {
     std::vector<EventFrame> event_stack;
     std::filesystem::path game_dir;
     std::optional<std::uint32_t> fixed_seed;
+    mutable std::unordered_map<std::string, std::vector<std::uint8_t>> load_chunks;
     explicit Impl(const std::filesystem::path &path, std::optional<std::uint32_t> seed,
                   const std::filesystem::path &save_directory)
-        : package(Package::load(path)), linked(link_legacy_package(package)), assets(package),
-          audio(package, path.parent_path()), game_dir(path.parent_path()), fixed_seed(seed) {
+        : package(load_stage("package metadata", [&] { return Package::load(path); })),
+          linked(load_stage(
+              "bytecode",
+              [&] { return link_legacy_package(package, {}, false, build_instruction_index, lazy_programs); })),
+          assets(load_stage("graphics metadata", [&] { return GameAssets(package); })),
+          audio(load_stage("audio metadata", [&] { return GameAudio(package, path.parent_path()); })),
+          game_dir(path.parent_path()), fixed_seed(seed) {
         if (seed)
             random.seed(*seed);
         if (!save_directory.empty())
             save_dir = save_directory;
         else
             save_dir /= save_profile(package, path);
-        load_world();
+        load_stage("world metadata", [&] {
+            load_world();
+            return true;
+        });
+        // Execution uses IDs baked into instructions; these audit maps can leave the stage now.
+        std::unordered_map<std::size_t, std::size_t>{}.swap(linked.variable_at);
+        std::unordered_map<std::size_t, std::size_t>{}.swap(linked.function_at);
         engine = {{"os_type", std::int32_t{0}},
                   {"os_version", std::int32_t{0}},
                   {"debug_mode", std::int32_t{0}},
@@ -225,28 +264,40 @@ struct GameSession::Impl {
                   {"mouse_x", 0.0},
                   {"mouse_y", 0.0},
                   {"mouse_button", std::int32_t{0}}};
-        enter(order.at(0));
+        load_stage("initial room", [&] {
+            enter(order.at(0));
+            return true;
+        });
     }
     std::vector<std::size_t> list(std::size_t at, const Chunk &c) const {
         if (at < c.data_offset || at > c.data_offset + c.size || c.data_offset + c.size - at < 4)
             throw Error(ErrorKind::malformed, "resource list outside chunk", at);
-        const auto data = package.view();
-        const auto count = static_cast<std::size_t>(data.u32(at));
+        const auto &bytes = load_chunk(c);
+        const BinaryView data(bytes, c.data_offset);
+        const auto local = at - c.data_offset;
+        const auto count = static_cast<std::size_t>(data.u32(local));
         if (count > 1'000'000 || count > (c.data_offset + c.size - at - 4) / 4)
             throw Error(ErrorKind::malformed, "invalid resource list", at);
         std::vector<std::size_t> out;
         for (std::size_t i = 0; i < count; ++i) {
-            const auto p = data.u32(at + 4 + i * 4);
+            const auto p = data.u32(local + 4 + i * 4);
             if (p < c.data_offset || p >= c.data_offset + c.size)
                 throw Error(ErrorKind::malformed, "resource pointer outside chunk", at + 4 + i * 4);
             out.push_back(p);
         }
         return out;
     }
+    const std::vector<std::uint8_t> &load_chunk(const Chunk &c) const {
+        const auto key = std::string(c.tag.data(), c.tag.size());
+        auto [it, inserted] = load_chunks.try_emplace(key);
+        if (inserted)
+            it->second = package.read_bytes(c.data_offset, c.size);
+        return it->second;
+    }
     BinaryView record(std::size_t at, const Chunk &c, std::size_t length) const {
         if (at < c.data_offset || at > c.data_offset + c.size || length > c.data_offset + c.size - at)
             throw Error(ErrorKind::malformed, "resource record outside chunk", at);
-        return package.view().slice(at, length);
+        return BinaryView(load_chunk(c), c.data_offset).slice(at - c.data_offset, length);
     }
     void code_valid(int id) const {
         if (id < -1 || (id >= 0 && static_cast<std::size_t>(id) >= linked.programs.size()))
@@ -374,7 +425,8 @@ struct GameSession::Impl {
                 }
                 const int parent = definition->parent;
                 definition = parent >= 0 && static_cast<std::size_t>(parent) < objects.size()
-                                 ? &objects[static_cast<std::size_t>(parent)] : nullptr;
+                                 ? &objects[static_cast<std::size_t>(parent)]
+                                 : nullptr;
             }
             for (int step = 0; step < 3; ++step)
                 if (const auto found = object.event_owners.find({3, step}); found != object.event_owners.end())
@@ -449,10 +501,12 @@ struct GameSession::Impl {
                 throw Error(ErrorKind::malformed, "invalid ordered room");
             order.push_back(id);
         }
+        // The parsed world is now in structs; keeping every source chunk would waste Wii RAM for nostalgia.
+        load_chunks.clear();
     }
     InstancePtr make(const Placement &p) {
         static constexpr std::array<std::string_view, 12> alarm_variables = {
-            "alarm[0]", "alarm[1]", "alarm[2]", "alarm[3]", "alarm[4]", "alarm[5]",
+            "alarm[0]", "alarm[1]", "alarm[2]", "alarm[3]", "alarm[4]",  "alarm[5]",
             "alarm[6]", "alarm[7]", "alarm[8]", "alarm[9]", "alarm[10]", "alarm[11]"};
         if (instances.size() >= 10000)
             throw Error(ErrorKind::vm, "instance limit reached");
@@ -513,8 +567,8 @@ struct GameSession::Impl {
                   top = full_sprite ? 0 : s.top, bottom = full_sprite ? s.height : s.bottom + 1;
         const double a = value_number(i.vars.at("image_angle")) * 3.141592653589793 / 180;
         if (a == 0) {
-            const double x1 = x + (left - s.ox) * sx, x2 = x + (right - s.ox) * sx,
-                         y1 = y + (top - s.oy) * sy, y2 = y + (bottom - s.oy) * sy;
+            const double x1 = x + (left - s.ox) * sx, x2 = x + (right - s.ox) * sx, y1 = y + (top - s.oy) * sy,
+                         y2 = y + (bottom - s.oy) * sy;
             return {std::min(x1, x2), std::max(x1, x2), std::min(y1, y2), std::max(y1, y2), true};
         }
         const double c = std::cos(a), sn = std::sin(a);
@@ -575,8 +629,8 @@ struct GameSession::Impl {
         const double dx = world_x - mask.x, dy = world_y - mask.y;
         const int px = static_cast<int>(std::floor((dx * mask.c - dy * mask.sn) / mask.sx + sprite.ox));
         const int py = static_cast<int>(std::floor((dx * mask.sn + dy * mask.c) / mask.sy + sprite.oy));
-        if (px < sprite.left || px > sprite.right || py < sprite.top || py > sprite.bottom ||
-            px < 0 || py < 0 || px >= sprite.width || py >= sprite.height)
+        if (px < sprite.left || px > sprite.right || py < sprite.top || py > sprite.bottom || px < 0 || py < 0 ||
+            px >= sprite.width || py >= sprite.height)
             return false;
         if (mask.pixels.empty())
             return true;
@@ -626,8 +680,8 @@ struct GameSession::Impl {
         return out;
     }
     CollisionRoute collision_event(int source, int target) {
-        const auto key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(source)) << 32) |
-                         static_cast<std::uint32_t>(target);
+        const auto key =
+            (static_cast<std::uint64_t>(static_cast<std::uint32_t>(source)) << 32) | static_cast<std::uint32_t>(target);
         if (const auto found = collision_routes.find(key); found != collision_routes.end())
             return found->second;
         const auto remember = [&](CollisionRoute route) {
@@ -635,11 +689,11 @@ struct GameSession::Impl {
                 collision_routes.emplace(key, route);
             return route;
         };
-        for (std::size_t guard = 0; source >= 0 && static_cast<std::size_t>(source) < objects.size() &&
-                                    guard < objects.size(); ++guard) {
+        for (std::size_t guard = 0;
+             source >= 0 && static_cast<std::size_t>(source) < objects.size() && guard < objects.size(); ++guard) {
             int other = target;
-            for (std::size_t tg = 0; other >= 0 && static_cast<std::size_t>(other) < objects.size() &&
-                                    tg < objects.size(); ++tg) {
+            for (std::size_t tg = 0;
+                 other >= 0 && static_cast<std::size_t>(other) < objects.size() && tg < objects.size(); ++tg) {
                 if (objects[static_cast<std::size_t>(source)].events.contains({4, other}))
                     return remember({source, other});
                 other = objects[static_cast<std::size_t>(other)].parent;
@@ -660,7 +714,8 @@ struct GameSession::Impl {
             owner = definition.step_owners[static_cast<std::size_t>(subtype)];
         else if (type == 8 && subtype == 0)
             owner = definition.draw_owner;
-        else if (const auto found = definition.event_owners.find({type, subtype}); found != definition.event_owners.end())
+        else if (const auto found = definition.event_owners.find({type, subtype});
+                 found != definition.event_owners.end())
             owner = found->second;
         if (owner < 0)
             return;
@@ -676,6 +731,8 @@ struct GameSession::Impl {
     void enter(int id) {
         if (id < 0 || static_cast<std::size_t>(id) >= rooms.size())
             throw Error(ErrorKind::vm, "room ID out of range");
+        if (depth == 0)
+            linked.release_programs();
         tick_instances.assign(instances.begin(), instances.end());
         const auto &previous = tick_instances;
         for (auto &i : previous)
@@ -747,6 +804,10 @@ struct GameSession::Impl {
     Value execute(int code, InstancePtr self, std::span<const Value> arguments, InstancePtr other = {}) {
         if (code < 0)
             return std::monostate{};
+#if REGML_WII
+        if (frame == 0 && depth < 4)
+            report_wii_memory(package.code_name(static_cast<std::size_t>(code)));
+#endif
         if (depth >= 128)
             throw Error(ErrorKind::vm, "script call depth exceeded");
         ++depth;
@@ -754,7 +815,7 @@ struct GameSession::Impl {
             std::size_t &d;
             ~Guard() { --d; }
         } guard{depth};
-        const auto &program = linked.programs.at(static_cast<std::size_t>(code));
+        const auto &program = linked.program(package, static_cast<std::size_t>(code));
         VariableStore locals;
         locals["argument_count"] = static_cast<std::int32_t>(arguments.size());
         for (std::size_t i = 0; i < arguments.size(); ++i) {
@@ -790,10 +851,10 @@ struct GameSession::Impl {
                 const auto &ins = program.instructions[instruction_index];
                 std::size_t next = pc + ins.size;
                 auto variable = [&](bool writing, Value value = std::monostate{}) -> Value {
-                    const auto id = ins.variable_id;
+                    const auto id = static_cast<std::size_t>(ins.symbol_id);
                     const auto &symbol = linked.variables[id];
                     std::string name = symbol.name;
-                    const auto kind = (*ins.reference >> 24) & 0xf8;
+                    const auto kind = (ins.reference_value() >> 24) & 0xf8;
                     int scope = std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
                     int array_index = -1;
                     if (kind == 0) {
@@ -851,7 +912,7 @@ struct GameSession::Impl {
                     else if (scope == -7 || name.starts_with("argument"))
                         store = &locals;
                     else if (engine.contains(name) ||
-                             (kind == 0xa0 && ins.opcode == Opcode::push_builtin && !self->vars.contains(name)))
+                             (kind == 0xa0 && ins.opcode() == Opcode::push_builtin && !self->vars.contains(name)))
                         store = &engine;
                     else {
                         const auto found = targets(scope, self, other);
@@ -929,7 +990,7 @@ struct GameSession::Impl {
                     }
                     return access(store);
                 };
-                switch (ins.opcode) {
+                switch (ins.opcode()) {
                 case Opcode::push_i:
                 case Opcode::push:
                 case Opcode::push_local:
@@ -938,13 +999,13 @@ struct GameSession::Impl {
                     if (ins.type1 == DataType::variable)
                         push(variable(false));
                     else if (ins.type1 == DataType::string)
-                        push(std::string(package.string_at(*ins.reference)));
-                    else if (auto v = std::get_if<std::int32_t>(&ins.immediate))
-                        push(*v);
-                    else if (auto v = std::get_if<double>(&ins.immediate))
-                        push(*v);
-                    else if (auto v = std::get_if<std::int64_t>(&ins.immediate))
-                        push(static_cast<double>(*v));
+                        push(std::string(package.string_at(ins.reference_value())));
+                    else if (ins.immediate_kind == Instruction::ImmediateKind::int32)
+                        push(ins.immediate_i32());
+                    else if (ins.immediate_kind == Instruction::ImmediateKind::real64)
+                        push(ins.immediate_real());
+                    else if (ins.immediate_kind == Instruction::ImmediateKind::int64)
+                        push(static_cast<double>(ins.immediate_i64()));
                     else
                         throw Error(ErrorKind::unsupported, "unsupported native push");
                     break;
@@ -956,7 +1017,7 @@ struct GameSession::Impl {
                         auto v = pop();
                         variable(true, v);
                     } else {
-                        const auto kind = (*ins.reference >> 24) & 0xf8;
+                        const auto kind = (ins.reference_value() >> 24) & 0xf8;
                         std::vector<Value> address;
                         if (kind == 0) {
                             auto index = pop();
@@ -973,18 +1034,18 @@ struct GameSession::Impl {
                 }
                 case Opcode::conv: {
                     auto v = pop();
-                    if (ins.type2 == DataType::int32)
+                    if (ins.type2() == DataType::int32)
                         push(static_cast<std::int32_t>(number(v)));
-                    else if (ins.type2 == DataType::real)
+                    else if (ins.type2() == DataType::real)
                         push(value_number(v));
-                    else if (ins.type2 == DataType::boolean)
+                    else if (ins.type2() == DataType::boolean)
                         push(value_number(v) > 0.5);
                     else
                         push(v);
                     break;
                 }
                 case Opcode::dup: {
-                    const auto count = static_cast<std::size_t>(ins.extra) + 1;
+                    const auto count = static_cast<std::size_t>(ins.extra()) + 1;
                     if (count > stack.size())
                         throw Error(ErrorKind::vm, "DUP stack underflow");
                     const auto first = stack.size() - count;
@@ -1011,24 +1072,24 @@ struct GameSession::Impl {
                     if (std::holds_alternative<std::string>(left) && std::holds_alternative<std::string>(right)) {
                         const auto &a = std::get<std::string>(left);
                         const auto &b = std::get<std::string>(right);
-                        if (ins.opcode == Opcode::add) {
+                        if (ins.opcode() == Opcode::add) {
                             if (a.size() + b.size() > 1'048'576)
                                 throw Error(ErrorKind::vm, "string limit");
                             push(a + b);
-                        } else if (ins.opcode == Opcode::cmp) {
+                        } else if (ins.opcode() == Opcode::cmp) {
                             const int c = a.compare(b);
-                            push(ins.comparison == 1   ? c < 0
-                                 : ins.comparison == 2 ? c <= 0
-                                 : ins.comparison == 3 ? c == 0
-                                 : ins.comparison == 4 ? c != 0
-                                 : ins.comparison == 5 ? c >= 0
-                                                       : c > 0);
+                            push(ins.comparison() == 1   ? c < 0
+                                 : ins.comparison() == 2 ? c <= 0
+                                 : ins.comparison() == 3 ? c == 0
+                                 : ins.comparison() == 4 ? c != 0
+                                 : ins.comparison() == 5 ? c >= 0
+                                                         : c > 0);
                         } else
                             throw Error(ErrorKind::unsupported, "string arithmetic");
                         break;
                     }
                     const double a = value_number(left), b = value_number(right);
-                    switch (ins.opcode) {
+                    switch (ins.opcode()) {
                     case Opcode::add:
                         push(a + b);
                         break;
@@ -1054,7 +1115,7 @@ struct GameSession::Impl {
                         push(std::fmod(a, b));
                         break;
                     case Opcode::cmp:
-                        push(compare_numbers(a, b, ins.comparison, comparison_epsilon));
+                        push(compare_numbers(a, b, ins.comparison(), comparison_epsilon));
                         break;
                     case Opcode::bit_and:
                         push(static_cast<std::int32_t>(number(left) & number(right)));
@@ -1087,7 +1148,7 @@ struct GameSession::Impl {
                         push(static_cast<std::int32_t>(~number(pop())));
                     break;
                 case Opcode::call: {
-                    const auto &name = linked.functions.at(ins.function_id).name;
+                    const auto &name = linked.functions.at(static_cast<std::size_t>(ins.symbol_id)).name;
                     const auto count = static_cast<std::size_t>(ins.word & 0xffff);
                     std::vector<Value> args;
                     for (std::size_t i = 0; i < count; ++i)
@@ -1100,24 +1161,24 @@ struct GameSession::Impl {
                 case Opcode::exit:
                     return std::monostate{};
                 case Opcode::branch:
-                    next = *ins.branch_target;
+                    next = ins.branch_target_value();
                     break;
                 case Opcode::branch_true:
                 case Opcode::branch_false: {
                     const bool condition = value_number(pop()) > 0.5;
-                    if (condition == (ins.opcode == Opcode::branch_true))
-                        next = *ins.branch_target;
+                    if (condition == (ins.opcode() == Opcode::branch_true))
+                        next = ins.branch_target_value();
                     break;
                 }
                 case Opcode::push_env: {
                     const auto target = number(pop());
                     auto choices = targets(target, self, other);
                     if (choices.empty()) {
-                        next = *ins.branch_target;
-                        const auto found = program.index_by_offset.find(next);
-                        if (found != program.index_by_offset.end()) {
-                            const auto &end = program.instructions.at(found->second);
-                            if (end.opcode == Opcode::pop_env)
+                        next = ins.branch_target_value();
+                        const auto found = program.instruction_at(next);
+                        if (found) {
+                            const auto &end = program.instructions.at(*found);
+                            if (end.opcode() == Opcode::pop_env)
                                 next += end.size;
                         }
                     } else {
@@ -1131,9 +1192,9 @@ struct GameSession::Impl {
                     if (environments.empty())
                         throw Error(ErrorKind::vm, "environment underflow");
                     auto &e = environments.back();
-                    if (!ins.environment_exit && ++e.index < e.choices.size()) {
+                    if (!ins.environment_exit() && ++e.index < e.choices.size()) {
                         self = e.choices[e.index];
-                        next = *ins.branch_target;
+                        next = ins.branch_target_value();
                     } else {
                         self = e.saved;
                         other = e.saved_other;
@@ -1151,18 +1212,27 @@ struct GameSession::Impl {
                 }
                 default:
                     throw Error(ErrorKind::unsupported,
-                                "native opcode pending: " + std::string(opcode_name(ins.opcode)));
+                                "native opcode pending: " + std::string(opcode_name(ins.opcode())));
                 }
-                if (next != pc + ins.size && next != program.byte_length)
-                    instruction_index = program.index_by_offset.at(next);
-                else
+                if (next != pc + ins.size && next != program.byte_length) {
+                    const auto target = program.instruction_at(next);
+                    if (!target)
+                        throw Error(ErrorKind::vm, "program counter is not an instruction boundary",
+                                    program.origin + next);
+                    instruction_index = *target;
+                } else {
                     ++instruction_index;
+                }
                 pc = next;
             }
         } catch (const Error &e) {
             throw Error(e.kind(),
                         std::string(e.what()) + " in " + std::string(package.code_name(static_cast<std::size_t>(code))),
                         e.offset().value_or(program.origin + pc));
+        } catch (const std::bad_alloc &) {
+            throw Error(ErrorKind::io,
+                        "out of memory in " + std::string(package.code_name(static_cast<std::size_t>(code))),
+                        program.origin + pc);
         }
         return std::monostate{};
     }
@@ -2677,9 +2747,9 @@ struct GameSession::Impl {
     }
     void tick(const KeyboardState &input, const KeyboardState &edges) {
         audio.service();
-        static const std::array<std::string, 12> alarm_names = {
-            "alarm[0]", "alarm[1]", "alarm[2]", "alarm[3]", "alarm[4]", "alarm[5]",
-            "alarm[6]", "alarm[7]", "alarm[8]", "alarm[9]", "alarm[10]", "alarm[11]"};
+        static const std::array<std::string, 12> alarm_names = {"alarm[0]", "alarm[1]", "alarm[2]",  "alarm[3]",
+                                                                "alarm[4]", "alarm[5]", "alarm[6]",  "alarm[7]",
+                                                                "alarm[8]", "alarm[9]", "alarm[10]", "alarm[11]"};
         held = input;
         pressed = edges;
         for (std::size_t k = 0; k < 256; ++k) {

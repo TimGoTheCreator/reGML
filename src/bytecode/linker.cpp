@@ -1,7 +1,10 @@
 #include "regml/bytecode/linker.hpp"
+#include <algorithm>
+#include <iterator>
 #include <limits>
 namespace regml {
-LinkedPackage link_legacy_package(const Package &package, LoadLimits limits) {
+LinkedPackage link_legacy_package(const Package &package, LoadLimits limits, bool retain_audit_maps,
+                                  bool build_instruction_index, bool lazy_programs) {
     if (!package.general_info() || !package.general_info()->has_known_prefix)
         throw Error(ErrorKind::unsupported, "symbol linking requires known metadata");
     const auto version = package.general_info()->bytecode_version;
@@ -11,23 +14,43 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits) {
     if (engine[0] >= 2)
         throw Error(ErrorKind::unsupported, "legacy linker currently requires a GameMaker 1.x profile");
     LinkedPackage result;
-    std::unordered_map<std::size_t, Instruction *> instructions;
+    struct ProgramRange {
+        std::size_t begin, end, index;
+    };
+    std::vector<ProgramRange> ranges;
+    ranges.reserve(package.code().size());
     result.programs.reserve(package.code().size());
     for (std::size_t i = 0; i < package.code().size(); ++i) {
-        result.programs.push_back(decode(package.code_bytes(i), version));
+        const auto bytes = package.code_bytes(i);
+        result.programs.push_back(decode(BinaryView(bytes, package.code()[i].bytecode_offset), version,
+                                         {1'000'000, build_instruction_index}));
         auto &program = result.programs.back();
         result.instruction_count += program.instructions.size();
         // Decoder limits apply per program; bound the package total too.
         if (result.instruction_count > 10'000'000)
             throw Error(ErrorKind::unsupported, "package instruction limit exceeded");
-        for (auto &ins : program.instructions) {
-            if (!instructions.emplace(program.origin + ins.offset, &ins).second)
-                throw Error(ErrorKind::unsupported, "overlapping CODE blobs require a shared-code profile",
-                            program.origin + ins.offset);
-        }
+        if (program.byte_length)
+            ranges.push_back({program.origin, program.origin + program.byte_length, i});
     }
-    const auto data = package.view();
-    auto read_symbol = [&](std::size_t at, bool variable) {
+    std::sort(ranges.begin(), ranges.end(),
+              [](const auto &left, const auto &right) { return left.begin < right.begin; });
+    for (std::size_t i = 1; i < ranges.size(); ++i)
+        if (ranges[i].begin < ranges[i - 1].end)
+            throw Error(ErrorKind::unsupported, "overlapping CODE blobs require a shared-code profile",
+                        ranges[i].begin);
+    auto find_instruction = [&](std::size_t address) -> Instruction * {
+        const auto it =
+            std::upper_bound(ranges.begin(), ranges.end(), address,
+                             [](std::size_t value, const ProgramRange &range) { return value < range.begin; });
+        if (it == ranges.begin())
+            return nullptr;
+        const auto &range = *std::prev(it);
+        if (address >= range.end)
+            return nullptr;
+        const auto index = result.programs[range.index].instruction_at(address - range.begin);
+        return index ? &result.programs[range.index].instructions[*index] : nullptr;
+    };
+    auto read_symbol = [&](const BinaryView &data, std::size_t at, bool variable) {
         PackageSymbol symbol;
         symbol.name = package.string_pointer(data.u32(at));
         if (symbol.name.empty())
@@ -48,21 +71,24 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits) {
     if (const auto *chunk = package.find_chunk("VARI"); chunk && chunk->size) {
         if (chunk->size < 12 || (chunk->size - 12) % 20 != 0)
             throw Error(ErrorKind::malformed, "invalid legacy VARI record range", chunk->data_offset);
+        const auto bytes = package.read_bytes(chunk->data_offset, chunk->size);
+        const BinaryView data(bytes, chunk->data_offset);
         const auto count = (chunk->size - 12) / 20;
         if (count > limits.max_entries)
             throw Error(ErrorKind::unsupported, "variable count exceeds limit", chunk->data_offset);
         for (std::size_t i = 0; i < count; ++i)
-            result.variables.push_back(read_symbol(chunk->data_offset + 12 + i * 20, true));
+            result.variables.push_back(read_symbol(data, 12 + i * 20, true));
     }
     if (const auto *chunk = package.find_chunk("FUNC"); chunk && chunk->size) {
-        const auto local = data.slice(chunk->data_offset, chunk->size);
+        const auto bytes = package.read_bytes(chunk->data_offset, chunk->size);
+        const BinaryView local(bytes, chunk->data_offset);
         const auto count = static_cast<std::size_t>(local.u32(0));
         if (count > limits.max_entries)
             throw Error(ErrorKind::unsupported, "function count exceeds limit", chunk->data_offset);
         if (count > (chunk->size - 4) / 12)
             throw Error(ErrorKind::malformed, "truncated function table", chunk->data_offset);
         for (std::size_t i = 0; i < count; ++i)
-            result.functions.push_back(read_symbol(chunk->data_offset + 4 + i * 12, false));
+            result.functions.push_back(read_symbol(local, 4 + i * 12, false));
         // FUNC local records do not affect chain resolution.
     }
     auto resolve = [&](const std::vector<PackageSymbol> &symbols, bool variable) {
@@ -71,23 +97,23 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits) {
             const auto &symbol = symbols[id];
             std::size_t address = symbol.first_address;
             for (std::size_t n = 0; n < symbol.occurrences; ++n) {
-                const auto it = instructions.find(address);
-                if (it == instructions.end())
+                auto *instruction = find_instruction(address);
+                if (!instruction)
                     throw Error(ErrorKind::malformed, "reference chain does not target an instruction", address);
-                auto &ins = *it->second;
-                const bool variable_op = ins.opcode == Opcode::pop ||
-                                         ((ins.opcode == Opcode::push || ins.opcode == Opcode::push_local ||
-                                           ins.opcode == Opcode::push_global || ins.opcode == Opcode::push_builtin) &&
-                                          ins.type1 == DataType::variable);
-                if (!ins.reference || (variable ? !variable_op : ins.opcode != Opcode::call))
+                auto &ins = *instruction;
+                const bool variable_op =
+                    ins.opcode() == Opcode::pop ||
+                    ((ins.opcode() == Opcode::push || ins.opcode() == Opcode::push_local ||
+                      ins.opcode() == Opcode::push_global || ins.opcode() == Opcode::push_builtin) &&
+                     ins.type1 == DataType::variable);
+                if (!ins.has_reference() || (variable ? !variable_op : ins.opcode() != Opcode::call))
                     throw Error(ErrorKind::malformed, "reference chain targets wrong instruction kind", address);
-                if (!bindings.emplace(address, id).second)
+                if (ins.symbol_id != Instruction::no_symbol)
                     throw Error(ErrorKind::malformed, "reference chain overlaps another occurrence", address);
-                if (variable)
-                    ins.variable_id = id;
-                else
-                    ins.function_id = id;
-                const auto next = *ins.reference & 0x07ffffffU;
+                if (retain_audit_maps)
+                    bindings.emplace(address, id);
+                ins.symbol_id = static_cast<std::uint32_t>(id);
+                const auto next = ins.reference_value() & 0x07ffffffU;
                 if (n + 1 < symbol.occurrences) {
                     if (next == 0 || next % 4 != 0 || next > package.size() || address > package.size() - next)
                         throw Error(ErrorKind::malformed, "invalid reference chain displacement", address + 4);
@@ -103,18 +129,64 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits) {
     };
     resolve(result.variables, true);
     resolve(result.functions, false);
-    for (const auto &[address, ins] : instructions) {
-        if (ins->opcode == Opcode::call && !result.function_at.contains(address))
-            throw Error(ErrorKind::malformed, "CALL missing from FUNC chains", address);
-        const bool variable_op = (ins->opcode == Opcode::pop && ins->type1 != DataType::int16) ||
-                                 ((ins->opcode == Opcode::push || ins->opcode == Opcode::push_local ||
-                                   ins->opcode == Opcode::push_global || ins->opcode == Opcode::push_builtin) &&
-                                  ins->type1 == DataType::variable);
-        if (variable_op && !result.variable_at.contains(address))
-            throw Error(ErrorKind::malformed, "variable instruction missing from VARI chains", address);
-        if (ins->type1 == DataType::string && ins->reference && *ins->reference >= package.strings().size())
-            throw Error(ErrorKind::malformed, "string immediate is out of range", address + 4);
+    for (const auto &program : result.programs)
+        for (const auto &ins : program.instructions) {
+            const auto address = program.origin + ins.offset;
+            if (ins.opcode() == Opcode::call && ins.symbol_id == Instruction::no_symbol)
+                throw Error(ErrorKind::malformed, "CALL missing from FUNC chains", address);
+            const bool variable_op = (ins.opcode() == Opcode::pop && ins.type1 != DataType::int16) ||
+                                     ((ins.opcode() == Opcode::push || ins.opcode() == Opcode::push_local ||
+                                       ins.opcode() == Opcode::push_global || ins.opcode() == Opcode::push_builtin) &&
+                                      ins.type1 == DataType::variable);
+            if (variable_op && ins.symbol_id == Instruction::no_symbol)
+                throw Error(ErrorKind::malformed, "variable instruction missing from VARI chains", address);
+            if (ins.type1 == DataType::string && ins.has_reference() &&
+                ins.reference_value() >= package.strings().size())
+                throw Error(ErrorKind::malformed, "string immediate is out of range", address + 4);
+        }
+    if (lazy_programs) {
+        result.lazy_programs = true;
+        std::size_t count = 0;
+        for (const auto &symbol : result.variables)
+            count += symbol.occurrences;
+        for (const auto &symbol : result.functions)
+            count += symbol.occurrences;
+        result.references.reserve(count);
+        for (const auto &program : result.programs)
+            for (const auto &ins : program.instructions)
+                if (ins.symbol_id != Instruction::no_symbol)
+                    result.references.push_back(
+                        {static_cast<std::uint32_t>(program.origin + ins.offset), ins.symbol_id});
+        std::sort(result.references.begin(), result.references.end(),
+                  [](const auto &left, const auto &right) { return left.address < right.address; });
+        result.release_programs();
     }
     return result;
+}
+Program &LinkedPackage::program(const Package &package, std::size_t index) {
+    auto &target = programs.at(index);
+    if (!lazy_programs || !target.instructions.empty() || target.byte_length == 0)
+        return target;
+    const auto bytes = package.code_bytes(index);
+    auto decoded = decode(BinaryView(bytes, target.origin), target.bytecode_version, {1'000'000, false});
+    auto binding =
+        std::lower_bound(references.begin(), references.end(), target.origin,
+                         [](const ReferenceBinding &ref, std::size_t address) { return ref.address < address; });
+    for (auto &ins : decoded.instructions) {
+        if (binding != references.end() && binding->address == decoded.origin + ins.offset) {
+            ins.symbol_id = binding->symbol;
+            ++binding;
+        }
+    }
+    target = std::move(decoded);
+    return target;
+}
+void LinkedPackage::release_programs() {
+    if (!lazy_programs)
+        return;
+    for (auto &program : programs) {
+        std::vector<Instruction>().swap(program.instructions);
+        std::vector<std::uint32_t>().swap(program.index_by_word);
+    }
 }
 } // namespace regml

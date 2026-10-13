@@ -1,7 +1,8 @@
 #pragma once
 #include "regml/core/binary_view.hpp"
+#include <algorithm>
+#include <limits>
 #include <optional>
-#include <unordered_map>
 #include <variant>
 #include <vector>
 namespace regml {
@@ -52,28 +53,76 @@ enum class Opcode : std::uint8_t {
 std::string_view opcode_name(Opcode opcode) noexcept;
 std::string_view type_name(DataType type) noexcept;
 struct Instruction {
-    static constexpr std::size_t no_symbol = static_cast<std::size_t>(-1);
-    std::size_t offset = 0, size = 4;
-    std::uint32_t word = 0;
-    Opcode opcode{};
-    DataType type1{}, type2{};
-    std::uint8_t comparison = 0, extra = 0;
-    // Symbol words are left for the linker.
-    std::variant<std::monostate, std::int32_t, std::int64_t, double> immediate;
-    std::optional<std::uint32_t> reference;
-    std::size_t variable_id = no_symbol, function_id = no_symbol;
-    std::optional<std::size_t> branch_target;
-    bool environment_exit = false;
+    static constexpr std::uint32_t no_symbol = std::numeric_limits<std::uint32_t>::max();
+    enum class ImmediateKind : std::uint8_t { none, int32, int64, real64 };
+    std::uint64_t immediate_bits = no_symbol;
+    std::uint32_t offset = 0, word = 0, symbol_id = no_symbol;
+    DataType type1{};
+    ImmediateKind immediate_kind = ImmediateKind::none;
+    std::uint8_t size = 4;
+    std::uint8_t flags = 0;
+    [[nodiscard]] Opcode opcode() const noexcept { return static_cast<Opcode>(word >> 24); }
+    [[nodiscard]] DataType type2() const noexcept { return static_cast<DataType>((word >> 20) & 0xf); }
+    [[nodiscard]] std::uint8_t comparison() const noexcept { return static_cast<std::uint8_t>(word >> 8); }
+    [[nodiscard]] std::uint8_t extra() const noexcept { return static_cast<std::uint8_t>(word); }
+    [[nodiscard]] bool has_reference() const noexcept { return (flags & 1U) != 0; }
+    [[nodiscard]] std::uint32_t reference_value() const noexcept { return static_cast<std::uint32_t>(immediate_bits); }
+    [[nodiscard]] bool has_branch_target() const noexcept {
+        return (opcode() == Opcode::branch || opcode() == Opcode::branch_true || opcode() == Opcode::branch_false ||
+                opcode() == Opcode::push_env || opcode() == Opcode::pop_env) &&
+               has_reference();
+    }
+    [[nodiscard]] std::uint32_t branch_target_value() const noexcept { return reference_value(); }
+    [[nodiscard]] bool environment_exit() const noexcept { return (flags & 2U) != 0; }
+    void set_environment_exit() noexcept { flags |= 2U; }
+    void set_operand(std::uint32_t value) noexcept {
+        immediate_bits = value;
+        flags |= 1U;
+    }
+    [[nodiscard]] bool has_immediate() const noexcept { return immediate_kind != ImmediateKind::none; }
+    void set_immediate(std::int32_t value) noexcept {
+        immediate_bits = static_cast<std::uint32_t>(value);
+        immediate_kind = ImmediateKind::int32;
+    }
+    void set_immediate(std::int64_t value) noexcept {
+        immediate_bits = static_cast<std::uint64_t>(value);
+        immediate_kind = ImmediateKind::int64;
+    }
+    void set_immediate(double value) noexcept {
+        immediate_bits = std::bit_cast<std::uint64_t>(value);
+        immediate_kind = ImmediateKind::real64;
+    }
+    [[nodiscard]] std::int32_t immediate_i32() const noexcept {
+        return std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(immediate_bits));
+    }
+    [[nodiscard]] std::int64_t immediate_i64() const noexcept { return std::bit_cast<std::int64_t>(immediate_bits); }
+    [[nodiscard]] double immediate_real() const noexcept { return std::bit_cast<double>(immediate_bits); }
 };
+static_assert(sizeof(Instruction) == 24);
 struct Program {
     std::size_t origin = 0, byte_length = 0;
     std::uint8_t bytecode_version = 0;
     std::vector<Instruction> instructions;
-    std::unordered_map<std::size_t, std::size_t> index_by_offset;
+    // Code is word aligned, so a flat lookup table beats one hash node per opcode.
+    std::vector<std::uint32_t> index_by_word;
+    [[nodiscard]] std::optional<std::size_t> instruction_at(std::size_t offset) const noexcept {
+        if (index_by_word.empty()) {
+            const auto it = std::lower_bound(instructions.begin(), instructions.end(), offset,
+                                             [](const Instruction &ins, std::size_t at) { return ins.offset < at; });
+            return it != instructions.end() && it->offset == offset
+                       ? std::optional<std::size_t>(static_cast<std::size_t>(it - instructions.begin()))
+                       : std::nullopt;
+        }
+        if (offset % 4 != 0 || offset / 4 >= index_by_word.size())
+            return std::nullopt;
+        const auto index = index_by_word[offset / 4];
+        return index == std::numeric_limits<std::uint32_t>::max() ? std::nullopt : std::optional<std::size_t>(index);
+    }
 };
 // v15/v16 only.
 struct DecodeLimits {
     std::size_t max_instructions = 1'000'000;
+    bool build_index = true;
 };
 Program decode(BinaryView code, std::uint8_t bytecode_version, DecodeLimits limits = {});
 } // namespace regml

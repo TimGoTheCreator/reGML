@@ -7,11 +7,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(REGML_SDL2 "Enable SDL2 windowed frontend" ON)
 option(REGML_WIIU "Build a Wii U homebrew RPX with devkitPro wut" OFF)
+option(REGML_WII "Build a Nintendo Wii homebrew DOL with devkitPro libogc" OFF)
 set(REGML_UNDERTALE_DATA "" CACHE FILEPATH "Optional Undertale data.win path for audio integration testing")
 
-if(REGML_WIIU)
+if(REGML_WIIU AND REGML_WII)
+    message(FATAL_ERROR "REGML_WIIU and REGML_WII are separate targets")
+endif()
+
+if(REGML_WIIU OR REGML_WII)
     set(REGML_SDL2 ON CACHE BOOL "Enable SDL2 windowed frontend" FORCE)
-    # Wii U portlibs are static, so include their private link dependencies too.
+    # Console portlibs are static, so include their private link dependencies too.
     set(PKG_CONFIG_ARGN --static)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(REGML_PNG REQUIRED IMPORTED_TARGET libpng)
@@ -31,7 +36,7 @@ else()
     )
 endif()
 
-if(REGML_SDL2 AND NOT REGML_WIIU)
+if(REGML_SDL2 AND NOT REGML_WIIU AND NOT REGML_WII)
     find_package(SDL2 REQUIRED)
 endif()
 
@@ -52,7 +57,7 @@ target_include_directories(regml_engine PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
-if(REGML_WIIU)
+if(REGML_WIIU OR REGML_WII)
     target_link_libraries(regml_engine PUBLIC
         PkgConfig::REGML_PNG
         PkgConfig::REGML_ZLIB
@@ -65,7 +70,7 @@ endif()
 
 if(REGML_SDL2)
     target_compile_definitions(regml_engine PUBLIC REGML_WITH_SDL2=1 SDL_MAIN_HANDLED)
-    if(REGML_WIIU)
+    if(REGML_WIIU OR REGML_WII)
         # Linked through pkg-config above.
     elseif(TARGET SDL2::SDL2)
         target_link_libraries(regml_engine PUBLIC SDL2::SDL2)
@@ -98,8 +103,19 @@ if(REGML_WIIU)
     endif()
 endif()
 
+if(REGML_WII)
+    target_compile_definitions(regml_engine PUBLIC REGML_WII=1)
+    target_compile_definitions(regml PRIVATE REGML_WII=1)
+    target_compile_options(regml_engine PRIVATE $<$<CONFIG:Release>:-O3> $<$<CONFIG:Release>:-flto>)
+    target_compile_options(regml PRIVATE $<$<CONFIG:Release>:-O3> $<$<CONFIG:Release>:-flto>)
+    target_link_options(regml PRIVATE $<$<CONFIG:Release>:-flto>)
+    if(COMMAND ogc_create_dol)
+        ogc_create_dol(regml)
+    endif()
+endif()
+
 include(CTest)
-if(BUILD_TESTING AND NOT REGML_WIIU)
+if(BUILD_TESTING AND NOT REGML_WIIU AND NOT REGML_WII)
     add_executable(regml_tests tests/core_tests.cpp)
     target_link_libraries(regml_tests PRIVATE regml_engine)
     add_executable(regml_audio_test tests/audio_integration.cpp)

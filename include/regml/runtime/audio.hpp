@@ -37,8 +37,12 @@ class GameAudio {
 #endif
     struct Clip {
         std::vector<float> stereo;
+        std::vector<std::uint8_t> compressed;
+        std::size_t streamed_frames = 0;
         double gain = 1;
+        std::size_t frames() const noexcept { return compressed.empty() ? stereo.size() / 2 : streamed_frames; }
     };
+    struct Stream;
     struct Sound {
         int embedded = -1;
         std::string filename;
@@ -50,6 +54,7 @@ class GameAudio {
         Clip *clip = nullptr;
         double frame = 0, gain = 1, pitch = 1, priority = 0;
         bool loop = false, paused = false;
+        std::shared_ptr<Stream> stream;
     };
     const Package &package_;
     std::filesystem::path directory_;

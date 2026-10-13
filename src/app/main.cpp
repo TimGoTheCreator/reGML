@@ -1,10 +1,14 @@
 #include "regml/bytecode/linker.hpp"
 #include "regml/formats/package.hpp"
 #include "regml/platform/play.hpp"
+#if REGML_WII
+#include "regml/platform/wii_host.hpp"
+#endif
 #include "regml/vm/interpreter.hpp"
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -12,6 +16,20 @@
 
 namespace {
 constexpr std::string_view version = "0.2.1";
+
+#if REGML_WII
+void wii_log(std::string_view message) {
+    static bool started = false;
+    auto *wii_log_file = std::fopen("sd:/reGML/regml-boot.log", started ? "a" : "w");
+    if (!wii_log_file)
+        return;
+    std::fwrite(message.data(), 1, message.size(), wii_log_file);
+    std::fwrite("\n", 1, 1, wii_log_file);
+    std::fflush(wii_log_file);
+    std::fclose(wii_log_file);
+    started = true;
+}
+#endif
 
 std::string escaped(std::string_view text, std::size_t limit = 160) {
     std::ostringstream out;
@@ -32,7 +50,8 @@ std::string escaped(std::string_view text, std::size_t limit = 160) {
     return out.str();
 }
 void help() {
-    std::cout << "reGML " << version << " - GameMaker VM runner\n"
+    std::cout << "reGML " << version
+              << " - GameMaker VM runner\n"
                  "Usage:\n"
                  "  regml inspect <data.win> [--strings] [--code]\n"
                  "  regml disasm <data.win> <code-index> [--linked]\n"
@@ -54,26 +73,27 @@ void help() {
 }
 void print_instruction(const regml::Instruction &ins, std::size_t origin, bool resolved = false) {
     std::cout << "  0x" << std::hex << std::setw(8) << std::setfill('0') << origin + ins.offset << "  " << std::setw(8)
-              << ins.word << std::setfill(' ') << std::dec << "  " << regml::opcode_name(ins.opcode);
-    if (ins.branch_target)
-        std::cout << " -> 0x" << std::hex << origin + *ins.branch_target << std::dec;
-    else if (ins.environment_exit)
+              << ins.word << std::setfill(' ') << std::dec << "  " << regml::opcode_name(ins.opcode());
+    if (ins.has_branch_target())
+        std::cout << " -> 0x" << std::hex << origin + ins.branch_target_value() << std::dec;
+    else if (ins.environment_exit())
         std::cout << " <environment-exit>";
     else {
         std::cout << '.' << regml::type_name(ins.type1);
-        if (ins.opcode >= regml::Opcode::conv && ins.opcode <= regml::Opcode::cmp)
-            std::cout << '.' << regml::type_name(ins.type2);
-        if (const auto *integer = std::get_if<std::int32_t>(&ins.immediate))
-            std::cout << ' ' << *integer;
-        if (const auto *integer = std::get_if<std::int64_t>(&ins.immediate))
-            std::cout << ' ' << *integer;
-        if (const auto *real = std::get_if<double>(&ins.immediate))
-            std::cout << ' ' << regml::value_text(*real);
-        if (ins.reference)
-            std::cout << " reference=0x" << std::hex << *ins.reference << std::dec << (resolved ? "" : " (unresolved)");
-        if (ins.opcode == regml::Opcode::cmp)
-            std::cout << " comparison=" << static_cast<unsigned>(ins.comparison);
-        if (ins.opcode == regml::Opcode::extended)
+        if (ins.opcode() >= regml::Opcode::conv && ins.opcode() <= regml::Opcode::cmp)
+            std::cout << '.' << regml::type_name(ins.type2());
+        if (ins.immediate_kind == regml::Instruction::ImmediateKind::int32)
+            std::cout << ' ' << ins.immediate_i32();
+        if (ins.immediate_kind == regml::Instruction::ImmediateKind::int64)
+            std::cout << ' ' << ins.immediate_i64();
+        if (ins.immediate_kind == regml::Instruction::ImmediateKind::real64)
+            std::cout << ' ' << regml::value_text(ins.immediate_real());
+        if (ins.has_reference())
+            std::cout << " reference=0x" << std::hex << ins.reference_value() << std::dec
+                      << (resolved ? "" : " (unresolved)");
+        if (ins.opcode() == regml::Opcode::cmp)
+            std::cout << " comparison=" << static_cast<unsigned>(ins.comparison());
+        if (ins.opcode() == regml::Opcode::extended)
             std::cout << " subopcode=" << std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
     }
     std::cout << '\n';
@@ -190,7 +210,9 @@ int command(int argc, char **argv) {
         const auto package = regml::Package::load(argv[2]);
         if (!package.general_info() || !package.general_info()->has_known_prefix)
             throw regml::Error(regml::ErrorKind::unsupported, "no supported metadata profile for disassembly");
-        const auto program = regml::decode(package.code_bytes(index), package.general_info()->bytecode_version);
+        const auto code = package.code_bytes(index);
+        const auto program = regml::decode(regml::BinaryView(code, package.code()[index].bytecode_offset),
+                                           package.general_info()->bytecode_version);
         std::optional<regml::LinkedPackage> linked;
         if (resolve)
             linked = regml::link_legacy_package(package);
@@ -201,7 +223,7 @@ int command(int argc, char **argv) {
                 const auto address = program.origin + ins.offset;
                 if (const auto it = linked->variable_at.find(address); it != linked->variable_at.end())
                     std::cout << "    variable: " << escaped(linked->variables[it->second].name) << " reference-kind=0x"
-                              << std::hex << ((*ins.reference >> 24) & 0xf8) << std::dec << '\n';
+                              << std::hex << ((ins.reference_value() >> 24) & 0xf8) << std::dec << '\n';
                 if (const auto it = linked->function_at.find(address); it != linked->function_at.end())
                     std::cout << "    function: " << escaped(linked->functions[it->second].name) << '\n';
             }
@@ -290,8 +312,39 @@ int command(int argc, char **argv) {
     throw regml::Error(regml::ErrorKind::usage, "unknown command: " + std::string(name));
 }
 } // namespace
+#if REGML_WII
+// SDL's Wii entry point initializes the input queues before handing control over.
+extern "C" int SDL_main(int argc, char **argv) {
+#else
 int main(int argc, char **argv) {
-#if REGML_WIIU
+#endif
+#if REGML_WII
+    try {
+        regml::initialize_wii_platform();
+        wii_log("FAT mounted");
+        const std::filesystem::path package = argc > 1 ? argv[1] : "sd:/reGML/data.win";
+        wii_log("starting package: " + package.string());
+        regml::PlayOptions options;
+        options.save_directory = "sd:/reGML/saves";
+        const auto game_directory = package.parent_path();
+        if (std::filesystem::exists(game_directory / "regml-input.txt"))
+            options.input_script = game_directory / "regml-input.txt";
+        if (std::filesystem::exists(game_directory / "regml-trace.enabled"))
+            options.trace_log = game_directory / "regml-trace.log";
+        if (std::filesystem::exists(game_directory / "regml-profile.enabled"))
+            options.profile_log = game_directory / "regml-profile.csv";
+        wii_log("entering play_game");
+        const auto report = regml::play_game(package, options);
+        wii_log("play_game returned");
+        std::cout << "reGML " << version << " Wii\nFrames: " << report.frames
+                  << "\nVM instructions: " << report.instructions << "\nRoom: " << report.room << '\n';
+        return 0;
+    } catch (const std::exception &error) {
+        wii_log(std::string("error: ") + error.what());
+        std::cerr << "reGML Wii error: " << error.what() << '\n';
+        return 1;
+    }
+#elif REGML_WIIU
     const std::filesystem::path package = argc > 1 ? argv[1] : "/vol/external01/reGML/data.win";
     regml::PlayOptions options;
     options.save_directory = "/vol/external01/wiiu/apps/reGML/saves";
@@ -304,8 +357,8 @@ int main(int argc, char **argv) {
         options.profile_log = game_directory / "regml-profile.csv";
     try {
         const auto report = regml::play_game(package, options);
-        std::cout << "reGML " << version << " Wii U\nFrames: " << report.frames << "\nVM instructions: " << report.instructions
-                  << "\nRoom: " << report.room << '\n';
+        std::cout << "reGML " << version << " Wii U\nFrames: " << report.frames
+                  << "\nVM instructions: " << report.instructions << "\nRoom: " << report.room << '\n';
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "reGML Wii U error: " << error.what() << '\n';

@@ -46,6 +46,7 @@ class GameAssets {
     struct Page {
         int width = 0, height = 0;
         std::size_t png = 0;
+        std::size_t last_used = 0;
         std::vector<std::uint32_t> pixels;
     };
     struct Region {
@@ -72,6 +73,24 @@ class GameAssets {
     std::vector<const Region *> background_regions_;
     std::vector<Font> fonts_;
     std::vector<std::size_t> backgrounds_;
+#if REGML_WII
+    static constexpr std::size_t page_cache_limit_ = 16ULL * 1024 * 1024;
+#else
+    static constexpr std::size_t page_cache_limit_ = 0;
+#endif
+    std::size_t page_cache_bytes_ = 0, page_cache_clock_ = 0;
+    std::vector<std::uint32_t> page_buffer_;
+    struct RegionKeyHash {
+        std::size_t operator()(const std::array<int, 5> &key) const noexcept {
+            std::size_t hash = 0;
+            for (const auto value : key)
+                hash = (hash * 16777619U) ^ static_cast<std::size_t>(value);
+            return hash;
+        }
+    };
+    std::unordered_map<std::array<int, 5>, Page, RegionKeyHash> region_cache_;
+    std::size_t region_cache_bytes_ = 0;
+    const Page &region_pixels(const Region &region, int &source_x, int &source_y);
     std::vector<int> scaled_x_;
     std::vector<int> scaled_y_;
     struct ScaledRun {
