@@ -47,7 +47,7 @@ file(GLOB REGML_ENGINE_SOURCES
     "src/platform/wii/*.cpp"
     "src/rendersoftware/*.cpp"
 )
-file(GLOB REGML_AUDIO_SOURCES CONFIGURE_DEPENDS "src/audio/v1/*.cpp")
+file(GLOB REGML_AUDIO_SOURCES CONFIGURE_DEPENDS "src/audio/sdl/*.cpp")
 file(GLOB REGML_DEMO_SOURCES CONFIGURE_DEPENDS "src/demo/*.cpp")
 list(APPEND REGML_ENGINE_SOURCES ${REGML_AUDIO_SOURCES} ${REGML_DEMO_SOURCES})
 if(REGML_WIIU)

@@ -15,7 +15,7 @@ $compilerCommand = Get-Command $Compiler -ErrorAction Stop
 $flags = @('-std=c++20', '-Wall', '-Wextra', '-Wpedantic', '-Wconversion', '-Wsign-conversion', '-I', (Join-Path $projectRoot 'src'))
 if ($Configuration -eq 'Debug') { $flags += @('-O0', '-g') }
 else { $flags += @('-O2', '-DNDEBUG') }
-$coreSources = @('src\error.cpp', 'src\package.cpp', 'src\decoder.cpp', 'src\linker.cpp', 'src\interpreter.cpp', 'src\rendersoftware\canvas.cpp', 'src\rendersoftware\assets.cpp', 'src\demo\demo.cpp', 'src\game.cpp', 'src\audio\v1\audio.cpp') |
+$coreSources = @('src\error.cpp', 'src\package.cpp', 'src\decoder.cpp', 'src\linker.cpp', 'src\interpreter.cpp', 'src\rendersoftware\canvas.cpp', 'src\rendersoftware\assets.cpp', 'src\demo\demo.cpp', 'src\game.cpp', 'src\audio\sdl\audio.cpp') |
     ForEach-Object { Join-Path $projectRoot $_ }
 $appExe = Join-Path $outputDir 'regml.exe'
 $testExe = Join-Path $outputDir 'regml_tests.exe'
