@@ -1,6 +1,8 @@
 #include "play.hpp"
 #if REGML_MINIAUDIO
 #include "audio/miniaudio/output.hpp"
+#elif REGML_OPENAL
+#include "audio/openal/output.hpp"
 #endif
 #if REGML_WII
 #include "platform/wii/host.hpp"
@@ -307,6 +309,13 @@ class AudioDevice {
 
   private:
     MiniAudioOutput output_;
+#elif REGML_OPENAL
+    AudioDevice(GameSession &session, double speed) : output_(session, speed) {}
+    void set_speed(double speed) { output_.set_speed(speed); }
+    void pump() { output_.pump(); }
+
+  private:
+    OpenALOutput output_;
 #else
     AudioDevice(GameSession &session, double speed) : session_(session) {
         sdl_ok(SDL_InitSubSystem(SDL_INIT_AUDIO), "audio initialization");

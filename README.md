@@ -43,6 +43,8 @@ cmake --build build/miniaudio --config Release
 
 It only replaces the output device. Decoding and mixing still use `audio/sdl`; the default SDL output is unchanged. Wii and Wii U builds do not support this option.
 
+OpenAL can also be selected for desktop audio output. Install OpenAL Soft, then configure with `-DREGML_OPENAL=ON`. It uses the same decoder and mixer as the default SDL output.
+
 ## Run
 
 ```powershell
