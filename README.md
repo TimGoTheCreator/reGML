@@ -54,6 +54,7 @@ For 4x speed:
 
 `--speed` accepts values from `0.01` to `1000`, with an optional `x` suffix
 Hidden and headless runs have no frame delay
+Add `--debug-overlay` to show FPS, frame time, room, GML code and bytecode address
 
 ## Wii U
 
@@ -100,7 +101,7 @@ Trace logs and input scripts: [docs/wiiu.md](docs/wiiu.md)
 
 ## Wii (experimental)
 
-The Wii build uses devkitPro's SDL2 port. The VM and software framebuffer are shared with the desktop and Wii U builds; Wii SD setup is in `src/platform/wii_host.cpp`.
+The Wii build uses devkitPro's SDL2 port. The VM and software framebuffer are shared with the desktop and Wii U builds; Wii SD setup is in `src/platform/wii/`.
 
 Install devkitPro and run these in its MSYS2 terminal:
 
@@ -113,6 +114,8 @@ cmake --build build/wii --config Release
 ```
 
 This produces `build/wii/regml.dol`. Copy it to `sd:/apps/reGML/boot.dol` and launch it from the Homebrew Channel. Put `data.win` and external audio files in `sd:/reGML/`.
+
+For the debug HUD, put an empty `regml-debug.enabled` file beside `data.win`.
 
 The DOL cross-builds; Wii hardware and Dolphin have not been tested. Rendering still uses the software framebuffer.
 

@@ -12,10 +12,10 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $outputDir = Join-Path $projectRoot 'build\direct'
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 $compilerCommand = Get-Command $Compiler -ErrorAction Stop
-$flags = @('-std=c++20', '-Wall', '-Wextra', '-Wpedantic', '-Wconversion', '-Wsign-conversion', '-I', (Join-Path $projectRoot 'include'))
+$flags = @('-std=c++20', '-Wall', '-Wextra', '-Wpedantic', '-Wconversion', '-Wsign-conversion', '-I', (Join-Path $projectRoot 'src'))
 if ($Configuration -eq 'Debug') { $flags += @('-O0', '-g') }
 else { $flags += @('-O2', '-DNDEBUG') }
-$coreSources = @('src\core\error.cpp', 'src\formats\package.cpp', 'src\bytecode\decoder.cpp', 'src\bytecode\linker.cpp', 'src\vm\interpreter.cpp', 'src\render\canvas.cpp', 'src\render\assets.cpp', 'src\runtime\demo.cpp', 'src\runtime\game.cpp', 'src\runtime\audio.cpp') |
+$coreSources = @('src\error.cpp', 'src\package.cpp', 'src\decoder.cpp', 'src\linker.cpp', 'src\interpreter.cpp', 'src\rendersoftware\canvas.cpp', 'src\rendersoftware\assets.cpp', 'src\demo\demo.cpp', 'src\game.cpp', 'src\audio\v1\audio.cpp') |
     ForEach-Object { Join-Path $projectRoot $_ }
 $appExe = Join-Path $outputDir 'regml.exe'
 $testExe = Join-Path $outputDir 'regml_tests.exe'
@@ -46,7 +46,7 @@ $pngFlags = @('-I', (Join-Path $pngPrefix 'include'),
     (Find-DependencyLibrary @('vorbis.lib', 'libvorbis.dll.a', 'libvorbis.a')),
     (Find-DependencyLibrary @('ogg.lib', 'libogg.dll.a', 'libogg.a')),
     (Find-DependencyLibrary @('z.lib', 'zs.lib', 'zlib.lib', 'zlib1.lib', 'zlibstatic.lib', 'libz.dll.a', 'libz.a')))
-& $compilerCommand.Source @flags @videoFlags @coreSources (Join-Path $projectRoot 'src\app\main.cpp') (Join-Path $projectRoot 'src\platform\sdl_host.cpp') @videoLibraries @pngFlags '-o' $appExe
+& $compilerCommand.Source @flags @videoFlags @coreSources (Join-Path $projectRoot 'src\main.cpp') (Join-Path $projectRoot 'src\platform\sdl\sdl.cpp') (Join-Path $projectRoot 'src\platform\wii\host.cpp') (Join-Path $projectRoot 'src\platform\wii\renderer.cpp') @videoLibraries @pngFlags '-o' $appExe
 if ($LASTEXITCODE -ne 0) { throw "Application compilation failed: $LASTEXITCODE" }
 if (-not $NoVideo) { Copy-Item -LiteralPath $sdlDll -Destination (Join-Path $outputDir 'SDL2.dll') -Force }
 Get-ChildItem -LiteralPath (Join-Path $pngPrefix 'bin') -Filter '*.dll' -File |

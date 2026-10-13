@@ -1,8 +1,8 @@
-#include "regml/bytecode/linker.hpp"
-#include "regml/formats/package.hpp"
-#include "regml/runtime/demo.hpp"
-#include "regml/runtime/game.hpp"
-#include "regml/vm/interpreter.hpp"
+#include "demo/demo.hpp"
+#include "game.hpp"
+#include "interpreter.hpp"
+#include "linker.hpp"
+#include "package.hpp"
 #include <bit>
 #include <cmath>
 #include <fstream>
@@ -168,6 +168,9 @@ int main(int argc, char **argv) {
                         }
                     }
                     game.tick(held, {});
+                    if (frame == 0)
+                        check(!game.vm_code_name().empty() && game.vm_address() != 0,
+                              "game session exposes the current VM code and bytecode address");
                     if (game.room_name() != "room_floweybattle")
                         continue;
                     const auto states = game.instance_states();
@@ -736,6 +739,11 @@ int main(int argc, char **argv) {
              canvas.alpha(1);
              canvas.text(0, 0, "A");
              check(canvas.pixel(1, 0) == 0xffffffff && canvas.pixel(0, 0) == 0xff000000, "bitmap text");
+             regml::Canvas debug_canvas(80, 48);
+             debug_canvas.clear(0);
+             const std::array<std::string_view, 1> debug_lines{"FPS 60"};
+             debug_canvas.debug_text_overlay(debug_lines);
+             check(debug_canvas.pixel(6, 6) == 0xffffffff, "debug text overlay draws over the framebuffer");
              canvas.clear(0);
              canvas.circle(8, 8, 3, false);
              check(canvas.pixel(8, 8) == 0xffffffff && canvas.pixel(12, 8) == 0xff000000, "circle coverage");

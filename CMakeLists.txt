@@ -40,21 +40,25 @@ if(REGML_SDL2 AND NOT REGML_WIIU AND NOT REGML_WII)
     find_package(SDL2 REQUIRED)
 endif()
 
-file(GLOB_RECURSE REGML_ENGINE_SOURCES
+file(GLOB REGML_ENGINE_SOURCES
     CONFIGURE_DEPENDS
-    "src/core/*.cpp"
-    "src/bytecode/*.cpp"
-    "src/formats/*.cpp"
-    "src/platform/*.cpp"
-    "src/render/*.cpp"
-    "src/runtime/*.cpp"
-    "src/vm/*.cpp"
+    "src/*.cpp"
+    "src/platform/sdl/*.cpp"
+    "src/platform/wii/*.cpp"
+    "src/rendersoftware/*.cpp"
 )
+file(GLOB REGML_AUDIO_SOURCES CONFIGURE_DEPENDS "src/audio/v1/*.cpp")
+file(GLOB REGML_DEMO_SOURCES CONFIGURE_DEPENDS "src/demo/*.cpp")
+list(APPEND REGML_ENGINE_SOURCES ${REGML_AUDIO_SOURCES} ${REGML_DEMO_SOURCES})
+if(REGML_WIIU)
+    list(APPEND REGML_ENGINE_SOURCES "src/platform/wiiu/audio_async.cpp")
+endif()
+list(FILTER REGML_ENGINE_SOURCES EXCLUDE REGEX "/main\\.cpp$")
 
 add_library(regml_engine STATIC ${REGML_ENGINE_SOURCES})
 
 target_include_directories(regml_engine PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
 if(REGML_WIIU OR REGML_WII)
@@ -82,12 +86,13 @@ else()
     target_compile_definitions(regml_engine PUBLIC REGML_WITH_SDL2=0)
 endif()
 
-file(GLOB_RECURSE REGML_APP_SOURCES
-    CONFIGURE_DEPENDS
-    "src/app/*.cpp"
-)
-
-add_executable(regml ${REGML_APP_SOURCES})
+if(REGML_WIIU)
+    add_executable(regml src/platform/wiiu/main.cpp)
+elseif(REGML_WII)
+    add_executable(regml src/platform/wii/main.cpp)
+else()
+    add_executable(regml src/main.cpp)
+endif()
 target_link_libraries(regml PRIVATE regml_engine)
 if(REGML_WIIU)
     target_compile_options(regml_engine PRIVATE $<$<CONFIG:Release>:-O3> $<$<CONFIG:Release>:-flto>)

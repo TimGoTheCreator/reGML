@@ -55,6 +55,8 @@ Create `regml-profile.enabled` beside `data.win` for frame timings in `regml-pro
 It records average frame, game tick and presentation times in milliseconds, plus the slowest tick and presentation in each group of 30 frames
 Desktop: `--profile-log output.csv`
 
+For an on-screen debug HUD, put an empty `regml-debug.enabled` file beside `data.win`.
+
 For an input replay, put `regml-input.txt` beside `data.win`
 Each line is a frame number followed by held GML key codes
 
