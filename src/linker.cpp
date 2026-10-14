@@ -179,14 +179,22 @@ Program &LinkedPackage::program(const Package &package, std::size_t index) {
         }
     }
     target = std::move(decoded);
+    decoded_program_bytes += target.instructions.capacity() * sizeof(Instruction) +
+                             target.index_by_word.capacity() * sizeof(std::uint32_t);
     return target;
 }
 void LinkedPackage::release_programs() {
     if (!lazy_programs)
         return;
+#if REGML_WII
+    constexpr std::size_t retained_program_limit = 1024 * 1024;
+    if (decoded_program_bytes <= retained_program_limit)
+        return;
+#endif
     for (auto &program : programs) {
         std::vector<Instruction>().swap(program.instructions);
         std::vector<std::uint32_t>().swap(program.index_by_word);
     }
+    decoded_program_bytes = 0;
 }
 } // namespace regml

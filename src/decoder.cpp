@@ -1,6 +1,47 @@
 #include "decoder.hpp"
 #include <string>
 namespace regml {
+namespace {
+bool known_opcode(Opcode op) noexcept {
+    switch (op) {
+    case Opcode::conv:
+    case Opcode::mul:
+    case Opcode::div:
+    case Opcode::rem:
+    case Opcode::mod:
+    case Opcode::add:
+    case Opcode::sub:
+    case Opcode::bit_and:
+    case Opcode::bit_or:
+    case Opcode::bit_xor:
+    case Opcode::neg:
+    case Opcode::bit_not:
+    case Opcode::shl:
+    case Opcode::shr:
+    case Opcode::cmp:
+    case Opcode::pop:
+    case Opcode::push_i:
+    case Opcode::dup:
+    case Opcode::call_v:
+    case Opcode::ret:
+    case Opcode::exit:
+    case Opcode::popz:
+    case Opcode::branch:
+    case Opcode::branch_true:
+    case Opcode::branch_false:
+    case Opcode::push_env:
+    case Opcode::pop_env:
+    case Opcode::push:
+    case Opcode::push_local:
+    case Opcode::push_global:
+    case Opcode::push_builtin:
+    case Opcode::call:
+    case Opcode::extended:
+        return true;
+    }
+    return false;
+}
+} // namespace
 std::string_view opcode_name(Opcode op) noexcept {
     switch (op) {
     case Opcode::conv:
@@ -111,7 +152,7 @@ Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
         Instruction ins;
         ins.offset = static_cast<std::uint32_t>(offset);
         ins.word = code.u32(offset);
-        if (opcode_name(ins.opcode()) == "unknown")
+        if (!known_opcode(ins.opcode()))
             throw Error(ErrorKind::unsupported, "unknown bytecode opcode " + std::to_string(ins.word >> 24),
                         code.origin() + offset);
         ins.type1 = static_cast<DataType>((ins.word >> 16) & 0xf);

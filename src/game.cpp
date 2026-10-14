@@ -199,6 +199,13 @@ struct GameSession::Impl {
     std::vector<EventFrame> event_stack;
     struct VmScratch {
         std::vector<Value> stack, arguments;
+        struct Environment {
+            InstancePtr saved, saved_other;
+            std::vector<InstancePtr> choices;
+            std::size_t index = 0;
+        };
+        std::vector<Environment> environments;
+        std::size_t environment_count = 0;
     };
     std::array<VmScratch, 128> vm_scratch;
     std::filesystem::path game_dir;
@@ -221,6 +228,7 @@ struct GameSession::Impl {
             save_dir /= save_profile(package, path);
         load_stage("world metadata", [&] {
             load_world();
+            std::unordered_map<std::string, std::vector<std::uint8_t>>{}.swap(load_chunks);
             return true;
         });
         // Execution uses IDs baked into instructions; these audit maps can leave the stage now.
@@ -818,16 +826,21 @@ struct GameSession::Impl {
             ~ScratchGuard() {
                 scratch.stack.clear();
                 scratch.arguments.clear();
+                for (std::size_t i = 0; i < scratch.environment_count; ++i) {
+                    auto &environment = scratch.environments[i];
+                    environment.choices.clear();
+                    if (environment.choices.capacity() > 64)
+                        std::vector<InstancePtr>{}.swap(environment.choices);
+                    environment.saved.reset();
+                    environment.saved_other.reset();
+                }
+                scratch.environment_count = 0;
             }
         } scratch_guard{scratch};
         std::size_t pc = 0;
         std::size_t instruction_index = 0;
-        struct Environment {
-            InstancePtr saved, saved_other;
-            std::vector<InstancePtr> choices;
-            std::size_t index = 0;
-        };
-        std::vector<Environment> environments;
+        auto &environments = scratch.environments;
+        auto &environment_count = scratch.environment_count;
         auto pop = [&]() {
             if (stack.empty())
                 throw Error(ErrorKind::vm, "native VM stack underflow", program.origin + pc);
@@ -907,7 +920,7 @@ struct GameSession::Impl {
                         return static_cast<double>(spr.frames.size());
                     }
                     VariableStore *store = nullptr;
-                    std::vector<VariableStore *> stores;
+                    bool multi_target = false;
                     if (scope == -5)
                         store = &globals;
                     else if (scope == -7 || name.starts_with("argument"))
@@ -920,12 +933,13 @@ struct GameSession::Impl {
                     else if (scope == -2 && other && other->alive)
                         store = &other->vars;
                     else {
-                        const auto found = targets(scope, self, other);
-                        if (found.empty())
-                            throw Error(ErrorKind::vm, "variable instance not found: " + std::string(name));
-                        store = &found[0]->vars;
-                        for (const auto &target : found)
-                            stores.push_back(&target->vars);
+                        multi_target = writing;
+                        if (!writing) {
+                            auto *found = first_target(scope, self, other);
+                            if (!found)
+                                throw Error(ErrorKind::vm, "variable instance not found: " + std::string(name));
+                            store = &found->vars;
+                        }
                     }
                     auto access = [&](VariableStore *store) -> Value {
                         if (!writing && store == &locals && name == "argument_count" && !locals.contains(name))
@@ -990,9 +1004,16 @@ struct GameSession::Impl {
                             throw Error(ErrorKind::vm, "uninitialized variable: " + std::string(name));
                         return it->second;
                     };
-                    if (writing && !stores.empty()) {
-                        for (auto *target : stores)
-                            access(target);
+                    if (multi_target) {
+                        bool found = false;
+                        for (const auto &target : instances) {
+                            if (target->alive && !target->deactivated && matches(*target, scope)) {
+                                access(&target->vars);
+                                found = true;
+                            }
+                        }
+                        if (!found)
+                            throw Error(ErrorKind::vm, "variable instance not found: " + std::string(name));
                         return value;
                     }
                     return access(store);
@@ -1188,8 +1209,27 @@ struct GameSession::Impl {
                 }
                 case Opcode::push_env: {
                     const auto target = number(pop());
-                    auto choices = targets(target, self, other);
-                    if (choices.empty()) {
+                    if (environment_count == environments.size())
+                        environments.emplace_back();
+                    auto &environment = environments[environment_count];
+                    environment.saved = self;
+                    environment.saved_other = other;
+                    environment.index = 0;
+                    environment.choices.clear();
+                    if (target == -1) {
+                        if (self)
+                            environment.choices.push_back(self);
+                    } else if (target == -2) {
+                        if (other && other->alive)
+                            environment.choices.push_back(other);
+                    } else {
+                        for (const auto &instance : instances)
+                            if (instance->alive && !instance->deactivated && matches(*instance, target))
+                                environment.choices.push_back(instance);
+                    }
+                    if (environment.choices.empty()) {
+                        environment.saved.reset();
+                        environment.saved_other.reset();
                         next = ins.branch_target_value();
                         const auto found = program.instruction_at(next);
                         if (found) {
@@ -1198,23 +1238,28 @@ struct GameSession::Impl {
                                 next += end.size;
                         }
                     } else {
-                        environments.push_back({self, other, std::move(choices), 0});
+                        ++environment_count;
                         other = self;
-                        self = environments.back().choices[0];
+                        self = environment.choices[0];
                     }
                     break;
                 }
                 case Opcode::pop_env: {
-                    if (environments.empty())
+                    if (environment_count == 0)
                         throw Error(ErrorKind::vm, "environment underflow");
-                    auto &e = environments.back();
+                    auto &e = environments[environment_count - 1];
                     if (!ins.environment_exit() && ++e.index < e.choices.size()) {
                         self = e.choices[e.index];
                         next = ins.branch_target_value();
                     } else {
                         self = e.saved;
                         other = e.saved_other;
-                        environments.pop_back();
+                        --environment_count;
+                        e.choices.clear();
+                        if (e.choices.capacity() > 64)
+                            std::vector<InstancePtr>{}.swap(e.choices);
+                        e.saved.reset();
+                        e.saved_other.reset();
                     }
                     break;
                 }
@@ -1251,6 +1296,18 @@ struct GameSession::Impl {
                         program.origin + pc);
         }
         return std::monostate{};
+    }
+    bool prepare_save_directory() const {
+        std::error_code error;
+        if (std::filesystem::is_directory(save_dir, error))
+            return true;
+        if (error)
+            return false;
+        error.clear();
+        std::filesystem::create_directories(save_dir, error);
+        if (error)
+            return false;
+        return std::filesystem::is_directory(save_dir, error) && !error;
     }
     Value call(std::string_view name, std::span<const Value> args, InstancePtr self, InstancePtr other) {
         auto n = [&](std::size_t i) {
@@ -1645,17 +1702,29 @@ struct GameSession::Impl {
                 throw Error(ErrorKind::unsupported, "save path must be a filename");
             return save_dir / p;
         };
-        if (name == "file_exists")
-            return std::filesystem::is_regular_file(save_path(text(0))) ||
-                   std::filesystem::is_regular_file(game_dir / text(0));
+        auto text_file = [&](std::size_t index) -> std::fstream * {
+            if (index >= args.size())
+                throw Error(ErrorKind::vm, "missing built-in argument");
+            const auto found = files.find(static_cast<int>(value_number(args[index])));
+            return found == files.end() ? nullptr : found->second.get();
+        };
+        if (name == "file_exists") {
+            std::error_code error;
+            if (std::filesystem::is_regular_file(save_path(text(0)), error))
+                return true;
+            error.clear();
+            return std::filesystem::is_regular_file(game_dir / text(0), error);
+        }
         if (name == "file_delete") {
-            std::filesystem::remove(save_path(text(0)));
+            std::error_code error;
+            std::filesystem::remove(save_path(text(0)), error);
             return std::monostate{};
         }
         if (name == "file_rename") {
             const auto from = save_path(text(0)), to = save_path(text(1));
-            std::filesystem::create_directories(save_dir);
             std::error_code error;
+            if (!prepare_save_directory())
+                return false;
             std::filesystem::rename(from, to, error);
             return !error;
         }
@@ -1666,7 +1735,8 @@ struct GameSession::Impl {
         }
         if (name == "steam_file_write_file") {
             const auto path = save_path(text(0));
-            std::filesystem::create_directories(save_dir);
+            if (!prepare_save_directory())
+                return false;
             std::ofstream output(path, std::ios::binary | std::ios::trunc);
             if (!output)
                 return false;
@@ -1702,10 +1772,11 @@ struct GameSession::Impl {
                     std::copy(bytes.begin(), bytes.end(), buffer.bytes.begin() + static_cast<std::ptrdiff_t>(offset));
                 }
             } else {
-                std::filesystem::create_directories(save_dir);
+                if (!prepare_save_directory())
+                    return std::int32_t{-1};
                 std::ofstream output(path, std::ios::binary | std::ios::trunc);
                 if (!output)
-                    throw Error(ErrorKind::io, "async buffer save failed");
+                    return std::int32_t{-1};
                 if (offset < buffer.bytes.size()) {
                     const auto count = std::min(size, buffer.bytes.size() - offset);
                     output.write(reinterpret_cast<const char *>(buffer.bytes.data() + offset),
@@ -1716,7 +1787,8 @@ struct GameSession::Impl {
         }
         if (name == "file_text_open_write" || name == "file_text_open_read" || name == "file_text_open_append") {
             const auto path = save_path(text(0));
-            std::filesystem::create_directories(save_dir);
+            if (name != "file_text_open_read" && !prepare_save_directory())
+                return std::int32_t{-1};
             const auto mode = name == "file_text_open_read"     ? std::ios::in
                               : name == "file_text_open_append" ? std::ios::out | std::ios::app
                                                                 : std::ios::out | std::ios::trunc;
@@ -1732,40 +1804,49 @@ struct GameSession::Impl {
             return std::monostate{};
         }
         if (name == "file_text_write_string" || name == "file_text_write_real") {
-            auto &file = *files.at(static_cast<int>(n(0)));
-            file << text(1);
-            if (!file)
-                throw Error(ErrorKind::io, "guest text write failed");
+            if (auto *file = text_file(0))
+                *file << text(1);
             return std::monostate{};
         }
         if (name == "file_text_read_real") {
-            auto &file = *files.at(static_cast<int>(n(0)));
+            auto *file = text_file(0);
+            if (!file)
+                return 0.0;
             double value = 0;
-            file >> value;
-            if (file.fail() && !file.eof())
-                throw Error(ErrorKind::io, "guest numeric text read failed");
+            *file >> value;
             return value;
         }
         if (name == "file_text_read_string") {
-            auto &file = *files.at(static_cast<int>(n(0)));
+            auto *file = text_file(0);
+            if (!file)
+                return std::string{};
             std::string value;
-            while (file.peek() != std::char_traits<char>::eof() && file.peek() != '\r' && file.peek() != '\n')
-                value.push_back(static_cast<char>(file.get()));
+            while (file->peek() != std::char_traits<char>::eof() && file->peek() != '\r' && file->peek() != '\n')
+                value.push_back(static_cast<char>(file->get()));
             return value;
         }
         if (name == "file_text_readln") {
+            auto *file = text_file(0);
+            if (!file)
+                return std::monostate{};
             std::string line;
-            std::getline(*files.at(static_cast<int>(n(0))), line);
+            std::getline(*file, line);
             return std::monostate{};
         }
-        if (name == "file_text_eof")
-            return files.at(static_cast<int>(n(0)))->peek() == std::char_traits<char>::eof();
+        if (name == "file_text_eof") {
+            auto *file = text_file(0);
+            return !file || file->peek() == std::char_traits<char>::eof();
+        }
         if (name == "file_text_eoln") {
-            const auto ch = files.at(static_cast<int>(n(0)))->peek();
+            auto *file = text_file(0);
+            if (!file)
+                return true;
+            const auto ch = file->peek();
             return ch == '\r' || ch == '\n' || ch == std::char_traits<char>::eof();
         }
         if (name == "file_text_writeln") {
-            *files.at(static_cast<int>(n(0))) << '\n';
+            if (auto *file = text_file(0))
+                *file << '\n';
             return std::monostate{};
         }
         if (name == "ini_open" || name == "ini_open_from_string") {
@@ -1839,17 +1920,21 @@ struct GameSession::Impl {
         }
         if (name == "ini_close") {
             if (ini_dirty && !ini_path.empty()) {
-                std::filesystem::create_directories(save_dir);
-                std::ofstream file(ini_path);
-                if (!file)
-                    throw Error(ErrorKind::io, "guest INI open failed");
-                for (const auto &[section, entries] : ini) {
-                    file << '[' << section << "]\n";
-                    for (const auto &[key, value] : entries)
-                        file << key << '=' << value << '\n';
+                if (!prepare_save_directory()) {
+                    ini_path.clear();
+                    ini.clear();
+                    ini_dirty = false;
+                    ini_opened = false;
+                    return std::monostate{};
                 }
-                if (!file)
-                    throw Error(ErrorKind::io, "guest INI write failed");
+                std::ofstream file(ini_path);
+                if (file) {
+                    for (const auto &[section, entries] : ini) {
+                        file << '[' << section << "]\n";
+                        for (const auto &[key, value] : entries)
+                            file << key << '=' << value << '\n';
+                    }
+                }
             }
             ini_path.clear();
             ini.clear();
@@ -1990,17 +2075,20 @@ struct GameSession::Impl {
             const double line_height = n(3) < 0 ? assets.text_height(draw_font) : n(3);
             const double max_width = n(4);
             std::string line;
+            double line_width = 0;
             double y = n(1);
             for (const char ch : value) {
-                if ((ch == ' ' && max_width > 0 && assets.text_width(draw_font, line + ch) > max_width) || ch == '\n' ||
-                    ch == '#') {
+                const double char_width = ch == '\n' || ch == '#' ? 0 : assets.text_width(draw_font, {&ch, 1});
+                if ((ch == ' ' && max_width > 0 && line_width + char_width > max_width) || ch == '\n' || ch == '#') {
                     assets.draw_text(canvas, draw_font, n(0), y, line, draw_color, draw_alpha, halign, valign);
                     line.clear();
+                    line_width = 0;
                     y += line_height;
                     if (ch == '\n' || ch == '#')
                         continue;
                 }
                 line += ch;
+                line_width += char_width;
             }
             assets.draw_text(canvas, draw_font, n(0), y, line, draw_color, draw_alpha, halign, valign);
             return std::monostate{};
@@ -2782,288 +2870,308 @@ struct GameSession::Impl {
         throw Error(ErrorKind::unsupported, "engine built-in pending: " + std::string(name));
     }
     void tick(const KeyboardState &input, const KeyboardState &edges) {
-        audio.service();
-        static const std::array<std::string, 12> alarm_names = {"alarm[0]", "alarm[1]", "alarm[2]",  "alarm[3]",
-                                                                "alarm[4]", "alarm[5]", "alarm[6]",  "alarm[7]",
-                                                                "alarm[8]", "alarm[9]", "alarm[10]", "alarm[11]"};
-        held = input;
-        pressed = edges;
-        for (std::size_t k = 0; k < 256; ++k) {
-            pressed[k] = pressed[k] || (held[k] && !previous_held[k]);
-            released[k] = !held[k] && previous_held[k];
-        }
-        previous_held = held;
-        event_budget = 0;
-        for (int transitions = 0; pending_room >= 0 && transitions < 16; ++transitions)
-            enter(pending_room);
-        frame_instances.assign(instances.begin(), instances.end());
-        struct SnapshotGuard {
-            std::vector<InstancePtr> &instances;
-            ~SnapshotGuard() { instances.clear(); }
-        } snapshot_guard{frame_instances};
-        const auto &snapshot = frame_instances;
-        for (auto &i : snapshot) {
-            if (!i->alive || i->deactivated)
-                continue;
-            event(i, 3, 1);
-            if (i->alive) {
-                i->vars["xprevious"] = i->vars["x"];
-                i->vars["yprevious"] = i->vars["y"];
+        const char *allocation_stage = "audio service";
+        try {
+            audio.service();
+            static const std::array<std::string, 12> alarm_names = {"alarm[0]", "alarm[1]", "alarm[2]",  "alarm[3]",
+                                                                    "alarm[4]", "alarm[5]", "alarm[6]",  "alarm[7]",
+                                                                    "alarm[8]", "alarm[9]", "alarm[10]", "alarm[11]"};
+            held = input;
+            pressed = edges;
+            for (std::size_t k = 0; k < 256; ++k) {
+                pressed[k] = pressed[k] || (held[k] && !previous_held[k]);
+                released[k] = !held[k] && previous_held[k];
             }
-        }
-        for (auto &i : snapshot)
-            if (i->alive && !i->deactivated)
-                for (int a = 0; a < 12; ++a) {
-                    auto &v = i->vars.at(alarm_names[static_cast<std::size_t>(a)]);
-                    const auto timer = number(v);
-                    if (timer > 0) {
-                        v = std::int32_t{timer - 1};
-                        if (timer == 1)
-                            event(i, 2, a);
-                    }
+            previous_held = held;
+            event_budget = 0;
+            allocation_stage = "room entry";
+            for (int transitions = 0; pending_room >= 0 && transitions < 16; ++transitions)
+                enter(pending_room);
+            frame_instances.assign(instances.begin(), instances.end());
+            struct SnapshotGuard {
+                std::vector<InstancePtr> &instances;
+                ~SnapshotGuard() { instances.clear(); }
+            } snapshot_guard{frame_instances};
+            const auto &snapshot = frame_instances;
+            allocation_stage = "step and alarm events";
+            for (auto &i : snapshot) {
+                if (!i->alive || i->deactivated)
+                    continue;
+                event(i, 3, 1);
+                if (i->alive) {
+                    i->vars["xprevious"] = i->vars["x"];
+                    i->vars["yprevious"] = i->vars["y"];
                 }
-        for (auto &i : snapshot)
-            if (!i->deactivated)
-                event(i, 3, 0);
-        for (auto &i : snapshot)
-            if (i->alive && !i->deactivated) {
-                double h = value_number(i->vars.at("hspeed")), v = value_number(i->vars.at("vspeed"));
-                const double friction = value_number(i->vars.at("friction"));
-                if (friction != 0 && (h != 0 || v != 0)) {
-                    const double speed = std::hypot(h, v);
-                    const double next = std::max(0.0, speed - friction);
-                    h *= next / speed;
-                    v *= next / speed;
-                }
-                const double gravity = value_number(i->vars.at("gravity"));
-                if (gravity != 0) {
-                    const double direction = value_number(i->vars.at("gravity_direction"));
-                    if (direction == 0 || direction == 360)
-                        h += gravity;
-                    else if (direction == 90)
-                        v -= gravity;
-                    else if (direction == 180)
-                        h -= gravity;
-                    else if (direction == 270)
-                        v += gravity;
-                    else {
-                        const double angle = direction * 3.141592653589793 / 180;
-                        h += gravity * std::cos(angle);
-                        v -= gravity * std::sin(angle);
-                    }
-                }
-                i->vars["hspeed"] = h;
-                i->vars["vspeed"] = v;
-                i->vars["speed"] = h == 0 && v == 0 ? 0 : std::hypot(h, v);
-                if (h != 0 || v != 0)
-                    i->vars["direction"] = std::fmod(std::atan2(-v, h) * 180 / 3.141592653589793 + 360, 360);
-                const int path_id = number(i->vars.at("path_index"));
-                if (path_id >= 0) {
-                    const auto &path = paths.at(static_cast<std::size_t>(path_id));
-                    if (path.length > 0) {
-                        const double scale = value_number(i->vars.at("path_scale"));
-                        double position = value_number(i->vars.at("path_position")), distance = position * path.length;
-                        auto sample = [&](double d) {
-                            auto next = std::lower_bound(
-                                path.points.begin() + 1, path.points.end(), d,
-                                [](const PathPoint &point, double target) { return point.distance < target; });
-                            if (next == path.points.end())
-                                return path.points.back();
-                            const auto &before = *(next - 1);
-                            const double length = next->distance - before.distance,
-                                         t = length > 0 ? (d - before.distance) / length : 0;
-                            return PathPoint{before.x + (next->x - before.x) * t, before.y + (next->y - before.y) * t,
-                                             before.speed + (next->speed - before.speed) * t, d};
-                        };
-                        distance += value_number(i->vars.at("path_speed")) * sample(distance).speed / 100 /
-                                    std::max(std::abs(scale), 0.000001);
-                        const bool ended = distance < 0 || distance >= path.length;
-                        const int action = number(i->vars.at("path_endaction"));
-                        double continuation_x = 0, continuation_y = 0;
-                        if (ended) {
-                            if (action == 1 || action == 2) {
-                                if (action == 2) {
-                                    // Continue offsets the next traversal by the endpoint delta.
-                                    const double cycles = std::floor(distance / path.length);
-                                    continuation_x = (path.points.back().x - path.points.front().x) * scale * cycles;
-                                    continuation_y = (path.points.back().y - path.points.front().y) * scale * cycles;
-                                    i->vars["path_xstart"] = value_number(i->vars.at("path_xstart")) + continuation_x;
-                                    i->vars["path_ystart"] = value_number(i->vars.at("path_ystart")) + continuation_y;
-                                }
-                                distance = std::fmod(std::fmod(distance, path.length) + path.length, path.length);
-                            } else if (action == 3) {
-                                distance = std::clamp(distance, 0.0, path.length);
-                                i->vars["path_speed"] = -value_number(i->vars.at("path_speed"));
-                            } else {
-                                distance = std::clamp(distance, 0.0, path.length);
-                                i->vars["path_index"] = std::int32_t{-1};
-                            }
+            }
+            for (auto &i : snapshot)
+                if (i->alive && !i->deactivated)
+                    for (int a = 0; a < 12; ++a) {
+                        auto &v = i->vars.at(alarm_names[static_cast<std::size_t>(a)]);
+                        const auto timer = number(v);
+                        if (timer > 0) {
+                            v = std::int32_t{timer - 1};
+                            if (timer == 1)
+                                event(i, 2, a);
                         }
-                        const auto point = sample(distance);
-                        const auto before = sample(position * path.length);
-                        const double dx = (point.x - before.x) * scale + continuation_x,
-                                     dy = (point.y - before.y) * scale + continuation_y;
-                        if (dx != 0 || dy != 0)
-                            i->vars["direction"] = std::fmod(std::atan2(-dy, dx) * 180 / 3.141592653589793 + 360, 360);
-                        i->vars["path_positionprevious"] = position;
-                        i->vars["path_position"] = distance / path.length;
-                        i->vars["x"] = value_number(i->vars.at("path_xstart")) + point.x * scale;
-                        i->vars["y"] = value_number(i->vars.at("path_ystart")) + point.y * scale;
-                        h = 0;
-                        v = 0;
-                        if (ended)
-                            event(i, 7, 8);
+                    }
+            for (auto &i : snapshot)
+                if (!i->deactivated)
+                    event(i, 3, 0);
+            for (auto &i : snapshot)
+                if (i->alive && !i->deactivated) {
+                    double h = value_number(i->vars.at("hspeed")), v = value_number(i->vars.at("vspeed"));
+                    const double friction = value_number(i->vars.at("friction"));
+                    if (friction != 0 && (h != 0 || v != 0)) {
+                        const double speed = std::hypot(h, v);
+                        const double next = std::max(0.0, speed - friction);
+                        h *= next / speed;
+                        v *= next / speed;
+                    }
+                    const double gravity = value_number(i->vars.at("gravity"));
+                    if (gravity != 0) {
+                        const double direction = value_number(i->vars.at("gravity_direction"));
+                        if (direction == 0 || direction == 360)
+                            h += gravity;
+                        else if (direction == 90)
+                            v -= gravity;
+                        else if (direction == 180)
+                            h -= gravity;
+                        else if (direction == 270)
+                            v += gravity;
+                        else {
+                            const double angle = direction * 3.141592653589793 / 180;
+                            h += gravity * std::cos(angle);
+                            v -= gravity * std::sin(angle);
+                        }
+                    }
+                    i->vars["hspeed"] = h;
+                    i->vars["vspeed"] = v;
+                    i->vars["speed"] = h == 0 && v == 0 ? 0 : std::hypot(h, v);
+                    if (h != 0 || v != 0)
+                        i->vars["direction"] = std::fmod(std::atan2(-v, h) * 180 / 3.141592653589793 + 360, 360);
+                    const int path_id = number(i->vars.at("path_index"));
+                    if (path_id >= 0) {
+                        const auto &path = paths.at(static_cast<std::size_t>(path_id));
+                        if (path.length > 0) {
+                            const double scale = value_number(i->vars.at("path_scale"));
+                            double position = value_number(i->vars.at("path_position")),
+                                   distance = position * path.length;
+                            auto sample = [&](double d) {
+                                auto next = std::lower_bound(
+                                    path.points.begin() + 1, path.points.end(), d,
+                                    [](const PathPoint &point, double target) { return point.distance < target; });
+                                if (next == path.points.end())
+                                    return path.points.back();
+                                const auto &before = *(next - 1);
+                                const double length = next->distance - before.distance,
+                                             t = length > 0 ? (d - before.distance) / length : 0;
+                                return PathPoint{before.x + (next->x - before.x) * t,
+                                                 before.y + (next->y - before.y) * t,
+                                                 before.speed + (next->speed - before.speed) * t, d};
+                            };
+                            distance += value_number(i->vars.at("path_speed")) * sample(distance).speed / 100 /
+                                        std::max(std::abs(scale), 0.000001);
+                            const bool ended = distance < 0 || distance >= path.length;
+                            const int action = number(i->vars.at("path_endaction"));
+                            double continuation_x = 0, continuation_y = 0;
+                            if (ended) {
+                                if (action == 1 || action == 2) {
+                                    if (action == 2) {
+                                        // Continue offsets the next traversal by the endpoint delta.
+                                        const double cycles = std::floor(distance / path.length);
+                                        continuation_x =
+                                            (path.points.back().x - path.points.front().x) * scale * cycles;
+                                        continuation_y =
+                                            (path.points.back().y - path.points.front().y) * scale * cycles;
+                                        i->vars["path_xstart"] =
+                                            value_number(i->vars.at("path_xstart")) + continuation_x;
+                                        i->vars["path_ystart"] =
+                                            value_number(i->vars.at("path_ystart")) + continuation_y;
+                                    }
+                                    distance = std::fmod(std::fmod(distance, path.length) + path.length, path.length);
+                                } else if (action == 3) {
+                                    distance = std::clamp(distance, 0.0, path.length);
+                                    i->vars["path_speed"] = -value_number(i->vars.at("path_speed"));
+                                } else {
+                                    distance = std::clamp(distance, 0.0, path.length);
+                                    i->vars["path_index"] = std::int32_t{-1};
+                                }
+                            }
+                            const auto point = sample(distance);
+                            const auto before = sample(position * path.length);
+                            const double dx = (point.x - before.x) * scale + continuation_x,
+                                         dy = (point.y - before.y) * scale + continuation_y;
+                            if (dx != 0 || dy != 0)
+                                i->vars["direction"] =
+                                    std::fmod(std::atan2(-dy, dx) * 180 / 3.141592653589793 + 360, 360);
+                            i->vars["path_positionprevious"] = position;
+                            i->vars["path_position"] = distance / path.length;
+                            i->vars["x"] = value_number(i->vars.at("path_xstart")) + point.x * scale;
+                            i->vars["y"] = value_number(i->vars.at("path_ystart")) + point.y * scale;
+                            h = 0;
+                            v = 0;
+                            if (ended)
+                                event(i, 7, 8);
+                        }
+                    }
+                    i->vars["x"] = value_number(i->vars["x"]) + h;
+                    i->vars["y"] = value_number(i->vars["y"]) + v;
+                    if (objects[static_cast<std::size_t>(i->object)].has_keyboard_events) {
+                        for (std::size_t k = 0; k < 256; ++k) {
+                            if (held[k])
+                                event(i, 5, static_cast<int>(k));
+                            if (pressed[k])
+                                event(i, 9, static_cast<int>(k));
+                        }
                     }
                 }
-                i->vars["x"] = value_number(i->vars["x"]) + h;
-                i->vars["y"] = value_number(i->vars["y"]) + v;
-                if (objects[static_cast<std::size_t>(i->object)].has_keyboard_events) {
-                    for (std::size_t k = 0; k < 256; ++k) {
-                        if (held[k])
-                            event(i, 5, static_cast<int>(k));
-                        if (pressed[k])
-                            event(i, 9, static_cast<int>(k));
+            // Fire once when the whole sprite crosses the room boundary.
+            const double room_width = value_number(engine.at("room_width")),
+                         room_height = value_number(engine.at("room_height"));
+            allocation_stage = "collision and end-step events";
+            for (const auto &i : snapshot)
+                if (i->alive) {
+                    const auto b = bounds(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), true);
+                    const bool outside =
+                        b.valid ? (b.right <= 0 || b.left >= room_width || b.bottom <= 0 || b.top >= room_height)
+                                : (b.left < 0 || b.left > room_width || b.top < 0 || b.top > room_height);
+                    const bool entered = outside && !i->outside_room;
+                    i->outside_room = outside;
+                    if (entered)
+                        event(i, 7, 0);
+                }
+            // Avoid geometry checks for pairs without a collision handler.
+            for (const auto &i : snapshot)
+                if (i->alive && objects[static_cast<std::size_t>(i->object)].has_collision_events)
+                    for (const auto &j : snapshot)
+                        if (j->alive && i != j) {
+                            const auto route = collision_event(i->object, j->object);
+                            if (route.source >= 0 &&
+                                collides(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), *j))
+                                event(i, 4, route.target, route.source, j);
+                        }
+            for (const auto &i : snapshot)
+                event(i, 3, 2);
+            if (number(engine.at("view_enabled")) != 0 && number(engine.at("view_visible[0]")) != 0) {
+                const int target = number(engine.at("view_object[0]"));
+                const double vw = value_number(engine.at("view_wview[0]")),
+                             vh = value_number(engine.at("view_hview[0]"));
+                if (target >= 0 && vw > 0 && vh > 0) {
+                    const auto tracked = std::find_if(instances.begin(), instances.end(),
+                                                      [&](const auto &i) { return i->alive && i->object == target; });
+                    if (tracked != instances.end()) {
+                        const auto &room = rooms.at(static_cast<std::size_t>(current_room));
+                        auto follow = [&](const char *view_key, const char *speed_key, const char *coordinate,
+                                          double extent, double border, double room_extent) {
+                            double origin = value_number(engine.at(view_key));
+                            const double pos = value_number((*tracked)->vars.at(coordinate));
+                            double desired = origin;
+                            if (pos < origin + border)
+                                desired = pos - border;
+                            else if (pos > origin + extent - border)
+                                desired = pos - extent + border;
+                            const double rate = value_number(engine.at(speed_key));
+                            if (rate < 0)
+                                origin = desired;
+                            else
+                                origin += std::clamp(desired - origin, -rate, rate);
+                            const double maximum = std::max(0.0, room_extent - extent);
+                            origin = std::clamp(origin, 0.0, maximum);
+                            engine[view_key] = origin;
+                        };
+                        follow("view_xview[0]", "view_hspeed[0]", "x", vw, value_number(engine.at("view_hborder[0]")),
+                               room.width);
+                        follow("view_yview[0]", "view_vspeed[0]", "y", vh, value_number(engine.at("view_vborder[0]")),
+                               room.height);
                     }
                 }
             }
-        // Fire once when the whole sprite crosses the room boundary.
-        const double room_width = value_number(engine.at("room_width")),
-                     room_height = value_number(engine.at("room_height"));
-        for (const auto &i : snapshot)
-            if (i->alive) {
-                const auto b = bounds(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), true);
-                const bool outside =
-                    b.valid ? (b.right <= 0 || b.left >= room_width || b.bottom <= 0 || b.top >= room_height)
-                            : (b.left < 0 || b.left > room_width || b.top < 0 || b.top > room_height);
-                const bool entered = outside && !i->outside_room;
-                i->outside_room = outside;
-                if (entered)
-                    event(i, 7, 0);
+            allocation_stage = "room view setup";
+            canvas.clear(rooms.at(static_cast<std::size_t>(current_room)).color);
+            if (number(engine.at("view_enabled")) != 0 && number(engine.at("view_visible[0]")) != 0) {
+                const auto w = value_number(engine.at("view_wview[0]")), h = value_number(engine.at("view_hview[0]"));
+                if (w <= 0 || h <= 0)
+                    throw Error(ErrorKind::vm, "invalid view dimensions");
+                assets.view(value_number(engine.at("view_xview[0]")), value_number(engine.at("view_yview[0]")),
+                            value_number(engine.at("view_wport[0]")) / w, value_number(engine.at("view_hport[0]")) / h,
+                            value_number(engine.at("view_xport[0]")), value_number(engine.at("view_yport[0]")));
+            } else
+                assets.view(0, 0, 1, 1, 0, 0);
+            const auto &room = rooms.at(static_cast<std::size_t>(current_room));
+            allocation_stage = "background and tile drawing";
+            for (const auto &b : room.backgrounds)
+                if (!b.foreground)
+                    assets.draw_background(canvas, b.id, b.x, b.y);
+            auto draw_tile = [&](const Tile &t) {
+                if (hidden_tile_layers.contains(t.id))
+                    return;
+                const auto offset = tile_layer_offsets.find(t.id);
+                const double ox = offset == tile_layer_offsets.end() ? 0 : offset->second.first;
+                const double oy = offset == tile_layer_offsets.end() ? 0 : offset->second.second;
+                assets.draw_tile(canvas, t.id, t.source_x, t.source_y, t.width, t.height, t.x + ox, t.y + oy, t.sx,
+                                 t.sy, t.color);
+            };
+            std::size_t tile = 0;
+        allocation_stage = "draw-list allocation";
+            draw_entries.clear();
+            if (draw_entries.capacity() < snapshot.size())
+                draw_entries.reserve(snapshot.size());
+            for (std::size_t index = 0; index < snapshot.size(); ++index) {
+                const auto &instance = snapshot[index];
+                draw_entries.push_back({value_number(instance->vars.at("depth")), index});
             }
-        // Avoid geometry checks for pairs without a collision handler.
-        for (const auto &i : snapshot)
-            if (i->alive && objects[static_cast<std::size_t>(i->object)].has_collision_events)
-                for (const auto &j : snapshot)
-                    if (j->alive && i != j) {
-                        const auto route = collision_event(i->object, j->object);
-                        if (route.source >= 0 &&
-                            collides(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), *j))
-                            event(i, 4, route.target, route.source, j);
+            std::sort(draw_entries.begin(), draw_entries.end(), [](const auto &a, const auto &b) {
+                return a.depth != b.depth ? a.depth > b.depth : a.order < b.order;
+            });
+        allocation_stage = "instance draw calls";
+            for (auto &entry : draw_entries) {
+                const auto &i = snapshot[entry.order];
+                if (i->alive && !i->deactivated && number(i->vars.at("visible"))) {
+                    while (tile < room.tiles.size() && room.tiles[tile].depth >= value_number(i->vars.at("depth")))
+                        draw_tile(room.tiles[tile++]);
+                    if (objects[static_cast<std::size_t>(i->object)].draw_owner >= 0)
+                        event(i, 8, 0);
+                    else {
+                        const auto sprite = number(i->vars.at("sprite_index"));
+                        if (sprite >= 0)
+                            assets.draw_sprite(
+                                canvas, sprite, value_number(i->vars.at("image_index")), value_number(i->vars.at("x")),
+                                value_number(i->vars.at("y")), value_number(i->vars.at("image_xscale")),
+                                value_number(i->vars.at("image_yscale")), value_number(i->vars.at("image_angle")),
+                                static_cast<unsigned>(number(i->vars.at("image_blend"))),
+                                value_number(i->vars.at("image_alpha")));
                     }
-        for (const auto &i : snapshot)
-            event(i, 3, 2);
-        if (number(engine.at("view_enabled")) != 0 && number(engine.at("view_visible[0]")) != 0) {
-            const int target = number(engine.at("view_object[0]"));
-            const double vw = value_number(engine.at("view_wview[0]")), vh = value_number(engine.at("view_hview[0]"));
-            if (target >= 0 && vw > 0 && vh > 0) {
-                const auto tracked = std::find_if(instances.begin(), instances.end(),
-                                                  [&](const auto &i) { return i->alive && i->object == target; });
-                if (tracked != instances.end()) {
-                    const auto &room = rooms.at(static_cast<std::size_t>(current_room));
-                    auto follow = [&](const char *view_key, const char *speed_key, const char *coordinate,
-                                      double extent, double border, double room_extent) {
-                        double origin = value_number(engine.at(view_key));
-                        const double pos = value_number((*tracked)->vars.at(coordinate));
-                        double desired = origin;
-                        if (pos < origin + border)
-                            desired = pos - border;
-                        else if (pos > origin + extent - border)
-                            desired = pos - extent + border;
-                        const double rate = value_number(engine.at(speed_key));
-                        if (rate < 0)
-                            origin = desired;
-                        else
-                            origin += std::clamp(desired - origin, -rate, rate);
-                        const double maximum = std::max(0.0, room_extent - extent);
-                        origin = std::clamp(origin, 0.0, maximum);
-                        engine[view_key] = origin;
-                    };
-                    follow("view_xview[0]", "view_hspeed[0]", "x", vw, value_number(engine.at("view_hborder[0]")),
-                           room.width);
-                    follow("view_yview[0]", "view_vspeed[0]", "y", vh, value_number(engine.at("view_vborder[0]")),
-                           room.height);
+                    const int animated_object = i->object, animated_sprite = number(i->vars.at("sprite_index"));
+                    const double old_index = value_number(i->vars.at("image_index")),
+                                 image_speed = value_number(i->vars.at("image_speed"));
+                    if (animated_sprite >= 0 && image_speed != 0) {
+                        const auto frame_count = assets.sprite(animated_sprite).frames.size();
+                        if (frame_count) {
+                            const double count = static_cast<double>(frame_count), next_index = old_index + image_speed;
+                            const bool ended = (image_speed > 0 && old_index < count && next_index >= count) ||
+                                               (image_speed < 0 && old_index >= 0 && next_index < 0);
+                            i->vars["image_index"] = next_index;
+                            if (ended)
+                                event(i, 7, 7);
+                            if (i->alive && i->object == animated_object &&
+                                number(i->vars.at("sprite_index")) == animated_sprite &&
+                                value_number(i->vars.at("image_index")) == next_index)
+                                i->vars["image_index"] = std::fmod(std::fmod(next_index, count) + count, count);
+                        }
+                    }
                 }
             }
+            while (tile < room.tiles.size())
+                draw_tile(room.tiles[tile++]);
+            for (const auto &b : room.backgrounds)
+                if (b.foreground)
+                    assets.draw_background(canvas, b.id, b.x, b.y);
+            std::erase_if(instances, [](const auto &i) { return !i->alive; });
+            ++frame;
+            engine["current_time"] = static_cast<double>(frame) * 1000.0 / value_number(engine["room_speed"]);
+        } catch (const std::bad_alloc &) {
+            throw Error(ErrorKind::io, "out of memory during " + std::string(allocation_stage));
         }
-        canvas.clear(rooms.at(static_cast<std::size_t>(current_room)).color);
-        if (number(engine.at("view_enabled")) != 0 && number(engine.at("view_visible[0]")) != 0) {
-            const auto w = value_number(engine.at("view_wview[0]")), h = value_number(engine.at("view_hview[0]"));
-            if (w <= 0 || h <= 0)
-                throw Error(ErrorKind::vm, "invalid view dimensions");
-            assets.view(value_number(engine.at("view_xview[0]")), value_number(engine.at("view_yview[0]")),
-                        value_number(engine.at("view_wport[0]")) / w, value_number(engine.at("view_hport[0]")) / h,
-                        value_number(engine.at("view_xport[0]")), value_number(engine.at("view_yport[0]")));
-        } else
-            assets.view(0, 0, 1, 1, 0, 0);
-        const auto &room = rooms.at(static_cast<std::size_t>(current_room));
-        for (const auto &b : room.backgrounds)
-            if (!b.foreground)
-                assets.draw_background(canvas, b.id, b.x, b.y);
-        auto draw_tile = [&](const Tile &t) {
-            if (hidden_tile_layers.contains(t.id))
-                return;
-            const auto offset = tile_layer_offsets.find(t.id);
-            const double ox = offset == tile_layer_offsets.end() ? 0 : offset->second.first;
-            const double oy = offset == tile_layer_offsets.end() ? 0 : offset->second.second;
-            assets.draw_tile(canvas, t.id, t.source_x, t.source_y, t.width, t.height, t.x + ox, t.y + oy, t.sx, t.sy,
-                             t.color);
-        };
-        std::size_t tile = 0;
-        draw_entries.clear();
-        if (draw_entries.capacity() < snapshot.size())
-            draw_entries.reserve(snapshot.size());
-        for (std::size_t index = 0; index < snapshot.size(); ++index) {
-            const auto &instance = snapshot[index];
-            draw_entries.push_back({value_number(instance->vars.at("depth")), index});
-        }
-        std::sort(draw_entries.begin(), draw_entries.end(), [](const auto &a, const auto &b) {
-            return a.depth != b.depth ? a.depth > b.depth : a.order < b.order;
-        });
-        for (auto &entry : draw_entries) {
-            const auto &i = snapshot[entry.order];
-            if (i->alive && !i->deactivated && number(i->vars.at("visible"))) {
-                while (tile < room.tiles.size() && room.tiles[tile].depth >= value_number(i->vars.at("depth")))
-                    draw_tile(room.tiles[tile++]);
-                if (objects[static_cast<std::size_t>(i->object)].draw_owner >= 0)
-                    event(i, 8, 0);
-                else {
-                    const auto sprite = number(i->vars.at("sprite_index"));
-                    if (sprite >= 0)
-                        assets.draw_sprite(
-                            canvas, sprite, value_number(i->vars.at("image_index")), value_number(i->vars.at("x")),
-                            value_number(i->vars.at("y")), value_number(i->vars.at("image_xscale")),
-                            value_number(i->vars.at("image_yscale")), value_number(i->vars.at("image_angle")),
-                            static_cast<unsigned>(number(i->vars.at("image_blend"))),
-                            value_number(i->vars.at("image_alpha")));
-                }
-                const int animated_object = i->object, animated_sprite = number(i->vars.at("sprite_index"));
-                const double old_index = value_number(i->vars.at("image_index")),
-                             image_speed = value_number(i->vars.at("image_speed"));
-                if (animated_sprite >= 0 && image_speed != 0) {
-                    const auto frame_count = assets.sprite(animated_sprite).frames.size();
-                    if (frame_count) {
-                        const double count = static_cast<double>(frame_count), next_index = old_index + image_speed;
-                        const bool ended = (image_speed > 0 && old_index < count && next_index >= count) ||
-                                           (image_speed < 0 && old_index >= 0 && next_index < 0);
-                        i->vars["image_index"] = next_index;
-                        if (ended)
-                            event(i, 7, 7);
-                        if (i->alive && i->object == animated_object &&
-                            number(i->vars.at("sprite_index")) == animated_sprite &&
-                            value_number(i->vars.at("image_index")) == next_index)
-                            i->vars["image_index"] = std::fmod(std::fmod(next_index, count) + count, count);
-                    }
-                }
-            }
-        }
-        while (tile < room.tiles.size())
-            draw_tile(room.tiles[tile++]);
-        for (const auto &b : room.backgrounds)
-            if (b.foreground)
-                assets.draw_background(canvas, b.id, b.x, b.y);
-        std::erase_if(instances, [](const auto &i) { return !i->alive; });
-        ++frame;
-        engine["current_time"] = static_cast<double>(frame) * 1000.0 / value_number(engine["room_speed"]);
     }
 };
 GameSession::GameSession(const std::filesystem::path &path, std::optional<std::uint32_t> seed,

@@ -74,7 +74,7 @@ class GameAssets {
     std::vector<Font> fonts_;
     std::vector<std::size_t> backgrounds_;
 #if REGML_WII
-    static constexpr std::size_t page_cache_limit_ = 16ULL * 1024 * 1024;
+    static constexpr std::size_t page_cache_limit_ = 4ULL * 1024 * 1024;
 #else
     static constexpr std::size_t page_cache_limit_ = 0;
 #endif

@@ -38,9 +38,12 @@ class GameAudio {
     struct Clip {
         std::vector<float> stereo;
         std::vector<std::uint8_t> compressed;
+        std::string file_path;
         std::size_t streamed_frames = 0;
         double gain = 1;
-        std::size_t frames() const noexcept { return compressed.empty() ? stereo.size() / 2 : streamed_frames; }
+        std::size_t frames() const noexcept {
+            return compressed.empty() && file_path.empty() ? stereo.size() / 2 : streamed_frames;
+        }
     };
     struct Stream;
     struct Sound {
@@ -65,6 +68,6 @@ class GameAudio {
     int next_stream_ = 100000, next_voice_ = 1000000, channels_ = 128;
     Clip *load(int id);
     std::vector<std::uint8_t> read_audio(int id) const;
-    static std::unique_ptr<Clip> decode(std::span<const std::uint8_t> bytes);
+    static std::unique_ptr<Clip> decode(std::vector<std::uint8_t> bytes);
 };
 } // namespace regml

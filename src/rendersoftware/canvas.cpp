@@ -667,6 +667,10 @@ void Canvas::debug_text_overlay(std::span<const std::string_view> lines) {
     const int panel_width = std::min(
         width_ - 4, 8 + static_cast<int>(std::min<std::size_t>(longest, static_cast<std::size_t>(max_columns))) * 6);
     const int panel_height = 8 + static_cast<int>(visible_lines) * 9;
+#if REGML_WII
+    if (gpu_)
+        wii_gpu_box_batch_begin();
+#endif
     font_scale_ = 1;
     rgb_ = 0x000000;
     alpha_ = 204;
@@ -680,6 +684,10 @@ void Canvas::debug_text_overlay(std::span<const std::string_view> lines) {
     rgb_ = saved_rgb;
     alpha_ = saved_alpha;
     font_scale_ = saved_font_scale;
+#if REGML_WII
+    if (gpu_)
+        wii_gpu_box_batch_end();
+#endif
 }
 std::uint64_t Canvas::hash() const noexcept {
     std::uint64_t value = 14695981039346656037ULL;

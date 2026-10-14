@@ -13,12 +13,24 @@ struct GameAudio::Stream {
     std::size_t position = 0, begin = 0, count = 0;
     long rate = 0;
     int channels = 0;
-    OggVorbis_File file{};
+    std::ifstream file_stream;
+    OggVorbis_File ogg_file{};
     std::vector<float> samples;
     explicit Stream(const Clip &clip) : bytes(clip.compressed), samples(8192) {
+        if (!clip.file_path.empty()) {
+            file_stream.open(clip.file_path, std::ios::binary);
+            if (!file_stream)
+                throw Error(ErrorKind::io, "streaming Ogg file could not be opened");
+        }
         ov_callbacks callbacks{};
         callbacks.read_func = [](void *ptr, std::size_t size, std::size_t count, void *context) {
             auto &stream = *static_cast<Stream *>(context);
+            if (stream.file_stream.is_open()) {
+                if (!size)
+                    return std::size_t{0};
+                stream.file_stream.read(static_cast<char *>(ptr), static_cast<std::streamsize>(size * count));
+                return static_cast<std::size_t>(stream.file_stream.gcount()) / size;
+            }
             const auto items = size ? std::min(count, (stream.bytes.size() - stream.position) / size) : 0;
             std::memcpy(ptr, stream.bytes.data() + stream.position, items * size);
             stream.position += items * size;
@@ -26,6 +38,14 @@ struct GameAudio::Stream {
         };
         callbacks.seek_func = [](void *context, ogg_int64_t offset, int origin) {
             auto &stream = *static_cast<Stream *>(context);
+            if (stream.file_stream.is_open()) {
+                const auto direction = origin == SEEK_SET ? std::ios::beg
+                                       : origin == SEEK_CUR ? std::ios::cur
+                                                            : std::ios::end;
+                stream.file_stream.clear();
+                stream.file_stream.seekg(static_cast<std::streamoff>(offset), direction);
+                return stream.file_stream ? 0 : -1;
+            }
             const auto base = origin == SEEK_SET   ? 0
                               : origin == SEEK_CUR ? static_cast<ogg_int64_t>(stream.position)
                                                    : static_cast<ogg_int64_t>(stream.bytes.size());
@@ -35,29 +55,37 @@ struct GameAudio::Stream {
             stream.position = static_cast<std::size_t>(target);
             return 0;
         };
-        callbacks.tell_func = [](void *context) { return static_cast<long>(static_cast<Stream *>(context)->position); };
-        if (ov_open_callbacks(this, &file, nullptr, 0, callbacks) < 0)
+        callbacks.tell_func = [](void *context) {
+            auto &stream = *static_cast<Stream *>(context);
+            if (stream.file_stream.is_open()) {
+                const auto position = stream.file_stream.tellg();
+                return position < 0 ? -1L : static_cast<long>(position);
+            }
+            return static_cast<long>(stream.position);
+        };
+        if (ov_open_callbacks(this, &ogg_file, nullptr, 0, callbacks) < 0)
             throw Error(ErrorKind::malformed, "streaming Ogg initialization failed");
-        const auto *info = ov_info(&file, -1);
+        const auto *info = ov_info(&ogg_file, -1);
         rate = info->rate;
         channels = info->channels;
     }
-    ~Stream() { ov_clear(&file); }
+    ~Stream() { ov_clear(&ogg_file); }
     bool read_frame(double output_frame, float (&out)[2]) noexcept {
         const double input = output_frame * static_cast<double>(rate) / 48000;
         const auto frame = static_cast<std::size_t>(input);
         if (frame < begin || frame >= begin + count) {
-            const auto cursor = ov_pcm_tell(&file);
+            const auto cursor = ov_pcm_tell(&ogg_file);
             if (cursor < 0)
                 return false;
-            if (static_cast<std::uint64_t>(cursor) != frame && ov_pcm_seek(&file, static_cast<ogg_int64_t>(frame)) < 0)
+            if (static_cast<std::uint64_t>(cursor) != frame &&
+                ov_pcm_seek(&ogg_file, static_cast<ogg_int64_t>(frame)) < 0)
                 return false;
             int section = 0;
             float **pcm = nullptr;
-            const auto read = ov_read_float(&file, &pcm, 4096, &section);
+            const auto read = ov_read_float(&ogg_file, &pcm, 4096, &section);
             if (read <= 0)
                 return false;
-            const auto *info = ov_info(&file, section);
+            const auto *info = ov_info(&ogg_file, section);
             if (!info || info->channels != channels || info->rate != rate)
                 return false;
             begin = frame;
@@ -125,7 +153,8 @@ std::optional<int> GameAudio::find_sound_id(std::string_view filename) const {
             return id;
     return std::nullopt;
 }
-std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::span<const std::uint8_t> bytes) {
+std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::vector<std::uint8_t> owned_bytes) {
+    const std::span<const std::uint8_t> bytes(owned_bytes);
     std::vector<float> source;
     long rate = 0;
     int channels = 0;
@@ -173,9 +202,15 @@ std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::span<const std::uint8_t>
         const auto total = ov_pcm_total(&file, -1);
         if (total <= 0 || total > 100'000'000 / channels)
             throw Error(ErrorKind::unsupported, "Ogg duration exceeds clip limit");
-        if (static_cast<std::uint64_t>(total) * static_cast<unsigned>(channels) * sizeof(float) > 1024 * 1024) {
+#if REGML_WII
+        constexpr std::uint64_t decoded_audio_limit = 128 * 1024;
+#else
+        constexpr std::uint64_t decoded_audio_limit = 1024 * 1024;
+#endif
+        if (static_cast<std::uint64_t>(total) * static_cast<unsigned>(channels) * sizeof(float) >
+            decoded_audio_limit) {
             auto clip = std::make_unique<Clip>();
-            clip->compressed.assign(bytes.begin(), bytes.end());
+            clip->compressed = std::move(owned_bytes);
             clip->streamed_frames =
                 static_cast<std::size_t>(static_cast<double>(total) * 48000 / static_cast<double>(rate));
             if (clip->streamed_frames > 50'000'000)
@@ -284,6 +319,35 @@ GameAudio::Clip *GameAudio::load(int id) {
     auto &sound = sounds_.at(id);
     if (sound.clip)
         return sound.clip.get();
+#if REGML_WII
+    if (!sound.filename.empty()) {
+        const auto path = directory_ / sound.filename;
+        std::ifstream input(path, std::ios::binary);
+        char signature[4]{};
+        input.read(signature, sizeof(signature));
+        if (input && std::memcmp(signature, "OggS", sizeof(signature)) == 0) {
+            OggVorbis_File file{};
+            const auto path_text = path.string();
+            if (ov_fopen(path_text.c_str(), &file) == 0) {
+                const auto *info = ov_info(&file, -1);
+                const auto total = ov_pcm_total(&file, -1);
+                const bool valid = info && info->channels >= 1 && info->channels <= 2 && info->rate > 0 &&
+                                   total > 0 && total <= 100'000'000 / info->channels;
+                if (valid) {
+                    auto clip = std::make_unique<Clip>();
+                    clip->file_path = path_text;
+                    clip->streamed_frames = static_cast<std::size_t>(
+                        static_cast<double>(total) * 48000 / static_cast<double>(info->rate));
+                    clip->gain = sound.gain;
+                    ov_clear(&file);
+                    sound.clip = std::move(clip);
+                    return sound.clip.get();
+                }
+                ov_clear(&file);
+            }
+        }
+    }
+#endif
     sound.clip = decode(read_audio(id));
     sound.clip->gain = sound.gain;
     return sound.clip.get();
@@ -313,7 +377,7 @@ int GameAudio::play(int sound, bool loop, double priority) {
     }
     const int id = next_voice_++;
     voices_[id] = {sound, clip, 0, 1, 1, priority, loop, false};
-    if (clip && !clip->compressed.empty())
+    if (clip && (!clip->compressed.empty() || !clip->file_path.empty()))
         voices_[id].stream = std::make_shared<Stream>(*clip);
 #if REGML_WIIU
     if (!clip && !async_->pending(sound)) {
@@ -453,7 +517,7 @@ void GameAudio::service() {
         for (auto &[id, voice] : voices_)
             if (voice.sound == item.sound) {
                 voice.clip = sound.clip.get();
-                if (!voice.clip->compressed.empty())
+                if (!voice.clip->compressed.empty() || !voice.clip->file_path.empty())
                     voice.stream = std::make_shared<Stream>(*voice.clip);
             }
     }

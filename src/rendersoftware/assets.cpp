@@ -158,8 +158,6 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
         background_regions_.push_back(pointer ? &regions_.at(pointer) : nullptr);
     for (auto &font : fonts_)
         font.atlas = &regions_.at(font.region);
-    if constexpr (page_cache_limit_ != 0)
-        page_buffer_.reserve(page_cache_limit_ / sizeof(std::uint32_t));
 }
 const GameAssets::Sprite &GameAssets::sprite(int id) const {
     if (id < 0 || static_cast<std::size_t>(id) >= sprites_.size())
@@ -235,11 +233,11 @@ void GameAssets::load_page(int id) {
         image.format = PNG_FORMAT_ARGB;
     const auto width = static_cast<std::size_t>(image.width), height = static_cast<std::size_t>(image.height);
     const auto decoded_size = width * height * sizeof(std::uint32_t);
+    if (decoded_size > 16ULL * 1024 * 1024)
+        throw Error(ErrorKind::unsupported, "texture page exceeds Wii decode limit", page.png);
     std::vector<std::uint32_t> pixels;
     pixels.swap(page_buffer_);
     if constexpr (page_cache_limit_ != 0) {
-        if (decoded_size > page_cache_limit_)
-            throw Error(ErrorKind::unsupported, "texture page exceeds Wii cache budget", page.png);
         while (page_cache_bytes_ + decoded_size > page_cache_limit_) {
             auto oldest = pages_.end();
             for (auto candidate = pages_.begin(); candidate != pages_.end(); ++candidate) {
@@ -369,7 +367,7 @@ void GameAssets::rectangle(Canvas &canvas, double x1, double y1, double x2, doub
 const GameAssets::Page &GameAssets::region_pixels(const Region &r, int &source_x, int &source_y) {
     source_x = r.x;
     source_y = r.y;
-    constexpr std::size_t budget = 8ULL * 1024 * 1024;
+    constexpr std::size_t budget = 1ULL * 1024 * 1024;
     const auto bytes = static_cast<std::size_t>(r.w) * static_cast<std::size_t>(r.h) * sizeof(std::uint32_t);
     const std::array<int, 5> key{r.page, r.x, r.y, r.w, r.h};
     if constexpr (page_cache_limit_ != 0) {
@@ -424,14 +422,21 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
     const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
 #if REGML_WII
     if (canvas.gpu_target()) {
-        const double radians = angle * 3.141592653589793 / 180;
-        const double cs = angle == 0 ? 1 : std::cos(radians), sn = angle == 0 ? 0 : std::sin(radians);
         const double w = r.tw * sx, h = r.th * sy;
-        const double xx[] = {x, x + w * cs, x + h * sn, x + w * cs + h * sn};
-        const double yy[] = {y, y - w * sn, y + h * cs, y - w * sn + h * cs};
-        if (*std::max_element(xx, xx + 4) <= 0 || *std::max_element(yy, yy + 4) <= 0 ||
-            *std::min_element(xx, xx + 4) >= canvas.width() || *std::min_element(yy, yy + 4) >= canvas.height())
-            return;
+        if (angle == 0) {
+            const double right = x + w, bottom = y + h;
+            if (std::max(x, right) <= 0 || std::max(y, bottom) <= 0 || std::min(x, right) >= canvas.width() ||
+                std::min(y, bottom) >= canvas.height())
+                return;
+        } else {
+            const double radians = angle * 3.141592653589793 / 180;
+            const double cs = std::cos(radians), sn = std::sin(radians);
+            const double xx[] = {x, x + w * cs, x + h * sn, x + w * cs + h * sn};
+            const double yy[] = {y, y - w * sn, y + h * cs, y - w * sn + h * cs};
+            if (*std::max_element(xx, xx + 4) <= 0 || *std::max_element(yy, yy + 4) <= 0 ||
+                *std::min_element(xx, xx + 4) >= canvas.width() || *std::min_element(yy, yy + 4) >= canvas.height())
+                return;
+        }
         std::uint64_t key = 1469598103934665603ULL;
         for (int value : {r.page, r.x, r.y, r.w, r.h})
             key = (key ^ static_cast<unsigned>(value)) * 1099511628211ULL;

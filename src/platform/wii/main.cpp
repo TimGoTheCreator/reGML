@@ -44,6 +44,7 @@ int main(int argc, char **argv) {
                   << "\nVM instructions: " << report.instructions << "\nRoom: " << report.room << '\n';
         return 0;
     } catch (const std::exception &error) {
+        regml::report_wii_memory("after runtime failure");
         wii_log(std::string("error: ") + error.what());
         std::cerr << "reGML Wii error: " << error.what() << '\n';
         return 1;

@@ -638,6 +638,7 @@ REGML_HOT void WiiRenderer::present(const Canvas &canvas) {
     }
 
     if (canvas.gpu_target()) {
+        wii_gpu_flush();
 #if REGML_240P
         GX_SetTexCopySrc(0, 0, render_width, render_height);
         GX_SetTexCopyDst(render_width, render_height, GX_TF_RGBA8, GX_FALSE);

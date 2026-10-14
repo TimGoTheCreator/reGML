@@ -22,15 +22,45 @@ struct Texture {
     int width = 0, height = 0;
     float inverse_width = 0, inverse_height = 0;
 };
+struct ImageVertex {
+    float x = 0, y = 0;
+    GXColor color{};
+    float u = 0, v = 0;
+};
+struct Box {
+    float x, y, width, height;
+    GXColor color;
+};
+constexpr std::size_t image_batch_quads = 128;
+std::array<ImageVertex, image_batch_quads * 4> image_batch{};
+std::size_t image_batch_size = 0;
+const Texture *image_batch_texture = nullptr;
+std::array<Box, 4096> box_batch{};
+std::size_t box_batch_size = 0;
+bool box_batch_active = false;
 std::unordered_map<std::uint64_t, Texture> textures;
 std::size_t cache_bytes = 0, clock = 0;
 bool dirty = false;
 bool presented = false;
 int current_pipeline = -1;
 const void *bound_texture = nullptr;
-constexpr std::size_t budget = 8 * 1024 * 1024;
+constexpr std::size_t budget = 2 * 1024 * 1024;
 std::uint64_t child_key(std::uint64_t key, int x, int y) {
     return key ? ((key ^ static_cast<unsigned>(x)) * 1099511628211ULL ^ static_cast<unsigned>(y)) : 0;
+}
+void flush_image_batch() {
+    if (!image_batch_size)
+        return;
+    GX_Begin(GX_QUADS, GX_VTXFMT0, static_cast<u16>(image_batch_size));
+    for (std::size_t i = 0; i < image_batch_size; ++i) {
+        const auto &vertex = image_batch[i];
+        GX_Position2f32(vertex.x, vertex.y);
+        GX_Color4u8(vertex.color.r, vertex.color.g, vertex.color.b, vertex.color.a);
+        GX_TexCoord2f32(vertex.u, vertex.v);
+    }
+    GX_End();
+    image_batch_size = 0;
+    image_batch_texture = nullptr;
 }
 bool cached(int width, int height, std::uint64_t key) {
     if (width <= 1024 && height <= 1024)
@@ -49,6 +79,7 @@ void pipeline(bool textured) {
     const int mode = textured ? 1 : 0;
     if (current_pipeline == mode)
         return;
+    flush_image_batch();
     current_pipeline = mode;
     GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
@@ -72,7 +103,10 @@ void draw_image(Texture &texture, int width, int height, double x, double y, dou
                 unsigned tint, double opacity) {
     texture.used = ++clock;
     pipeline(true);
+    if (image_batch_size && image_batch_texture != &texture)
+        flush_image_batch();
     if (bound_texture != texture.data.get()) {
+        flush_image_batch();
         GX_LoadTexObj(&texture.object, GX_TEXMAP0);
         bound_texture = texture.data.get();
     }
@@ -80,11 +114,11 @@ void draw_image(Texture &texture, int width, int height, double x, double y, dou
     const float tu = static_cast<float>(width) * texture.inverse_width;
     const float tv = static_cast<float>(height) * texture.inverse_height;
     const auto vertex = [&](double px, double py, float u, float v) {
-        GX_Position2f32(static_cast<float>(px), static_cast<float>(py));
-        GX_Color4u8(c.r, c.g, c.b, c.a);
-        GX_TexCoord2f32(u, v);
+        image_batch[image_batch_size++] = {static_cast<float>(px), static_cast<float>(py), c, u, v};
     };
-    GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
+    if (image_batch_size + 4 > image_batch.size())
+        flush_image_batch();
+    image_batch_texture = &texture;
     if (angle == 0) {
         vertex(x, y, 0, 0);
         vertex(x + dw, y, tu, 0);
@@ -99,8 +133,9 @@ void draw_image(Texture &texture, int width, int height, double x, double y, dou
         vertex(x + wx + hx, y + wy + hy, tu, tv);
         vertex(x + hx, y + hy, 0, tv);
     }
-    GX_End();
     dirty = true;
+    if (image_batch_size == image_batch.size())
+        flush_image_batch();
 }
 Texture upload(std::span<const std::uint32_t> pixels, int stride, int left, int top, int width, int height) {
     Texture t;
@@ -163,6 +198,7 @@ bool wii_gpu_cached_image(int width, int height, double x, double y, double dw, 
     return true;
 }
 void wii_gpu_begin() {
+    flush_image_batch();
     presented = false;
     current_pipeline = -1;
     bound_texture = nullptr;
@@ -173,6 +209,7 @@ void wii_gpu_begin() {
     GX_LoadProjectionMtx(projection, GX_ORTHOGRAPHIC);
     GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);
 }
+void wii_gpu_flush() { flush_image_batch(); }
 void wii_gpu_presented() {
     presented = true;
     dirty = false;
@@ -180,6 +217,12 @@ void wii_gpu_presented() {
 void wii_gpu_box(double x, double y, double width, double height, std::uint32_t rgba) {
     if (!(rgba >> 24) || width <= 0 || height <= 0)
         return;
+    if (box_batch_active) {
+        if (box_batch_size < box_batch.size())
+            box_batch[box_batch_size++] = {static_cast<float>(x), static_cast<float>(y), static_cast<float>(width),
+                                           static_cast<float>(height), color(rgba)};
+        return;
+    }
     pipeline(false);
     const auto c = color(rgba);
     GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
@@ -190,8 +233,30 @@ void wii_gpu_box(double x, double y, double width, double height, std::uint32_t 
     GX_End();
     dirty = true;
 }
+void wii_gpu_box_batch_begin() {
+    box_batch_size = 0;
+    box_batch_active = true;
+}
+void wii_gpu_box_batch_end() {
+    box_batch_active = false;
+    if (!box_batch_size)
+        return;
+    pipeline(false);
+    GX_Begin(GX_QUADS, GX_VTXFMT0, static_cast<u16>(box_batch_size * 4));
+    for (std::size_t i = 0; i < box_batch_size; ++i) {
+        const auto &box = box_batch[i];
+        for (int corner : {0, 1, 3, 2}) {
+            GX_Position2f32(box.x + (corner & 1 ? box.width : 0), box.y + (corner & 2 ? box.height : 0));
+            GX_Color4u8(box.color.r, box.color.g, box.color.b, box.color.a);
+        }
+    }
+    GX_End();
+    dirty = true;
+    box_batch_size = 0;
+}
 std::uint32_t wii_gpu_pixel(int x, int y) {
     if (dirty) {
+        flush_image_batch();
         GX_DrawDone();
         dirty = false;
     }
@@ -274,20 +339,35 @@ void wii_gpu_image(std::span<const std::uint32_t> pixels, int stride, int left, 
     if (key) {
         auto it = textures.find(key);
         if (it == textures.end()) {
-            auto t = upload(pixels, stride, left, top, width, height);
+            const auto texture_width = static_cast<std::size_t>((width + 3) & ~3);
+            const auto texture_height = static_cast<std::size_t>((height + 3) & ~3);
+            const auto requested_bytes = texture_width * texture_height * 4;
             bool waited = false;
-            while (cache_bytes + t.bytes > budget && !textures.empty()) {
+            while (cache_bytes + requested_bytes > budget && !textures.empty()) {
                 auto oldest = std::min_element(textures.begin(), textures.end(), [](const auto &a, const auto &b) {
                     return a.second.used < b.second.used;
                 });
-                // GX may still be reading the texture we're about to free.
                 if (!waited) {
+                    flush_image_batch();
                     GX_DrawDone();
                     waited = true;
                 }
                 cache_bytes -= oldest->second.bytes;
                 bound_texture = nullptr;
                 textures.erase(oldest);
+            }
+            Texture t;
+            try {
+                t = upload(pixels, stride, left, top, width, height);
+            } catch (const Error &) {
+                if (textures.empty())
+                    throw;
+                flush_image_batch();
+                GX_DrawDone();
+                textures.clear();
+                cache_bytes = 0;
+                bound_texture = nullptr;
+                t = upload(pixels, stride, left, top, width, height);
             }
             cache_bytes += t.bytes;
             it = textures.emplace(key, std::move(t)).first;
@@ -299,6 +379,7 @@ void wii_gpu_image(std::span<const std::uint32_t> pixels, int stride, int left, 
     }
     draw_image(*texture, width, height, x, y, dw, dh, angle, tint, opacity);
     if (!key) {
+        flush_image_batch();
         GX_DrawDone();
         bound_texture = nullptr;
     }

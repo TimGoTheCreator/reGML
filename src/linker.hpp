@@ -15,6 +15,7 @@ struct LinkedPackage {
     std::vector<Program> programs;
     std::vector<ReferenceBinding> references;
     bool lazy_programs = false;
+    std::size_t decoded_program_bytes = 0;
     Program &program(const Package &package, std::size_t index);
     void release_programs();
     std::vector<PackageSymbol> variables, functions;
