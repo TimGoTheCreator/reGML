@@ -3073,6 +3073,25 @@ GameSession::~GameSession() = default;
 void GameSession::tick(const KeyboardState &h, const KeyboardState &p) {
     impl_->tick(h, p);
 }
+void GameSession::text_input(std::string_view text) {
+    auto *typed = std::get_if<std::string>(&impl_->engine.at("keyboard_string"));
+    if (!typed)
+        return;
+    for (const unsigned char character : text) {
+        if (character == '\b') {
+            if (!typed->empty()) {
+                typed->pop_back();
+                while (!typed->empty() && (static_cast<unsigned char>(typed->back()) & 0xc0) == 0x80)
+                    typed->pop_back();
+            }
+        } else if (character == '\r') {
+            typed->push_back('\n');
+        } else if (character >= 32) {
+            typed->push_back(static_cast<char>(character));
+        }
+        impl_->engine["keyboard_lastkey"] = static_cast<std::int32_t>(character);
+    }
+}
 const Canvas &GameSession::canvas() const {
     return impl_->canvas;
 }

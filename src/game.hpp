@@ -16,6 +16,7 @@ class GameSession {
                          const std::filesystem::path &save_directory = {});
     ~GameSession();
     void tick(const KeyboardState &held, const KeyboardState &pressed);
+    void text_input(std::string_view text);
     Canvas &canvas();
     const Canvas &canvas() const;
     std::size_t frames() const;

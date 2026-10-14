@@ -61,6 +61,10 @@ compile_commands.json
 
 .vs/
 .idea/
+.gradle/
+**/build/
+**/.cxx/
+local.properties
 .vscode/
 *.user
 *.suo
