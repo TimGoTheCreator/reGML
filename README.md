@@ -112,12 +112,14 @@ Trace logs and input scripts: [docs/wiiu.md](docs/wiiu.md)
 
 ## Wii (experimental)
 
-The Wii build uses devkitPro's SDL2 port. The VM and software framebuffer are shared with the desktop and Wii U builds; Wii SD setup is in `src/platform/wii/`.
+The Wii build uses libogc for video, input, and audio, with direct GX rendering. The VM is shared with desktop and Wii U. SDL2 is not linked. Wii code is in `src/platform/wii/`.
+
+[GX renderer](docs/wii-gx.md) ? [Optional 240p builds](docs/240p.md)
 
 Install devkitPro and run these in its MSYS2 terminal:
 
 ```sh
-pacman -S --needed cmake ninja wii-dev wii-sdl2 ppc-libpng ppc-libvorbis ppc-zlib
+pacman -S --needed cmake ninja wii-dev ppc-libpng ppc-libvorbis ppc-zlib
 
 /opt/devkitpro/portlibs/wii/bin/powerpc-eabi-cmake -G Ninja -S . -B build/wii \
   -DCMAKE_BUILD_TYPE=Release -DREGML_WII=ON -DBUILD_TESTING=OFF

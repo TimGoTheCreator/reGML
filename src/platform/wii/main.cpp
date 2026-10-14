@@ -21,8 +21,7 @@ void wii_log(std::string_view message) {
 }
 } // namespace
 
-// SDL's Wii entry point initializes the input queues before handing control over.
-extern "C" int SDL_main(int argc, char **argv) {
+int main(int argc, char **argv) {
     try {
         regml::initialize_wii_platform();
         wii_log("FAT mounted");

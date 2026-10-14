@@ -142,7 +142,7 @@ struct GameSession::Impl {
     LinkedPackage linked;
     GameAssets assets;
     GameAudio audio;
-    Canvas canvas{640, 480};
+    Canvas canvas{640, 480, true};
     std::vector<Path> paths;
     std::vector<Object> objects;
     struct CollisionRoute {
@@ -154,9 +154,9 @@ struct GameSession::Impl {
     std::unordered_map<std::string, int, VariableStoreHash, std::equal_to<>> script_names;
     std::vector<InstancePtr> instances;
     std::vector<InstancePtr> tick_instances;
+    std::vector<InstancePtr> frame_instances;
     std::vector<InstancePtr> placed_instances;
     struct DrawEntry {
-        InstancePtr instance;
         double depth;
         std::size_t order;
     };
@@ -831,7 +831,8 @@ struct GameSession::Impl {
                 auto variable = [&](bool writing, Value value = std::monostate{}) -> Value {
                     const auto id = static_cast<std::size_t>(ins.symbol_id);
                     const auto &symbol = linked.variables[id];
-                    std::string name = symbol.name;
+                    std::string indexed_name;
+                    std::string_view name = symbol.name;
                     const auto kind = (ins.reference_value() >> 24) & 0xf8;
                     int scope = std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
                     int array_index = -1;
@@ -840,7 +841,8 @@ struct GameSession::Impl {
                         if (array_index < 0 || array_index >= 32000 * 32000)
                             throw Error(ErrorKind::vm, "array index out of range");
                         scope = number(pop());
-                        name += "[" + std::to_string(array_index) + "]";
+                        indexed_name = symbol.name + "[" + std::to_string(array_index) + "]";
+                        name = indexed_name;
                     } else if (kind == 0x80)
                         scope = number(pop());
                     else if (kind != 0xa0)
@@ -892,10 +894,14 @@ struct GameSession::Impl {
                     else if (engine.contains(name) ||
                              (kind == 0xa0 && ins.opcode() == Opcode::push_builtin && !self->vars.contains(name)))
                         store = &engine;
+                    else if (scope == -1 && self)
+                        store = &self->vars;
+                    else if (scope == -2 && other && other->alive)
+                        store = &other->vars;
                     else {
                         const auto found = targets(scope, self, other);
                         if (found.empty())
-                            throw Error(ErrorKind::vm, "variable instance not found: " + name);
+                            throw Error(ErrorKind::vm, "variable instance not found: " + std::string(name));
                         store = &found[0]->vars;
                         for (const auto &target : found)
                             stores.push_back(&target->vars);
@@ -958,7 +964,7 @@ struct GameSession::Impl {
                             return static_cast<std::int32_t>(instances.size());
                         const auto it = store->find(name);
                         if (it == store->end())
-                            throw Error(ErrorKind::vm, "uninitialized variable: " + name);
+                            throw Error(ErrorKind::vm, "uninitialized variable: " + std::string(name));
                         return it->second;
                     };
                     if (writing && !stores.empty()) {
@@ -1233,7 +1239,7 @@ struct GameSession::Impl {
                 self->vars["direction"] = std::fmod(std::atan2(-v, h) * 180 / 3.141592653589793 + 360, 360);
         };
         Canvas &canvas = surface_target == 0 ? this->canvas : surfaces.at(surface_target);
-        if (const auto it = script_names.find(std::string(name)); it != script_names.end())
+        if (const auto it = script_names.find(name); it != script_names.end())
             return execute(it->second, self, args, other);
         if (name == "script_execute") {
             const auto id = static_cast<std::size_t>(n(0));
@@ -1984,7 +1990,8 @@ struct GameSession::Impl {
         if (name == "surface_get_width" || name == "surface_get_height") {
             const int id = static_cast<int>(n(0));
             if (id == 0)
-                return std::int32_t{name == "surface_get_width" ? this->canvas.width() : this->canvas.height()};
+                return std::int32_t{name == "surface_get_width" ? this->canvas.logical_width()
+                                                                : this->canvas.logical_height()};
             if (!surfaces.contains(id))
                 return std::int32_t{-1};
             const auto &surface = surfaces.at(id);
@@ -2134,9 +2141,10 @@ struct GameSession::Impl {
         }
         if (name == "draw_getpixel") {
             const int x = static_cast<int>(n(0)), y = static_cast<int>(n(1));
-            if (x < 0 || y < 0 || x >= canvas.width() || y >= canvas.height())
+            if (x < 0 || y < 0 || x >= canvas.logical_width() || y >= canvas.logical_height())
                 return std::int32_t{-1};
-            const auto pixel = canvas.pixel(x, y);
+            const auto pixel =
+                canvas.pixel(static_cast<int>(x * canvas.render_scale()), static_cast<int>(y * canvas.render_scale()));
             return std::int32_t{static_cast<int>(((pixel >> 16) & 0xff) | (pixel & 0xff00) | ((pixel & 0xff) << 16))};
         }
         if (name == "draw_sprite_part") {
@@ -2685,9 +2693,9 @@ struct GameSession::Impl {
             return std::monostate{};
         }
         if (name == "window_get_width")
-            return static_cast<double>(canvas.width());
+            return static_cast<double>(canvas.logical_width());
         if (name == "window_get_height")
-            return static_cast<double>(canvas.height());
+            return static_cast<double>(canvas.logical_height());
         if (name == "window_get_x")
             return engine.contains("window_x") ? engine.at("window_x") : Value{0.0};
         if (name == "window_get_y")
@@ -2738,7 +2746,12 @@ struct GameSession::Impl {
         event_budget = 0;
         for (int transitions = 0; pending_room >= 0 && transitions < 16; ++transitions)
             enter(pending_room);
-        const auto snapshot = instances;
+        frame_instances.assign(instances.begin(), instances.end());
+        struct SnapshotGuard {
+            std::vector<InstancePtr> &instances;
+            ~SnapshotGuard() { instances.clear(); }
+        } snapshot_guard{frame_instances};
+        const auto &snapshot = frame_instances;
         for (auto &i : snapshot) {
             if (!i->alive || i->deactivated)
                 continue;
@@ -2951,13 +2964,13 @@ struct GameSession::Impl {
             draw_entries.reserve(snapshot.size());
         for (std::size_t index = 0; index < snapshot.size(); ++index) {
             const auto &instance = snapshot[index];
-            draw_entries.push_back({instance, value_number(instance->vars.at("depth")), index});
+            draw_entries.push_back({value_number(instance->vars.at("depth")), index});
         }
         std::sort(draw_entries.begin(), draw_entries.end(), [](const auto &a, const auto &b) {
             return a.depth != b.depth ? a.depth > b.depth : a.order < b.order;
         });
         for (auto &entry : draw_entries) {
-            auto &i = entry.instance;
+            const auto &i = snapshot[entry.order];
             if (i->alive && !i->deactivated && number(i->vars.at("visible"))) {
                 while (tile < room.tiles.size() && room.tiles[tile].depth >= value_number(i->vars.at("depth")))
                     draw_tile(room.tiles[tile++]);

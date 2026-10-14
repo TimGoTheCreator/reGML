@@ -1,4 +1,5 @@
 #include "canvas.hpp"
+#include "platform/wii/gpu.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -110,17 +111,51 @@ std::array<unsigned, 7> glyph(char c) {
     }
 }
 } // namespace
-Canvas::Canvas(int width, int height) : width_(width), height_(height) {
+Canvas::Canvas(int width, int height, bool main_screen)
+    : logical_width_(width), logical_height_(height), width_(width), height_(height) {
+#if REGML_240P
+    if (main_screen) {
+        render_scale_ = coordinate_scale_ = 0.5;
+        width_ = (width + 1) / 2;
+        height_ = (height + 1) / 2;
+    }
+#else
+    (void)main_screen;
+#endif
     if (width < 1 || height < 1 || width > 4096 || height > 4096)
         throw Error(ErrorKind::unsupported, "framebuffer dimensions must be between 1 and 4096");
-    pixels_.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height), 0xff000000);
+    pixels_.resize(static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_), 0xff000000);
+}
+void Canvas::gpu_target(bool enabled) {
+#if REGML_WII
+    if (enabled == gpu_)
+        return;
+    if (enabled) {
+        std::vector<std::uint32_t>().swap(pixels_);
+    } else
+        pixels_.resize(static_cast<std::size_t>(width_) * height_, 0xff000000);
+    gpu_ = enabled;
+#else
+    (void)enabled;
+#endif
 }
 std::uint32_t Canvas::pixel(int x, int y) const {
     if (x < 0 || y < 0 || x >= width_ || y >= height_)
         throw Error(ErrorKind::usage, "pixel is outside framebuffer");
+#if REGML_WII
+    if (gpu_)
+        return wii_gpu_pixel(x, y);
+#endif
     return pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
 }
 void Canvas::clear(std::uint32_t bgr) {
+#if REGML_WII
+    if (gpu_) {
+        wii_gpu_begin();
+        wii_gpu_box(0, 0, width_, height_, 0xff000000 | to_rgb(bgr));
+        return;
+    }
+#endif
     std::fill(pixels_.begin(), pixels_.end(), 0xff000000 | to_rgb(bgr));
 }
 void Canvas::clear_transparent() noexcept {
@@ -133,6 +168,16 @@ void Canvas::rgba_pixel(int x, int y, std::uint32_t rgba, std::uint32_t bgr, dou
 void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, double opacity) noexcept {
     if (x < 0 || y < 0 || x >= width_ || y >= height_)
         return;
+#if REGML_WII
+    if (gpu_) {
+        const unsigned a = static_cast<unsigned>((rgba >> 24) * std::clamp(opacity, 0.0, 1.0) + 0.5);
+        unsigned rgb = 0;
+        for (unsigned shift : {0U, 8U, 16U})
+            rgb |= ((rgba >> shift & 255) * (tint >> shift & 255) / 255) << shift;
+        wii_gpu_box(x, y, 1, 1, (a << 24) | rgb);
+        return;
+    }
+#endif
     const unsigned source_alpha =
         opacity == 1 ? rgba >> 24
                      : static_cast<unsigned>(static_cast<double>(rgba >> 24) * std::clamp(opacity, 0.0, 1.0) + 0.5);
@@ -191,6 +236,12 @@ void Canvas::rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tin
     const unsigned red = ((rgba >> 16) & 255) * ((tint >> 16) & 255) / 255;
     const unsigned green = ((rgba >> 8) & 255) * ((tint >> 8) & 255) / 255;
     const unsigned blue = (rgba & 255) * (tint & 255) / 255;
+#if REGML_WII
+    if (gpu_) {
+        wii_gpu_box(x, y, end - x, 1, (alpha << 24) | (red << 16) | (green << 8) | blue);
+        return;
+    }
+#endif
     auto *row = pixels_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width_);
     if (alpha == 255) {
         std::fill(row + x, row + end, 0xff000000 | (red << 16) | (green << 8) | blue);
@@ -267,6 +318,11 @@ void Canvas::blit_rgba(std::span<const std::uint32_t> source, int source_width, 
 }
 void Canvas::draw_surface(const Canvas &source, double x, double y, double sx, double sy, double angle,
                           std::uint32_t tint, double opacity) {
+    x *= render_scale_;
+    y *= render_scale_;
+    sx *= render_scale_;
+    sy *= render_scale_;
+
     finite(x);
     finite(y);
     finite(sx);
@@ -275,6 +331,32 @@ void Canvas::draw_surface(const Canvas &source, double x, double y, double sx, d
     finite(opacity);
     if (sx == 0 || sy == 0 || source.width_ == 0 || source.height_ == 0 || opacity <= 0)
         return;
+#if REGML_WII
+    if (gpu_) {
+        wii_gpu_image(source.pixels_, source.width_, 0, 0, source.width_, source.height_, x, y, source.width_ * sx,
+                      source.height_ * sy, angle, tint, opacity);
+        return;
+    }
+#endif
+    if (render_scale_ != 1) {
+        const double radians = angle * 3.141592653589793 / 180, cs = std::cos(radians), sn = std::sin(radians);
+        const double w = source.width_ * sx, h = source.height_ * sy;
+        const double xx[] = {x, x + w * cs, x + h * sn, x + w * cs + h * sn};
+        const double yy[] = {y, y - w * sn, y + h * cs, y - w * sn + h * cs};
+        const int left = static_cast<int>(std::clamp(std::floor(*std::min_element(xx, xx + 4)), 0.0, double(width_)));
+        const int right = static_cast<int>(std::clamp(std::ceil(*std::max_element(xx, xx + 4)), 0.0, double(width_)));
+        const int top = static_cast<int>(std::clamp(std::floor(*std::min_element(yy, yy + 4)), 0.0, double(height_)));
+        const int bottom = static_cast<int>(std::clamp(std::ceil(*std::max_element(yy, yy + 4)), 0.0, double(height_)));
+        const unsigned rgb = to_rgb(tint);
+        for (int py = top; py < bottom; ++py)
+            for (int px = left; px < right; ++px) {
+                const double dx = px + 0.5 - x, dy = py + 0.5 - y;
+                const double u = (dx * cs - dy * sn) / sx, v = (dx * sn + dy * cs) / sy;
+                if (u >= 0 && v >= 0 && u < source.width_ && v < source.height_)
+                    rgba_pixel_tinted(px, py, source.pixel(static_cast<int>(u), static_cast<int>(v)), rgb, opacity);
+            }
+        return;
+    }
     // Overlapping self-blits need the generic path.
     if (this != &source && sx == 1 && sy == 1 && angle == 0 && tint == 0xffffff && opacity == 1) {
         // Cull before narrowing coordinates to int.
@@ -350,6 +432,12 @@ void Canvas::font(int id) {
 void Canvas::plot(int x, int y) {
     if (x < 0 || y < 0 || x >= width_ || y >= height_)
         return;
+#if REGML_WII
+    if (gpu_) {
+        wii_gpu_box(x, y, 1, 1, (alpha_ << 24) | rgb_);
+        return;
+    }
+#endif
     auto &dest = pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
     if (alpha_ == 255) {
         dest = 0xff000000 | rgb_;
@@ -364,6 +452,12 @@ void Canvas::plot(int x, int y) {
     dest = result;
 }
 void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline) {
+    CoordinateScale coordinates(coordinate_scale_);
+    x1 *= coordinates.factor;
+    y1 *= coordinates.factor;
+    x2 *= coordinates.factor;
+    y2 *= coordinates.factor;
+
     finite(x1);
     finite(y1);
     finite(x2);
@@ -376,7 +470,19 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
     const int b = static_cast<int>(std::clamp(bottom, 0.0, static_cast<double>(height_)));
     if (l >= r || t >= b)
         return;
+#if REGML_WII
+    if (gpu_ && !outline) {
+        wii_gpu_box(l, t, r - l, b - t, (alpha_ << 24) | rgb_);
+        return;
+    }
+#endif
     const auto span = [&](int y, int first, int last) {
+#if REGML_WII
+        if (gpu_) {
+            wii_gpu_box(first, y, last - first, 1, (alpha_ << 24) | rgb_);
+            return;
+        }
+#endif
         auto *row = pixels_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width_);
         if (alpha_ == 255) {
             std::fill(row + first, row + last, 0xff000000 | rgb_);
@@ -404,11 +510,22 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
     }
 }
 void Canvas::circle(double x, double y, double radius, bool outline) {
+    CoordinateScale coordinates(coordinate_scale_);
+    x *= coordinates.factor;
+    y *= coordinates.factor;
+    radius *= coordinates.factor;
+
     finite(x);
     finite(y);
     finite(radius);
     if (radius < 0 || radius > 8192 || std::abs(x) > 1e9 || std::abs(y) > 1e9)
         throw Error(ErrorKind::unsupported, "circle is outside supported coordinate/radius limits");
+#if REGML_WII
+    if (gpu_) {
+        wii_gpu_circle(x, y, radius, outline, (alpha_ << 24) | rgb_);
+        return;
+    }
+#endif
     const int left = static_cast<int>(std::clamp(std::floor(x - radius), 0.0, static_cast<double>(width_)));
     const int right = static_cast<int>(std::clamp(std::ceil(x + radius + 1), 0.0, static_cast<double>(width_)));
     const int top = static_cast<int>(std::clamp(std::floor(y - radius), 0.0, static_cast<double>(height_)));
@@ -423,6 +540,13 @@ void Canvas::circle(double x, double y, double radius, bool outline) {
         }
 }
 void Canvas::line(double x1, double y1, double x2, double y2, double width) {
+    CoordinateScale coordinates(coordinate_scale_);
+    x1 *= coordinates.factor;
+    y1 *= coordinates.factor;
+    x2 *= coordinates.factor;
+    y2 *= coordinates.factor;
+    width *= coordinates.factor;
+
     finite(x1);
     finite(y1);
     finite(x2);
@@ -430,6 +554,20 @@ void Canvas::line(double x1, double y1, double x2, double y2, double width) {
     finite(width);
     if (width <= 0 || width > 2048 || std::max({std::abs(x1), std::abs(y1), std::abs(x2), std::abs(y2)}) > 1e9)
         throw Error(ErrorKind::unsupported, "line is outside supported limits");
+#if REGML_WII
+    if (gpu_) {
+        const double dx = x2 - x1, dy = y2 - y1, length = std::hypot(dx, dy);
+        if (length == 0) {
+            wii_gpu_box(x1, y1, width, width, (alpha_ << 24) | rgb_);
+            return;
+        }
+        const double nx = -dy / length * width / 2, ny = dx / length * width / 2;
+        const unsigned rgba = (alpha_ << 24) | rgb_;
+        wii_gpu_triangle(x1 + nx, y1 + ny, x2 + nx, y2 + ny, x2 - nx, y2 - ny, rgba);
+        wii_gpu_triangle(x1 + nx, y1 + ny, x2 - nx, y2 - ny, x1 - nx, y1 - ny, rgba);
+        return;
+    }
+#endif
     const double dx = x2 - x1, dy = y2 - y1;
     const auto steps = static_cast<std::size_t>(std::ceil(std::max(std::abs(dx), std::abs(dy))));
     if (steps > 1'000'000)
@@ -445,6 +583,14 @@ void Canvas::line(double x1, double y1, double x2, double y2, double width) {
     }
 }
 void Canvas::triangle(double x1, double y1, double x2, double y2, double x3, double y3, bool outline) {
+    CoordinateScale coordinates(coordinate_scale_);
+    x1 *= coordinates.factor;
+    y1 *= coordinates.factor;
+    x2 *= coordinates.factor;
+    y2 *= coordinates.factor;
+    x3 *= coordinates.factor;
+    y3 *= coordinates.factor;
+
     finite(x1);
     finite(y1);
     finite(x2);
@@ -457,6 +603,12 @@ void Canvas::triangle(double x1, double y1, double x2, double y2, double x3, dou
         line(x3, y3, x1, y1);
         return;
     }
+#if REGML_WII
+    if (gpu_) {
+        wii_gpu_triangle(x1, y1, x2, y2, x3, y3, (alpha_ << 24) | rgb_);
+        return;
+    }
+#endif
     const double area = (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1);
     if (std::abs(area) < 1e-12)
         return;
@@ -499,6 +651,8 @@ void Canvas::text(double x, double y, std::string_view value) {
     }
 }
 void Canvas::debug_text_overlay(std::span<const std::string_view> lines) {
+    CoordinateScale coordinates(coordinate_scale_);
+
     if (lines.empty())
         return;
     const auto saved_rgb = rgb_;
@@ -529,6 +683,19 @@ void Canvas::debug_text_overlay(std::span<const std::string_view> lines) {
 }
 std::uint64_t Canvas::hash() const noexcept {
     std::uint64_t value = 14695981039346656037ULL;
+#if REGML_WII
+    if (gpu_) {
+        for (int y = 0; y < height_; ++y)
+            for (int x = 0; x < width_; ++x) {
+                const auto rgba = wii_gpu_pixel(x, y);
+                for (unsigned shift : {0U, 8U, 16U, 24U}) {
+                    value ^= (rgba >> shift) & 255;
+                    value *= 1099511628211ULL;
+                }
+            }
+        return value;
+    }
+#endif
     for (auto pixel : pixels_)
         for (unsigned shift : {0U, 8U, 16U, 24U}) {
             value ^= (pixel >> shift) & 255;

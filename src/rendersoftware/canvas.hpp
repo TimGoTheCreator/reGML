@@ -9,7 +9,12 @@ namespace regml {
 // CPU framebuffer; SDL only handles presentation.
 class Canvas {
   public:
-    Canvas(int width, int height);
+    Canvas(int width, int height, bool main_screen = false);
+    double render_scale() const noexcept { return render_scale_; }
+    int logical_width() const noexcept { return logical_width_; }
+    int logical_height() const noexcept { return logical_height_; }
+    void gpu_target(bool enabled);
+    bool gpu_target() const noexcept { return gpu_; }
     [[nodiscard]] int width() const noexcept { return width_; }
     [[nodiscard]] int height() const noexcept { return height_; }
     [[nodiscard]] std::span<std::uint32_t> pixels() noexcept { return pixels_; }
@@ -39,6 +44,15 @@ class Canvas {
 
   private:
     void plot(int x, int y);
+    struct CoordinateScale {
+        double &active;
+        double factor;
+        explicit CoordinateScale(double &scale) : active(scale), factor(scale) { active = 1; }
+        ~CoordinateScale() { active = factor; }
+    };
+    double render_scale_ = 1, coordinate_scale_ = 1;
+    int logical_width_, logical_height_;
+    bool gpu_ = false;
     int width_, height_;
     std::vector<std::uint32_t> pixels_;
     std::uint32_t rgb_ = 0xffffff;

@@ -1,5 +1,7 @@
 #include "play.hpp"
-#if REGML_MINIAUDIO
+#if REGML_WII
+#include "audio/wii/output.hpp"
+#elif REGML_MINIAUDIO
 #include "audio/miniaudio/output.hpp"
 #elif REGML_OPENAL
 #include "audio/openal/output.hpp"
@@ -143,8 +145,8 @@ class VideoWindow {
         if (!renderer_)
             throw Error(ErrorKind::io, std::string("renderer creation: ") + SDL_GetError());
         sdl_ok(SDL_RenderSetLogicalSize(renderer_.get(), 640, 480), "logical resolution");
-        texture_.reset(
-            SDL_CreateTexture(renderer_.get(), SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 640, 480));
+        texture_.reset(SDL_CreateTexture(renderer_.get(), SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+                                         render_width, render_height));
         if (!texture_)
             throw Error(ErrorKind::io, std::string("framebuffer texture: ") + SDL_GetError());
         sdl_ok(SDL_SetTextureBlendMode(texture_.get(), SDL_BLENDMODE_NONE), "texture blend mode");
@@ -273,7 +275,9 @@ class VideoWindow {
     bool escape_quits_ = true;
     bool speed_controls_ = false;
 };
-#else
+#endif
+#endif
+#if REGML_WII && !REGML_WITH_SDL2
 class VideoWindow {
   public:
     explicit VideoWindow(bool hidden, bool escape_quits = true, bool speed_controls = false) {
@@ -290,6 +294,7 @@ class VideoWindow {
         session.tick(autoplay ? demo_autoplay(session.frames()) : input_.held(), autoplay ? KeyboardState{} : pressed);
     }
     void tick_game(GameSession &session, const KeyboardState *replay) {
+        session.canvas().gpu_target(true);
         const auto pressed = input_.take_pressed();
         session.tick(replay ? *replay : input_.held(), replay ? KeyboardState{} : pressed);
     }
@@ -300,9 +305,17 @@ class VideoWindow {
     WiiInput input_;
 };
 #endif
+#if REGML_WITH_SDL2 || REGML_WII
 class AudioDevice {
   public:
-#if REGML_MINIAUDIO
+#if REGML_WII
+    AudioDevice(GameSession &session, double speed) : output_(session, speed) {}
+    void set_speed(double speed) { output_.set_speed(speed); }
+    void pump() { output_.pump(); }
+
+  private:
+    WiiAudioOutput output_;
+#elif REGML_MINIAUDIO
     AudioDevice(GameSession &session, double speed) : output_(session, speed) {}
     void set_speed(double speed) { output_.set_speed(speed); }
     void pump() {}
@@ -407,7 +420,7 @@ PlayReport play_demo(const PlayOptions &options) {
             session.draw();
         }
     } else {
-#if REGML_WITH_SDL2
+#if REGML_WITH_SDL2 || REGML_WII
         VideoWindow window(options.hidden);
         using Clock = std::chrono::steady_clock;
         const double step = 1.0 / (60.0 * options.speed_multiplier);
@@ -531,7 +544,7 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
                                std::chrono::duration<double, std::milli>(tick_end - start).count(), 0);
         }
     } else {
-#if REGML_WITH_SDL2
+#if REGML_WITH_SDL2 || REGML_WII
         trace_stage("video.begin", &session);
         VideoWindow window(options.hidden, false, options.speed_controls);
         trace_stage("audio.begin", &session);

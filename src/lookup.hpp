@@ -2,6 +2,11 @@
 #include <string_view>
 
 namespace regml {
+#if REGML_240P
+inline constexpr int render_width = 320, render_height = 240;
+#else
+inline constexpr int render_width = 640, render_height = 480;
+#endif
 inline constexpr std::string_view version = "0.2.1";
 inline constexpr std::string_view debug_overlay_marker = "regml-debug.enabled";
 inline constexpr std::string_view debug_overlay_fps_label = "FPS ";

@@ -903,6 +903,32 @@ int main(int argc, char **argv) {
                  collect.tick(held);
              check(regml::value_number(collect.state().at("score")) >= 1, "bytecode pickup and score");
          }},
+        {"main screen render scale preserves logical coordinates",
+         [] {
+             regml::Canvas screen(640, 480, true);
+             regml::Canvas surface(8, 8);
+             const int divisor = REGML_240P ? 2 : 1;
+             check(screen.width() == 640 / divisor && screen.height() == 480 / divisor, "main render dimensions");
+             check(screen.logical_width() == 640 && screen.logical_height() == 480, "logical screen dimensions");
+             check(surface.width() == 8 && surface.height() == 8, "surfaces retain requested resolution");
+             screen.clear(0);
+             screen.color(0xffffff);
+             screen.rectangle(100, 100, 120, 120, false);
+             check(screen.pixel(100 / divisor, 100 / divisor) == 0xffffffff, "primitive coordinates scale once");
+             check(screen.pixel(120 / divisor, 100 / divisor) == 0xff000000, "scaled rectangle far edge");
+             surface.clear(0);
+             surface.color(0xffffff);
+             surface.rectangle(0, 0, 8, 8, false);
+             screen.draw_surface(surface, 200, 200);
+             check(screen.pixel(200 / divisor, 200 / divisor) == 0xffffffff, "surface placement scales once");
+             check(screen.pixel(208 / divisor, 200 / divisor) == 0xff000000, "surface draw retains logical size");
+             surface.clear_transparent();
+             for (int y = 0; y < 8; ++y)
+                 surface.rgba_span(0, y, 8, 0x80ffffff, 0xffffff, 1);
+             screen.draw_surface(surface, 240, 200);
+             check(screen.pixel(240 / divisor, 200 / divisor) == 0xff808080,
+                   "downscaled surfaces sample once instead of blending overlapping source pixels");
+         }},
         {"fixture collision, game over and pressed-edge restart", [] {
              regml::DemoSession demo;
              regml::KeyboardState held{};

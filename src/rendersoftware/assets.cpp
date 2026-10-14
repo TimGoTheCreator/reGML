@@ -1,4 +1,5 @@
 ﻿#include "assets.hpp"
+#include "platform/wii/gpu.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -411,15 +412,87 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
                       unsigned color, double alpha) {
     x = (x - view_x_) * view_sx_ + port_x_;
     y = (y - view_y_) * view_sy_ + port_y_;
-    sx *= view_sx_;
-    sy *= view_sy_;
+    x *= canvas.render_scale();
+    y *= canvas.render_scale();
+    sx *= view_sx_ * canvas.render_scale();
+    sy *= view_sy_ * canvas.render_scale();
     if (!std::isfinite(x + y + sx + sy + angle + alpha))
         throw Error(ErrorKind::vm, "nonfinite sprite transform");
     if (sx == 0 || sy == 0 || r.w == 0 || r.h == 0 || alpha <= 0)
         return;
     int source_x = 0, source_y = 0;
-    const auto &page = region_pixels(r, source_x, source_y);
     const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
+#if REGML_WII
+    if (canvas.gpu_target()) {
+        const double radians = angle * 3.141592653589793 / 180;
+        const double cs = angle == 0 ? 1 : std::cos(radians), sn = angle == 0 ? 0 : std::sin(radians);
+        const double w = r.tw * sx, h = r.th * sy;
+        const double xx[] = {x, x + w * cs, x + h * sn, x + w * cs + h * sn};
+        const double yy[] = {y, y - w * sn, y + h * cs, y - w * sn + h * cs};
+        if (*std::max_element(xx, xx + 4) <= 0 || *std::max_element(yy, yy + 4) <= 0 ||
+            *std::min_element(xx, xx + 4) >= canvas.width() || *std::min_element(yy, yy + 4) >= canvas.height())
+            return;
+        std::uint64_t key = 1469598103934665603ULL;
+        for (int value : {r.page, r.x, r.y, r.w, r.h})
+            key = (key ^ static_cast<unsigned>(value)) * 1099511628211ULL;
+        key = key ? key : 1;
+        if (wii_gpu_cached_image(r.w, r.h, x, y, r.tw * sx, r.th * sy, angle, tint, alpha, key))
+            return;
+        const auto &page = region_pixels(r, source_x, source_y);
+        wii_gpu_image(page.pixels, page.width, source_x, source_y, r.w, r.h, x, y, r.tw * sx, r.th * sy, angle, tint,
+                      alpha, key);
+        return;
+    }
+#endif
+    const auto &page = region_pixels(r, source_x, source_y);
+#if REGML_240P
+    if (canvas.render_scale() < 1 && (std::abs(sx) * r.tw < r.w || std::abs(sy) * r.th < r.h)) {
+        const double rad = angle * 3.141592653589793 / 180, cs = std::cos(rad), sn = std::sin(rad);
+        const double w = r.tw * sx, h = r.th * sy;
+        const double xx[] = {x, x + w * cs, x + h * sn, x + w * cs + h * sn};
+        const double yy[] = {y, y - w * sn, y + h * cs, y - w * sn + h * cs};
+        const int left =
+            static_cast<int>(std::clamp(std::floor(*std::min_element(xx, xx + 4)), 0.0, double(canvas.width())));
+        const int right =
+            static_cast<int>(std::clamp(std::ceil(*std::max_element(xx, xx + 4)), 0.0, double(canvas.width())));
+        const int top =
+            static_cast<int>(std::clamp(std::floor(*std::min_element(yy, yy + 4)), 0.0, double(canvas.height())));
+        const int bottom =
+            static_cast<int>(std::clamp(std::ceil(*std::max_element(yy, yy + 4)), 0.0, double(canvas.height())));
+        for (int dy = top; dy < bottom; ++dy)
+            for (int dx = left; dx < right; ++dx) {
+                const double px = dx + 0.5 - x, py = dy + 0.5 - y;
+                const double tx = (px * cs - py * sn) / sx, ty = (px * sn + py * cs) / sy;
+
+                const double u = tx * r.w / r.tw - 0.5, v = ty * r.h / r.th - 0.5;
+                const int ix = static_cast<int>(std::floor(u)), iy = static_cast<int>(std::floor(v));
+                const double fx = u - ix, fy = v - iy;
+                std::uint32_t rgba = 0;
+                unsigned best = 0;
+                for (int yy = 0; yy < 2; ++yy)
+                    for (int xx = 0; xx < 2; ++xx) {
+                        const int ux = ix + xx, uy = iy + yy;
+                        if (ux < 0 || uy < 0 || ux >= r.w || uy >= r.h)
+                            continue;
+                        const double weight = (xx ? fx : 1 - fx) * (yy ? fy : 1 - fy);
+                        if (weight <= 0)
+                            continue;
+                        const auto p =
+                            page.pixels[static_cast<std::size_t>(source_y + uy) * page.width + source_x + ux];
+                        // Keep a real source color; prefer visible strokes over empty or dark samples.
+                        const unsigned score = (p >> 24) * (1 + (p >> 16 & 255) + (p >> 8 & 255) + (p & 255));
+                        if (score > best) {
+                            best = score;
+                            rgba = p;
+                        }
+                    }
+                if (!best)
+                    continue;
+                canvas.rgba_pixel_tinted(dx, dy, rgba, tint, alpha);
+            }
+        return;
+    }
+#endif
     std::int8_t source_alpha_mode = 0;
     if (tint == 0xffffff && alpha == 1 && angle == 0 && r.tw == r.w && r.th == r.h) {
         if (r.alpha_mode < 0) {

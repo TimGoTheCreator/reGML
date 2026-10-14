@@ -1,4 +1,6 @@
 #include "renderer.hpp"
+#include "gpu.hpp"
+#include "lookup.hpp"
 
 #if REGML_WII
 #include <algorithm>
@@ -140,8 +142,8 @@ REGML_ALWAYS_INLINE u64 compute_tile_signature(u32 r0_0, u32 r0_1, u32 r0_2, u32
 }
 
 REGML_ALWAYS_INLINE bool tile_matches(const u32 *dst, u32 r0_0, u32 r0_1, u32 r0_2, u32 r0_3, u32 r1_0, u32 r1_1,
-                                      u32 r1_2, u32 r1_3, u32 r2_0, u32 r2_1, u32 r2_2, u32 r2_3, u32 r3_0,
-                                      u32 r3_1, u32 r3_2, u32 r3_3) noexcept {
+                                      u32 r1_2, u32 r1_3, u32 r2_0, u32 r2_1, u32 r2_2, u32 r2_3, u32 r3_0, u32 r3_1,
+                                      u32 r3_2, u32 r3_3) noexcept {
     const u32 expected[16] = {pack_ar(r0_0, r0_1), pack_ar(r0_2, r0_3), pack_ar(r1_0, r1_1), pack_ar(r1_2, r1_3),
                               pack_ar(r2_0, r2_1), pack_ar(r2_2, r2_3), pack_ar(r3_0, r3_1), pack_ar(r3_2, r3_3),
                               pack_gb(r0_0, r0_1), pack_gb(r0_2, r0_3), pack_gb(r1_0, r1_1), pack_gb(r1_2, r1_3),
@@ -278,8 +280,8 @@ REGML_ALWAYS_INLINE bool swizzle_single_tile(u32 *REGML_RESTRICT dst, u64 *REGML
         const u64 sig = compute_tile_signature(r0_0, r0_1, r0_2, r0_3, r1_0, r1_1, r1_2, r1_3, r2_0, r2_1, r2_2, r2_3,
                                                r3_0, r3_1, r3_2, r3_3);
         if (sig_valid && *sig_slot == sig &&
-            tile_matches(dst, r0_0, r0_1, r0_2, r0_3, r1_0, r1_1, r1_2, r1_3, r2_0, r2_1, r2_2, r2_3, r3_0, r3_1,
-                         r3_2, r3_3)) {
+            tile_matches(dst, r0_0, r0_1, r0_2, r0_3, r1_0, r1_1, r1_2, r1_3, r2_0, r2_1, r2_2, r2_3, r3_0, r3_1, r3_2,
+                         r3_3)) {
             return false;
         }
         *sig_slot = sig;
@@ -353,12 +355,11 @@ REGML_HOT void swizzle_canvas_640x480(const u32 *REGML_RESTRICT src, u32 *REGML_
 
             const bool changed[4] = {
                 swizzle_single_tile(dst, sigs ? (sigs + tile_idx) : nullptr, sig_valid, r0[0], r0[1], r0[2], r0[3],
-                                    r1[0], r1[1], r1[2], r1[3], r2[0], r2[1], r2[2], r2[3], r3[0], r3[1], r3[2],
-                                    r3[3]),
+                                    r1[0], r1[1], r1[2], r1[3], r2[0], r2[1], r2[2], r2[3], r3[0], r3[1], r3[2], r3[3]),
 
                 swizzle_single_tile(dst + 16, sigs ? (sigs + tile_idx + 1) : nullptr, sig_valid, r0[4], r0[5], r0[6],
-                                    r0[7], r1[4], r1[5], r1[6], r1[7], r2[4], r2[5], r2[6], r2[7], r3[4], r3[5],
-                                    r3[6], r3[7]),
+                                    r0[7], r1[4], r1[5], r1[6], r1[7], r2[4], r2[5], r2[6], r2[7], r3[4], r3[5], r3[6],
+                                    r3[7]),
 
                 swizzle_single_tile(dst + 32, sigs ? (sigs + tile_idx + 2) : nullptr, sig_valid, r0[8], r0[9], r0[10],
                                     r0[11], r1[8], r1[9], r1[10], r1[11], r2[8], r2[9], r2[10], r2[11], r3[8], r3[9],
@@ -446,8 +447,7 @@ REGML_COLD void swizzle_canvas_safe_fallback(const u32 *REGML_RESTRICT src, std:
             u32 p[4][4];
             for (int y = 0; y < 4; ++y) {
                 const std::size_t row_base =
-                    static_cast<std::size_t>((tile_y + y) * src_height / kHeight) *
-                    static_cast<std::size_t>(src_width);
+                    static_cast<std::size_t>((tile_y + y) * src_height / kHeight) * static_cast<std::size_t>(src_width);
                 for (int x = 0; x < 4; ++x) {
                     const int src_x = (tile_x + x) * src_width / kWidth;
                     const std::size_t idx = row_base + static_cast<std::size_t>(src_x);
@@ -633,10 +633,45 @@ WiiRenderer::WiiRenderer() {
 }
 
 REGML_HOT void WiiRenderer::present(const Canvas &canvas) {
-    if (REGML_UNLIKELY(!texture_pixels_ || !framebuffers_[0] || !framebuffers_[1])) {
+    if (REGML_UNLIKELY(!framebuffers_[0] || !framebuffers_[1])) {
         return;
     }
 
+    if (canvas.gpu_target()) {
+#if REGML_240P
+        GX_SetTexCopySrc(0, 0, render_width, render_height);
+        GX_SetTexCopyDst(render_width, render_height, GX_TF_RGBA8, GX_FALSE);
+        GX_SetCopyFilter(GX_FALSE, g_hw.video_mode->sample_pattern, GX_FALSE, g_hw.video_mode->vfilter);
+        GX_CopyTex(texture_pixels_, GX_FALSE);
+        GX_PixModeSync();
+        configure_gx_pipeline(g_hw.video_mode);
+        GX_InitTexObj(&g_hw.tex_obj, texture_pixels_, render_width, render_height, GX_TF_RGBA8, GX_CLAMP, GX_CLAMP,
+                      GX_FALSE);
+        GX_InitTexObjLOD(&g_hw.tex_obj, GX_NEAR, GX_NEAR, 0, 0, 0, GX_FALSE, GX_FALSE, GX_ANISO_1);
+        GX_InvalidateTexAll();
+        GX_LoadTexObj(&g_hw.tex_obj, GX_TEXMAP0);
+        GX_CallDispList(g_hw.quad_disp_list, g_hw.quad_disp_list_size);
+#else
+        if (texture_pixels_) {
+            GX_DrawDone();
+            std::free(texture_pixels_);
+            texture_pixels_ = nullptr;
+            std::free(g_hw.tile_signatures);
+            g_hw.tile_signatures = nullptr;
+        }
+#endif
+        const int slot = framebuffer_ & 1;
+        GX_CopyDisp(framebuffers_[slot], GX_FALSE);
+        GX_DrawDone();
+        wii_gpu_presented();
+        VIDEO_SetNextFramebuffer(framebuffers_[slot]);
+        VIDEO_Flush();
+        VIDEO_WaitVSync();
+        framebuffer_ = slot ^ 1;
+        return;
+    }
+    if (!texture_pixels_)
+        return;
     void *target_tex_mem = texture_pixels_;
     u64 *target_sigs = g_hw.tile_signatures;
     const bool sig_valid = g_hw.signature_valid && (target_sigs != nullptr);
@@ -650,8 +685,8 @@ REGML_HOT void WiiRenderer::present(const Canvas &canvas) {
                      source_count >= kPixelCount && is_aligned_32(dst_ptr))) {
         swizzle_canvas_640x480(src_ptr, dst_ptr, target_sigs, sig_valid);
         g_hw.signature_valid = target_sigs != nullptr;
-    } else if (src_ptr != nullptr && canvas.width() == 320 && canvas.height() == 240 &&
-               source_count >= (320u * 240u) && is_aligned_32(dst_ptr)) {
+    } else if (src_ptr != nullptr && canvas.width() == 320 && canvas.height() == 240 && source_count >= (320u * 240u) &&
+               is_aligned_32(dst_ptr)) {
         swizzle_canvas_320x240(src_ptr, dst_ptr, target_sigs, sig_valid);
         g_hw.signature_valid = target_sigs != nullptr;
     } else if (is_aligned_32(dst_ptr)) {

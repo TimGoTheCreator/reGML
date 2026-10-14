@@ -2,6 +2,7 @@
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
+#include <unordered_set>
 
 int main(int argc, char **argv) {
     try {
@@ -45,14 +46,52 @@ int main(int argc, char **argv) {
                                 const double u = (dx + 0.5 - x) / sx + sprite.ox;
                                 const double v = (dy + 0.5 - y) / sy + sprite.oy;
                                 if (u >= 0 && v >= 0 && u < sprite.width && v < sprite.height)
-                                    expected.rgba_pixel_tinted(dx, dy, source.pixel(static_cast<int>(u), static_cast<int>(v)),
+                                    expected.rgba_pixel_tinted(dx, dy,
+                                                               source.pixel(static_cast<int>(u), static_cast<int>(v)),
                                                                0xcc6633, alpha);
                             }
                         if (actual.hash() != expected.hash())
-                            throw std::runtime_error("mirrored sprite coverage or compositing differs from source sampling");
+                            throw std::runtime_error(
+                                "mirrored sprite coverage or compositing differs from source sampling");
                     }
         std::cout << "Undertale hole mask preserves safe tiles and player feet bounds\n";
         std::cout << "Mirrored sprites preserve pixel coverage, tint and alpha\n";
+#if REGML_240P
+        const int grid = find_sprite("spr_battlebg");
+        const auto &grid_sprite = assets.sprite(grid);
+        for (int frame = 0; frame < static_cast<int>(grid_sprite.frames.size()); ++frame) {
+            regml::Canvas full(640, 480), reduced(640, 480, true);
+            full.clear(0);
+            reduced.clear(0);
+            assets.draw_sprite(full, grid, frame, grid_sprite.ox, grid_sprite.oy);
+            assets.draw_sprite(reduced, grid, frame, grid_sprite.ox, grid_sprite.oy);
+            for (int y = 0; y < 240; ++y)
+                for (int x = 0; x < 320; ++x) {
+                    unsigned green = 0;
+                    for (int dy = 0; dy < 2; ++dy)
+                        for (int dx = 0; dx < 2; ++dx)
+                            green += (full.pixel(x * 2 + dx, y * 2 + dy) >> 8) & 255;
+                    if (green >= 4 && ((reduced.pixel(x, y) >> 8) & 255) == 0)
+                        throw std::runtime_error("240p drops a battle-grid stroke: frame " + std::to_string(frame) +
+                                                 " x " + std::to_string(x) + " y " + std::to_string(y));
+                }
+        }
+        std::cout << "240p preserves thin grid strokes in both battle-background frames\n";
+        for (const auto name : {"spr_fightbt", "spr_itembt", "spr_actbt_center"}) {
+            const int id = find_sprite(name);
+            const auto &button = assets.sprite(id);
+            regml::Canvas full(640, 480), reduced(640, 480, true);
+            full.clear(0);
+            reduced.clear(0);
+            assets.draw_sprite(full, id, 0, button.ox, button.oy);
+            assets.draw_sprite(reduced, id, 0, button.ox, button.oy);
+            std::unordered_set<std::uint32_t> palette(full.pixels().begin(), full.pixels().end());
+            for (const auto pixel : reduced.pixels())
+                if (!palette.contains(pixel))
+                    throw std::runtime_error("240p blurs a menu button by introducing interpolated colors");
+        }
+        std::cout << "240p menu buttons keep their original color palette\n";
+#endif
         return 0;
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

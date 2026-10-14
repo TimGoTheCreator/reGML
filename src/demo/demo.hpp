@@ -1,6 +1,6 @@
 #pragma once
-#include "rendersoftware/canvas.hpp"
 #include "interpreter.hpp"
+#include "rendersoftware/canvas.hpp"
 #include <array>
 namespace regml {
 using KeyboardState = std::array<bool, 256>;
@@ -21,7 +21,7 @@ class DemoSession {
   private:
     void run(const BoundProgram &code);
     Value builtin(std::string_view name, std::span<const Value> args);
-    Canvas canvas_{640, 480};
+    Canvas canvas_{640, 480, true};
     VariableStore self_, globals_;
     KeyboardState held_{}, pressed_{}, previous_{};
     BoundProgram create_, step_, draw_;
