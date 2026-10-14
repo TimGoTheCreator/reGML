@@ -197,6 +197,10 @@ struct GameSession::Impl {
         int type = 0, subtype = 0, object = 0;
     };
     std::vector<EventFrame> event_stack;
+    struct VmScratch {
+        std::vector<Value> stack, arguments;
+    };
+    std::array<VmScratch, 128> vm_scratch;
     std::filesystem::path game_dir;
     std::optional<std::uint32_t> fixed_seed;
     mutable std::unordered_map<std::string, std::vector<std::uint8_t>> load_chunks;
@@ -655,6 +659,16 @@ struct GameSession::Impl {
                 out.push_back(i);
         return out;
     }
+    Instance *first_target(int target, const InstancePtr &self, const InstancePtr &other) {
+        if (target == -1)
+            return self.get();
+        if (target == -2)
+            return other && other->alive ? other.get() : nullptr;
+        for (const auto &i : instances)
+            if (i->alive && !i->deactivated && matches(*i, target))
+                return i.get();
+        return nullptr;
+    }
     CollisionRoute collision_event(int source, int target) {
         const auto key =
             (static_cast<std::uint64_t>(static_cast<std::uint32_t>(source)) << 32) | static_cast<std::uint32_t>(target);
@@ -793,12 +807,19 @@ struct GameSession::Impl {
         } guard{depth};
         const auto &program = linked.program(package, static_cast<std::size_t>(code));
         VariableStore locals;
-        locals["argument_count"] = static_cast<std::int32_t>(arguments.size());
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             locals["argument" + std::to_string(i)] = arguments[i];
             locals["argument[" + std::to_string(i) + "]"] = arguments[i];
         }
-        std::vector<Value> stack;
+        auto &scratch = vm_scratch[depth - 1];
+        auto &stack = scratch.stack;
+        struct ScratchGuard {
+            VmScratch &scratch;
+            ~ScratchGuard() {
+                scratch.stack.clear();
+                scratch.arguments.clear();
+            }
+        } scratch_guard{scratch};
         std::size_t pc = 0;
         std::size_t instruction_index = 0;
         struct Environment {
@@ -851,10 +872,10 @@ struct GameSession::Impl {
                     if (scope == -9)
                         scope = number(pop());
                     if (!writing && name.starts_with("bbox_")) {
-                        const auto found = targets(scope, self, other);
-                        if (found.empty())
+                        const auto *found = first_target(scope, self, other);
+                        if (!found)
                             throw Error(ErrorKind::vm, "bounding box instance missing");
-                        const auto b = bounds(*found[0]);
+                        const auto b = bounds(*found);
                         if (name == "bbox_left")
                             return std::floor(b.left);
                         if (name == "bbox_right")
@@ -866,19 +887,19 @@ struct GameSession::Impl {
                     }
                     if (!writing && (name == "sprite_width" || name == "sprite_height" || name == "sprite_xoffset" ||
                                      name == "sprite_yoffset" || name == "image_number")) {
-                        const auto found = targets(scope, self, other);
-                        if (found.empty())
+                        const auto *found = first_target(scope, self, other);
+                        if (!found)
                             throw Error(ErrorKind::vm, "sprite variable instance missing");
-                        const int id = number(found[0]->vars.at("sprite_index"));
+                        const int id = number(found->vars.at("sprite_index"));
                         if (id < 0)
                             return 0.0;
                         const auto &spr = assets.sprite(id);
                         if (name == "sprite_width")
                             return static_cast<double>(spr.width) *
-                                   std::abs(value_number(found[0]->vars.at("image_xscale")));
+                                   std::abs(value_number(found->vars.at("image_xscale")));
                         if (name == "sprite_height")
                             return static_cast<double>(spr.height) *
-                                   std::abs(value_number(found[0]->vars.at("image_yscale")));
+                                   std::abs(value_number(found->vars.at("image_yscale")));
                         if (name == "sprite_xoffset")
                             return static_cast<double>(spr.ox);
                         if (name == "sprite_yoffset")
@@ -907,6 +928,8 @@ struct GameSession::Impl {
                             stores.push_back(&target->vars);
                     }
                     auto access = [&](VariableStore *store) -> Value {
+                        if (!writing && store == &locals && name == "argument_count" && !locals.contains(name))
+                            return static_cast<std::int32_t>(arguments.size());
                         if (array_index >= 0 && !store->contains(name)) {
                             auto base = store->find(symbol.name);
                             if (base == store->end()) {
@@ -1002,16 +1025,19 @@ struct GameSession::Impl {
                         variable(true, v);
                     } else {
                         const auto kind = (ins.reference_value() >> 24) & 0xf8;
-                        std::vector<Value> address;
+                        std::array<Value, 2> address;
+                        std::size_t address_count = 0;
                         if (kind == 0) {
-                            auto index = pop();
-                            auto scope = pop();
-                            address = {scope, index};
-                        } else if (kind == 0x80)
-                            address = {pop()};
+                            address[1] = pop();
+                            address[0] = pop();
+                            address_count = 2;
+                        } else if (kind == 0x80) {
+                            address[0] = pop();
+                            address_count = 1;
+                        }
                         auto v = pop();
-                        for (auto &a : address)
-                            push(a);
+                        for (std::size_t i = 0; i < address_count; ++i)
+                            push(std::move(address[i]));
                         variable(true, v);
                     }
                     break;
@@ -1134,10 +1160,16 @@ struct GameSession::Impl {
                 case Opcode::call: {
                     const auto &name = linked.functions.at(static_cast<std::size_t>(ins.symbol_id)).name;
                     const auto count = static_cast<std::size_t>(ins.word & 0xffff);
-                    std::vector<Value> args;
+                    auto &args = scratch.arguments;
+                    args.clear();
+                    if (count > stack.size())
+                        throw Error(ErrorKind::vm, "call argument stack underflow", program.origin + pc);
+                    args.reserve(count);
                     for (std::size_t i = 0; i < count; ++i)
                         args.push_back(pop());
-                    push(call(name, args, self, other));
+                    auto result = call(name, args, self, other);
+                    args.clear();
+                    push(std::move(result));
                     break;
                 }
                 case Opcode::ret:
@@ -1166,9 +1198,9 @@ struct GameSession::Impl {
                                 next += end.size;
                         }
                     } else {
-                        environments.push_back({self, other, choices, 0});
+                        environments.push_back({self, other, std::move(choices), 0});
                         other = self;
-                        self = choices[0];
+                        self = environments.back().choices[0];
                     }
                     break;
                 }
@@ -2448,7 +2480,7 @@ struct GameSession::Impl {
             return std::monostate{};
         }
         if (name == "instance_exists")
-            return !targets(static_cast<int>(n(0)), self, other).empty();
+            return first_target(static_cast<int>(n(0)), self, other) != nullptr;
         if (name == "event_inherited") {
             if (event_stack.empty())
                 throw Error(ErrorKind::vm, "event_inherited outside an event");
@@ -2474,12 +2506,30 @@ struct GameSession::Impl {
             self->vars["y"] = n(1);
             return std::monostate{};
         }
-        if (name == "instance_number")
-            return static_cast<double>(targets(static_cast<int>(n(0)), self, other).size());
+        if (name == "instance_number") {
+            const int target = static_cast<int>(n(0));
+            if (target == -1 || target == -2)
+                return first_target(target, self, other) ? 1.0 : 0.0;
+            std::size_t count = 0;
+            for (const auto &i : instances)
+                if (i->alive && !i->deactivated && matches(*i, target))
+                    ++count;
+            return static_cast<double>(count);
+        }
         if (name == "instance_find") {
-            const auto found = targets(static_cast<int>(n(0)), self, other);
-            const auto index = static_cast<std::size_t>(n(1));
-            return std::int32_t{index < found.size() ? found[index]->id : -4};
+            const int target = static_cast<int>(n(0));
+            auto index = static_cast<std::size_t>(n(1));
+            if (target == -1 || target == -2) {
+                const auto *found = index == 0 ? first_target(target, self, other) : nullptr;
+                return std::int32_t{found ? found->id : -4};
+            }
+            for (const auto &i : instances)
+                if (i->alive && !i->deactivated && matches(*i, target)) {
+                    if (index == 0)
+                        return std::int32_t{i->id};
+                    --index;
+                }
+            return std::int32_t{-4};
         }
         if (name == "instance_create") {
             Placement p;
