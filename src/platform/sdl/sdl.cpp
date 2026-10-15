@@ -10,6 +10,9 @@
 #include "platform/wii/host.hpp"
 #include "platform/wii/renderer.hpp"
 #endif
+#if REGML_PS2
+#include "platform/ps2/frontend.hpp"
+#endif
 #include "game.hpp"
 #include "lookup.hpp"
 #include <algorithm>
@@ -277,6 +280,9 @@ class VideoWindow {
 };
 #endif
 #endif
+#if REGML_PS2
+using VideoWindow = Ps2Frontend;
+#endif
 #if REGML_WII && !REGML_WITH_SDL2
 class VideoWindow {
   public:
@@ -420,7 +426,7 @@ PlayReport play_demo(const PlayOptions &options) {
             session.draw();
         }
     } else {
-#if REGML_WITH_SDL2 || REGML_WII
+#if REGML_WITH_SDL2 || REGML_WII || REGML_PS2
         VideoWindow window(options.hidden);
         using Clock = std::chrono::steady_clock;
         const double step = 1.0 / (60.0 * options.speed_multiplier);
@@ -544,11 +550,13 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
                                std::chrono::duration<double, std::milli>(tick_end - start).count(), 0);
         }
     } else {
-#if REGML_WITH_SDL2 || REGML_WII
+#if REGML_WITH_SDL2 || REGML_WII || REGML_PS2
         trace_stage("video.begin", &session);
         VideoWindow window(options.hidden, false, options.speed_controls);
         trace_stage("audio.begin", &session);
+#if !REGML_PS2
         AudioDevice audio(session, options.speed_multiplier);
+#endif
         trace_stage("audio.end", &session);
         auto next = std::chrono::steady_clock::now();
         auto previous_frame = next;
@@ -568,12 +576,18 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             if (!window.poll(&speed_multiplier))
                 break;
             if (speed_multiplier != previous_speed_multiplier)
+#if !REGML_PS2
                 audio.set_speed(speed_multiplier);
+#else
+                (void)previous_speed_multiplier;
+#endif
             input();
             trace_stage("tick", &session);
             const auto tick_begin = profile.enabled() ? Clock::now() : Clock::time_point{};
             window.tick_game(session, replay.empty() ? nullptr : &replay_keys);
+#if !REGML_PS2
             audio.pump();
+#endif
             const auto tick_end = profile.enabled() ? Clock::now() : Clock::time_point{};
             if (options.debug_overlay)
                 draw_debug_overlay(session, debug_frame_ms);
@@ -591,11 +605,13 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             trace_stage("delay", &session);
             const auto frame_time = std::chrono::duration<double>(1.0 / (session.speed() * speed_multiplier));
             next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(frame_time);
+#if !REGML_PS2
             if (!options.hidden) {
                 // Drop missed deadlines instead of replaying the backlog at full speed.
                 next = std::max(next, std::chrono::steady_clock::now());
                 std::this_thread::sleep_until(next);
             }
+#endif
             if (profile.enabled()) {
                 const auto ms = [](auto duration) {
                     return std::chrono::duration<double, std::milli>(duration).count();

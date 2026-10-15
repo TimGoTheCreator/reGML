@@ -8,6 +8,7 @@
 namespace regml {
 enum class DataType : std::uint8_t {
     real = 0,
+    float32 = 1,
     int32 = 2,
     int64 = 3,
     boolean = 4,
@@ -54,7 +55,7 @@ std::string_view opcode_name(Opcode opcode) noexcept;
 std::string_view type_name(DataType type) noexcept;
 struct Instruction {
     static constexpr std::uint32_t no_symbol = std::numeric_limits<std::uint32_t>::max();
-    enum class ImmediateKind : std::uint8_t { none, int32, int64, real64 };
+    enum class ImmediateKind : std::uint8_t { none, int32, int64, real32, real64 };
     std::uint64_t immediate_bits = no_symbol;
     std::uint32_t offset = 0, word = 0, symbol_id = no_symbol;
     DataType type1{};
@@ -92,11 +93,19 @@ struct Instruction {
         immediate_bits = std::bit_cast<std::uint64_t>(value);
         immediate_kind = ImmediateKind::real64;
     }
+    void set_immediate(float value) noexcept {
+        immediate_bits = std::bit_cast<std::uint32_t>(value);
+        immediate_kind = ImmediateKind::real32;
+    }
     [[nodiscard]] std::int32_t immediate_i32() const noexcept {
         return std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(immediate_bits));
     }
     [[nodiscard]] std::int64_t immediate_i64() const noexcept { return std::bit_cast<std::int64_t>(immediate_bits); }
-    [[nodiscard]] double immediate_real() const noexcept { return std::bit_cast<double>(immediate_bits); }
+    [[nodiscard]] double immediate_real() const noexcept {
+        return immediate_kind == ImmediateKind::real32
+                   ? static_cast<double>(std::bit_cast<float>(static_cast<std::uint32_t>(immediate_bits)))
+                   : std::bit_cast<double>(immediate_bits);
+    }
 };
 static_assert(sizeof(Instruction) == 24);
 struct Program {
@@ -119,7 +128,7 @@ struct Program {
         return index == std::numeric_limits<std::uint32_t>::max() ? std::nullopt : std::optional<std::size_t>(index);
     }
 };
-// v15/v16 only.
+// Bytecode 17 is decoded for inspection; the game VM remains 1.x-only.
 struct DecodeLimits {
     std::size_t max_instructions = 1'000'000;
     bool build_index = true;

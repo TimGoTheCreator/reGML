@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
-#include <unordered_map>
+#include <span>
 #include <vector>
 namespace regml {
 struct LoadLimits {
@@ -25,7 +25,7 @@ struct GeneralInfo {
     bool has_known_prefix = false;
 };
 struct StringRecord {
-    std::size_t record_offset = 0, length = 0;
+    std::uint32_t record_offset = 0, length = 0;
 };
 struct CodeEntry {
     std::size_t record_offset = 0;
@@ -46,6 +46,7 @@ class Package {
     }
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
     [[nodiscard]] std::vector<std::uint8_t> read_bytes(std::size_t offset, std::size_t length) const;
+    void read_into(std::size_t offset, std::span<std::uint8_t> output) const;
     [[nodiscard]] const std::vector<Chunk> &chunks() const noexcept { return chunks_; }
     [[nodiscard]] const Chunk *find_chunk(std::string_view name) const noexcept;
     [[nodiscard]] const std::optional<GeneralInfo> &general_info() const noexcept { return info_; }
@@ -65,13 +66,18 @@ class Package {
     void parse_code(const Chunk &chunk, LoadLimits limits);
     [[nodiscard]] std::size_t list_count(const Chunk &chunk, LoadLimits limits) const;
     std::vector<std::uint8_t> bytes_;
+    std::size_t string_chunk_offset_ = 0;
     std::filesystem::path source_path_;
     std::size_t size_ = 0;
     std::vector<Chunk> chunks_;
     std::optional<GeneralInfo> info_;
     std::vector<StringRecord> strings_;
-    std::vector<std::string> string_values_;
-    std::unordered_map<std::size_t, std::size_t> string_lookup_;
+    std::vector<std::uint8_t> string_chunk_;
+    std::vector<char> string_data_;
+    std::vector<std::size_t> string_data_offsets_;
+    // STRG record indices are enough to build the sorted pointer lookup. Keeping
+    // another pointer beside every index wastes 4 bytes per string.
+    std::vector<std::uint32_t> string_lookup_;
     std::vector<CodeEntry> code_;
 };
 } // namespace regml

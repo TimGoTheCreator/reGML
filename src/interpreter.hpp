@@ -2,13 +2,19 @@
 #include "decoder.hpp"
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 namespace regml {
 struct ArrayValue;
+struct PackageString {
+    std::string_view value;
+    bool operator==(const PackageString &) const = default;
+};
 // Not thread-safe. Arrays are owned by the VM thread.
 class ArrayPtr {
   public:
@@ -30,7 +36,17 @@ class ArrayPtr {
   private:
     ArrayValue *value_ = nullptr;
 };
-using Value = std::variant<std::int32_t, double, bool, std::string, std::monostate, ArrayPtr>;
+using Value = std::variant<std::int32_t, double, bool, std::string, PackageString, std::monostate, ArrayPtr>;
+inline bool value_is_string(const Value &value) noexcept {
+    return std::holds_alternative<std::string>(value) || std::holds_alternative<PackageString>(value);
+}
+inline std::string_view value_string_view(const Value &value) noexcept {
+    if (const auto *string = std::get_if<std::string>(&value))
+        return *string;
+    if (const auto *string = std::get_if<PackageString>(&value))
+        return string->value;
+    return {};
+}
 struct ArrayValue {
     ArrayValue() = default;
     ArrayValue(const ArrayValue &other) : elements(other.elements), row_lengths(other.row_lengths) {}
@@ -66,14 +82,21 @@ struct VariableStoreHash {
         return std::hash<std::string_view>{}(value);
     }
 };
-class VariableStore : public std::unordered_map<std::string, Value, VariableStoreHash, std::equal_to<>> {
-    using Base = std::unordered_map<std::string, Value, VariableStoreHash, std::equal_to<>>;
+class VariableStore : public std::unordered_map<std::string_view, Value, VariableStoreHash, std::equal_to<>> {
+    using Base = std::unordered_map<std::string_view, Value, VariableStoreHash, std::equal_to<>>;
+    // Stores can be copied out of a session, so shared key backing stays valid
+    // until process exit.
+    static const std::string &intern(std::string_view key) {
+        static std::unordered_set<std::string, VariableStoreHash, std::equal_to<>> keys;
+        static std::mutex keys_mutex;
+        const std::lock_guard lock(keys_mutex);
+        const auto found = keys.find(key);
+        return found == keys.end() ? *keys.emplace(key).first : *found;
+    }
 
   public:
     using Base::Base;
     using Base::operator=;
-    using Base::at;
-    using Base::operator[];
 
     Value &at(std::string_view key) {
         const auto found = this->find(key);
@@ -94,9 +117,12 @@ class VariableStore : public std::unordered_map<std::string, Value, VariableStor
         const auto found = this->find(key);
         if (found != this->end())
             return found->second;
-        return this->try_emplace(std::string(key)).first->second;
+        return this->try_emplace(intern(key)).first->second;
     }
     Value &operator[](const char *key) { return (*this)[std::string_view(key)]; }
+    std::pair<iterator, bool> emplace(std::string_view key, Value value) {
+        return this->try_emplace(intern(key), std::move(value));
+    }
 };
 enum class VariableScope { local, self, global };
 struct VariableBinding {

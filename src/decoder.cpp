@@ -117,6 +117,8 @@ std::string_view type_name(DataType type) noexcept {
     switch (type) {
     case DataType::real:
         return "d";
+    case DataType::float32:
+        return "f";
     case DataType::int32:
         return "i";
     case DataType::int64:
@@ -133,8 +135,8 @@ std::string_view type_name(DataType type) noexcept {
     return "?";
 }
 Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
-    if (version != 15 && version != 16)
-        throw Error(ErrorKind::unsupported, "instruction decoding currently supports bytecode 15 and 16 only",
+    if (version != 15 && version != 16 && version != 17)
+        throw Error(ErrorKind::unsupported, "instruction decoding currently supports bytecode 15, 16, and 17",
                     code.origin());
     if (code.size() > std::numeric_limits<std::uint32_t>::max())
         throw Error(ErrorKind::unsupported, "code blob exceeds compact instruction address range", code.origin());
@@ -173,6 +175,10 @@ Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
             case DataType::real:
                 ins.size = 12;
                 ins.set_immediate(code.f64(offset + 4));
+                break;
+            case DataType::float32:
+                ins.size = 8;
+                ins.set_immediate(std::bit_cast<float>(code.u32(offset + 4)));
                 break;
             case DataType::int32:
                 ins.size = 8;

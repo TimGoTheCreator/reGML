@@ -1,11 +1,16 @@
 cmake_minimum_required(VERSION 3.22)
 project(regml LANGUAGES C CXX)
 
+if(PS2)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(REGML_240P "Render the main screen at half resolution (320x240 for 640x480 games)" OFF)
+option(REGML_LOW_MEMORY "Use lazy bytecode and smaller caches for low-memory targets" OFF)
 
 option(REGML_SDL2 "Enable SDL2 windowed frontend" ON)
 option(REGML_ANDROID "Build the Android JNI library" OFF)
@@ -39,7 +44,9 @@ if(REGML_OPENAL AND REGML_MINIAUDIO)
     message(FATAL_ERROR "Choose only one optional audio output backend")
 endif()
 
-if(REGML_WII)
+if(PS2)
+    set(REGML_SDL2 OFF CACHE BOOL "Enable SDL2 windowed frontend" FORCE)
+elseif(REGML_WII)
     set(REGML_SDL2 OFF CACHE BOOL "Enable SDL2 windowed frontend" FORCE)
 elseif(REGML_WIIU)
     set(REGML_SDL2 ON CACHE BOOL "Enable SDL2 windowed frontend" FORCE)
@@ -86,6 +93,16 @@ elseif(REGML_WIIU OR REGML_WII)
     if(REGML_WIIU)
         pkg_check_modules(REGML_SDL2 REQUIRED IMPORTED_TARGET sdl2)
     endif()
+elseif(PS2)
+    find_package(PNG REQUIRED)
+    find_package(ZLIB REQUIRED)
+    find_library(REGML_PS2_VORBISFILE NAMES vorbisfile REQUIRED)
+    find_library(REGML_PS2_VORBIS NAMES vorbis REQUIRED)
+    find_library(REGML_PS2_OGG NAMES ogg REQUIRED)
+    find_path(REGML_PS2_GSKIT_INCLUDE NAMES gsKit.h HINTS "$ENV{GSKIT}/include" REQUIRED)
+    find_library(REGML_PS2_GSKIT NAMES gskit HINTS "$ENV{GSKIT}/lib" REQUIRED)
+    find_library(REGML_PS2_DMAKIT NAMES dmakit HINTS "$ENV{GSKIT}/lib" REQUIRED)
+    find_library(REGML_PS2_PAD NAMES pad HINTS "$ENV{PS2SDK}/ee/lib" REQUIRED)
 else()
     find_package(PNG REQUIRED)
     find_package(ZLIB REQUIRED)
@@ -99,7 +116,7 @@ else()
     )
 endif()
 
-if(REGML_SDL2 AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_ANDROID)
+if(REGML_SDL2 AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_ANDROID AND NOT PS2)
     find_package(SDL2 REQUIRED)
 endif()
 
@@ -108,6 +125,7 @@ file(GLOB REGML_ENGINE_SOURCES
     "src/*.cpp"
     "src/platform/sdl/*.cpp"
     "src/platform/wii/*.cpp"
+    "src/platform/ps2/*.cpp"
     "src/rendersoftware/*.cpp"
 )
 file(GLOB REGML_AUDIO_SOURCES CONFIGURE_DEPENDS "src/audio/sdl/*.cpp")
@@ -153,7 +171,10 @@ if(REGML_ANDROID)
 else()
     set(REGML_TARGET regml_engine)
 endif()
-target_compile_definitions(${REGML_TARGET} PUBLIC REGML_240P=$<BOOL:${REGML_240P}>)
+target_compile_definitions(${REGML_TARGET} PUBLIC
+    REGML_240P=$<BOOL:${REGML_240P}>
+    REGML_LOW_MEMORY=$<BOOL:${REGML_LOW_MEMORY}>
+)
 
 target_include_directories(${REGML_TARGET} PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -192,11 +213,30 @@ elseif(REGML_WIIU OR REGML_WII)
     if(REGML_WIIU)
         target_link_libraries(${REGML_TARGET} PUBLIC PkgConfig::REGML_SDL2)
     endif()
+elseif(PS2)
+    target_include_directories(${REGML_TARGET} SYSTEM PUBLIC "${REGML_PS2_GSKIT_INCLUDE}")
+    target_link_libraries(${REGML_TARGET} PUBLIC
+        PNG::PNG
+        ZLIB::ZLIB
+        ${REGML_PS2_VORBISFILE}
+        ${REGML_PS2_VORBIS}
+        ${REGML_PS2_OGG}
+        ${REGML_PS2_GSKIT}
+        ${REGML_PS2_DMAKIT}
+        ${REGML_PS2_PAD}
+        kernel
+        patches
+        fileXio
+        c
+        m
+    )
 else()
     target_link_libraries(regml_engine PUBLIC PNG::PNG ZLIB::ZLIB regml_vorbisfile)
 endif()
 
-if(REGML_ANDROID)
+if(PS2)
+    target_compile_definitions(${REGML_TARGET} PUBLIC REGML_PS2=1 REGML_WITH_SDL2=0 REGML_WII=0 REGML_WIIU=0)
+elseif(REGML_ANDROID)
     target_compile_definitions(${REGML_TARGET} PUBLIC REGML_WITH_SDL2=0)
 elseif(REGML_WII)
     target_compile_definitions(${REGML_TARGET} PUBLIC REGML_WITH_SDL2=0)
@@ -221,11 +261,30 @@ elseif(REGML_WIIU)
     add_executable(regml src/platform/wiiu/main.cpp)
 elseif(REGML_WII)
     add_executable(regml src/platform/wii/main.cpp)
+elseif(PS2)
+    add_executable(regml src/platform/ps2/main.cpp)
 else()
     add_executable(regml src/main.cpp)
 endif()
 if(NOT REGML_ANDROID)
     target_link_libraries(regml PRIVATE regml_engine)
+endif()
+if(PS2)
+    find_program(REGML_PS2_BIN2C bin2c HINTS "$ENV{PS2SDK}/bin" REQUIRED)
+    set(REGML_PS2_IRX_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/ps2")
+    file(MAKE_DIRECTORY "${REGML_PS2_IRX_DIR}")
+    foreach(_module IN ITEMS iomanX fileXio usbd usbmass_bd)
+        add_custom_command(
+            OUTPUT "${REGML_PS2_IRX_DIR}/${_module}.c"
+            COMMAND "${REGML_PS2_BIN2C}" "$ENV{PS2SDK}/iop/irx/${_module}.irx"
+                    "${REGML_PS2_IRX_DIR}/${_module}.c" "${_module}_irx"
+            DEPENDS "$ENV{PS2SDK}/iop/irx/${_module}.irx"
+            COMMENT "Embedding PS2 ${_module} driver"
+            VERBATIM
+        )
+        target_sources(regml PRIVATE "${REGML_PS2_IRX_DIR}/${_module}.c")
+    endforeach()
+    target_include_directories(regml PRIVATE "${REGML_PS2_IRX_DIR}")
 endif()
 if(REGML_WIIU)
     target_compile_options(regml_engine PRIVATE $<$<CONFIG:Release>:-O3> $<$<CONFIG:Release>:-flto>)
@@ -253,8 +312,13 @@ if(REGML_WII)
     endif()
 endif()
 
+if(PS2)
+    target_compile_definitions(regml PRIVATE REGML_PS2=1)
+    set_target_properties(regml PROPERTIES SUFFIX ".elf")
+endif()
+
 include(CTest)
-if(BUILD_TESTING AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_ANDROID)
+if(BUILD_TESTING AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_ANDROID AND NOT PS2)
     add_executable(regml_tests tests/core_tests.cpp)
     target_link_libraries(regml_tests PRIVATE regml_engine)
     add_executable(regml_audio_test tests/audio_integration.cpp)
@@ -264,6 +328,9 @@ if(BUILD_TESTING AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_ANDROID)
     if(REGML_UNDERTALE_DATA)
         add_test(NAME undertale_audio COMMAND regml_audio_test "${REGML_UNDERTALE_DATA}")
         add_test(NAME undertale_collision_masks COMMAND regml_assets_test "${REGML_UNDERTALE_DATA}")
+        add_executable(regml_linker_test tests/linker_integration.cpp)
+        target_link_libraries(regml_linker_test PRIVATE regml_engine)
+        add_test(NAME undertale_lazy_linker COMMAND regml_linker_test "${REGML_UNDERTALE_DATA}")
     endif()
     add_test(NAME core COMMAND regml_tests)
     add_test(NAME cli_help COMMAND regml --help)

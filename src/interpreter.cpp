@@ -14,7 +14,7 @@ DataType runtime_type(const Value &value) {
         return DataType::real;
     if (std::holds_alternative<bool>(value))
         return DataType::boolean;
-    if (std::holds_alternative<std::string>(value))
+    if (value_is_string(value))
         return DataType::string;
     return DataType::variable;
 }
@@ -48,8 +48,8 @@ VmResult execute_numeric(const Program &program, VmOptions options) {
     return execute(program, context, std::move(options));
 }
 VmResult execute(const Program &program, ExecutionContext &context, VmOptions options) {
-    if (program.bytecode_version != 15 && program.bytecode_version != 16)
-        throw Error(ErrorKind::unsupported, "numeric VM requires bytecode 15 or 16", program.origin);
+    if (program.bytecode_version != 15 && program.bytecode_version != 16 && program.bytecode_version != 17)
+        throw Error(ErrorKind::unsupported, "numeric VM requires bytecode 15, 16, or 17", program.origin);
     VmResult result;
     std::vector<Value> stack;
     std::size_t pc = 0;
@@ -79,6 +79,8 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
         };
         auto check_type = [&](const Value &value, DataType type) {
             if (type == DataType::variable)
+                return;
+            if (type == DataType::float32 && runtime_type(value) == DataType::real)
                 return;
             if (runtime_type(value) != type)
                 throw Error(ErrorKind::unsupported, "numeric VM requires explicit matching scalar types", absolute);
@@ -141,6 +143,8 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                 push(ins.immediate_i32());
             else if (ins.immediate_kind == Instruction::ImmediateKind::real64)
                 push(ins.immediate_real());
+            else if (ins.immediate_kind == Instruction::ImmediateKind::real32)
+                push(ins.immediate_real());
             else
                 throw Error(ErrorKind::unsupported, "only int32/double constants are executable", absolute);
             break;
@@ -183,9 +187,11 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                 push(value);
             else if (ins.type2() == DataType::variable)
                 push(value);
-            else if (ins.type1 == DataType::variable && ins.type2() == DataType::real)
+            else if (ins.type1 == DataType::variable &&
+                     (ins.type2() == DataType::real || ins.type2() == DataType::float32))
                 push(value_number(value));
-            else if (ins.type2() == DataType::real && std::holds_alternative<std::int32_t>(value))
+            else if ((ins.type2() == DataType::real || ins.type2() == DataType::float32) &&
+                     std::holds_alternative<std::int32_t>(value))
                 push(static_cast<double>(std::get<std::int32_t>(value)));
             else if (ins.type2() == DataType::boolean && std::holds_alternative<std::int32_t>(value))
                 push(std::get<std::int32_t>(value) != 0);
@@ -200,15 +206,17 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
         case Opcode::cmp: {
             const auto right = pop();
             const auto left = pop();
-            if (ins.opcode() == Opcode::add && std::holds_alternative<std::string>(left) &&
-                std::holds_alternative<std::string>(right)) {
+            if (ins.opcode() == Opcode::add && value_is_string(left) && value_is_string(right)) {
                 check_type(right, ins.type1);
                 check_type(left, ins.type2());
-                const auto &a = std::get<std::string>(left);
-                const auto &b = std::get<std::string>(right);
+                const auto a = value_string_view(left);
+                const auto b = value_string_view(right);
                 if (a.size() > 1'048'576 || b.size() > 1'048'576 - a.size())
                     throw Error(ErrorKind::vm, "string result exceeds scalar VM limit", absolute);
-                push(a + b);
+                std::string result;
+                result.reserve(a.size() + b.size());
+                result.append(a).append(b);
+                push(std::move(result));
                 break;
             }
             if (ins.type1 == DataType::variable || ins.type2() == DataType::variable) {
@@ -250,22 +258,25 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                 else
                     throw Error(ErrorKind::unsupported, "integer-typed div result semantics are not implemented",
                                 absolute);
-            } else if (ins.type1 == DataType::real) {
+            } else if (ins.type1 == DataType::real || ins.type1 == DataType::float32) {
                 const auto a = std::get<double>(left);
                 const auto b = std::get<double>(right);
+                auto push_real = [&](double value) {
+                    push(ins.type1 == DataType::float32 ? static_cast<double>(static_cast<float>(value)) : value);
+                };
                 if (ins.opcode() == Opcode::cmp)
                     push(compare(a, b, ins.comparison(), absolute));
                 else if (ins.opcode() == Opcode::add)
-                    push(a + b);
+                    push_real(a + b);
                 else if (ins.opcode() == Opcode::sub)
-                    push(a - b);
+                    push_real(a - b);
                 else if (ins.opcode() == Opcode::mul)
-                    push(a * b);
+                    push_real(a * b);
                 else {
                     if (b == 0)
                         throw Error(ErrorKind::unsupported, "division-by-zero compatibility is not implemented",
                                     absolute);
-                    push(a / b);
+                    push_real(a / b);
                 }
             } else
                 throw Error(ErrorKind::unsupported, "arithmetic value type is not implemented", absolute);
@@ -351,8 +362,8 @@ std::string value_text(const Value &value) {
         return std::to_string(*number);
     if (const auto *boolean = std::get_if<bool>(&value))
         return *boolean ? "true" : "false";
-    if (const auto *string = std::get_if<std::string>(&value))
-        return *string;
+    if (value_is_string(value))
+        return std::string(value_string_view(value));
     if (std::holds_alternative<std::monostate>(value))
         return "undefined";
     if (std::holds_alternative<ArrayPtr>(value))

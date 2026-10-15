@@ -4,9 +4,11 @@
 #include "package.hpp"
 #include "play.hpp"
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -49,7 +51,7 @@ void help() {
                  "                  Speed affects real-time playback; hidden/headless runs are unthrottled.\n"
                  "  regml --help | --version\n\n"
                  "Inspection is read-only. Resource tables: v14-v17 prefix/layout.\n"
-                 "Instruction decoding: v15/v16. VM demo: numeric scalar subset.\n"
+                 "Instruction decoding: v15/v16/v17. VM demo: numeric scalar subset.\n"
                  "Native game execution is experimental and compatibility is incomplete.\n"
                  "Undertale has been tested on Windows and in Cemu; no full playthrough\n"
                  "is verified. F10 closes the native game window.\n";
@@ -70,6 +72,8 @@ void print_instruction(const regml::Instruction &ins, std::size_t origin, bool r
         if (ins.immediate_kind == regml::Instruction::ImmediateKind::int64)
             std::cout << ' ' << ins.immediate_i64();
         if (ins.immediate_kind == regml::Instruction::ImmediateKind::real64)
+            std::cout << ' ' << regml::value_text(ins.immediate_real());
+        if (ins.immediate_kind == regml::Instruction::ImmediateKind::real32)
             std::cout << ' ' << regml::value_text(ins.immediate_real());
         if (ins.has_reference())
             std::cout << " reference=0x" << std::hex << ins.reference_value() << std::dec
@@ -133,10 +137,12 @@ std::size_t parse_index(std::string_view input) {
 double parse_speed(std::string_view input) {
     if (!input.empty() && (input.back() == 'x' || input.back() == 'X'))
         input.remove_suffix(1);
-    double result = 0.0;
-    const auto parsed = std::from_chars(input.data(), input.data() + input.size(), result);
-    if (input.empty() || parsed.ec != std::errc{} || parsed.ptr != input.data() + input.size() ||
-        !std::isfinite(result) || result < 0.01 || result > 1000.0)
+    const std::string text(input);
+    char *end = nullptr;
+    errno = 0;
+    const double result = std::strtod(text.c_str(), &end);
+    if (input.empty() || errno == ERANGE || end != text.c_str() + text.size() || !std::isfinite(result) ||
+        result < 0.01 || result > 1000.0)
         throw regml::Error(regml::ErrorKind::usage, "--speed must be a number from 0.01x to 1000x");
     return result;
 }

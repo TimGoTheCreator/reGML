@@ -17,7 +17,7 @@ int main(int argc, char **argv) {
             throw std::runtime_error("required collision sprite missing: " + std::string(name));
         };
         const int hole = find_sprite("spr_holemask");
-        if (!assets.sprite(hole).precise || assets.sprite(hole).masks.empty())
+        if (!assets.sprite(hole).precise || assets.sprite(hole).mask_count == 0)
             throw std::runtime_error("hole bitmap mask was not loaded");
         if (assets.mask_pixel(hole, 0, 100, 10))
             throw std::runtime_error("safe route must be empty inside the hole's outer bounds");

@@ -2,6 +2,7 @@
 #include "decoder.hpp"
 #include "package.hpp"
 #include <string>
+#include <unordered_map>
 namespace regml {
 struct PackageSymbol {
     std::string name;
@@ -12,8 +13,12 @@ struct LinkedPackage {
     struct ReferenceBinding {
         std::uint32_t address, symbol;
     };
+    struct ProgramReferenceRange {
+        std::uint32_t offset = 0, count = 0;
+    };
     std::vector<Program> programs;
-    std::vector<ReferenceBinding> references;
+    std::vector<std::uint32_t> reference_symbols;
+    std::vector<ProgramReferenceRange> program_reference_ranges;
     bool lazy_programs = false;
     std::size_t decoded_program_bytes = 0;
     Program &program(const Package &package, std::size_t index);

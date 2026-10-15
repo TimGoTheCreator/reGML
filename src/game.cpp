@@ -1,10 +1,10 @@
 #include "game.hpp"
 #include "audio/sdl/audio.hpp"
+#include "instance_ptr.hpp"
 #include "interpreter.hpp"
 #include "linker.hpp"
 #include "rendersoftware/assets.hpp"
 #if REGML_WIIU
-#include "platform/wiiu/instance_ptr.hpp"
 #include "platform/wiiu/paths.hpp"
 #endif
 #if REGML_WII
@@ -23,9 +23,33 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#if REGML_PS2
+#include <cstdio>
+#include <malloc.h>
+#endif
 namespace regml {
 namespace {
-#if REGML_WII
+#if REGML_PS2
+void ps2_memory_trace(std::string_view stage, std::size_t position = 0) {
+    static const bool enabled = [] {
+        auto *marker = std::fopen("host:reGML/regml-trace.enabled", "r");
+        if (!marker)
+            return false;
+        std::fclose(marker);
+        return true;
+    }();
+    if (!enabled)
+        return;
+    const auto memory = mallinfo();
+    if (auto *log = std::fopen("host:reGML/regml-load.log", "a")) {
+        std::fprintf(log, "%.*s at %u heap=%u free=%u arena=%u\n", static_cast<int>(stage.size()), stage.data(),
+                     static_cast<unsigned>(position), static_cast<unsigned>(memory.uordblks),
+                     static_cast<unsigned>(memory.fordblks), static_cast<unsigned>(memory.arena));
+        std::fclose(log);
+    }
+}
+#endif
+#if REGML_WII || REGML_LOW_MEMORY
 constexpr bool build_instruction_index = false;
 constexpr bool lazy_programs = true;
 #else
@@ -33,6 +57,9 @@ constexpr bool build_instruction_index = true;
 constexpr bool lazy_programs = false;
 #endif
 template <class Factory> auto load_stage(std::string_view name, Factory factory) {
+#if REGML_PS2
+    ps2_memory_trace(name);
+#endif
 #if REGML_WII
     struct MemoryReport {
         std::string_view name;
@@ -77,16 +104,46 @@ std::string save_profile(const Package &package, const std::filesystem::path &pa
     }
     return safe.empty() ? "game" : safe;
 }
+Package load_game_package(const std::filesystem::path &path) {
+    auto package = Package::load(path);
+    if (package.general_info() && package.general_info()->bytecode_version == 17)
+        throw Error(ErrorKind::unsupported,
+                    "bytecode 17 can be decoded and linked, but GameMaker 2 runtime support is not implemented");
+    return package;
+}
 struct Object {
-    std::string name;
+    using EventKey = std::pair<int, int>;
+    struct EventCode {
+        EventKey key;
+        std::vector<int> code;
+    };
+    struct EventOwner {
+        EventKey key;
+        int object = -1;
+    };
+    std::string_view name;
     int sprite = -1, mask = -1, parent = -1, depth = 0;
     bool visible = false, persistent = false, solid = false;
     bool has_collision_events = false, has_keyboard_events = false;
-    std::map<std::pair<int, int>, std::vector<int>> events;
-    std::map<std::pair<int, int>, int> event_owners;
+    std::vector<EventCode> events;
+    std::vector<EventOwner> event_owners;
     std::array<int, 3> step_owners{-1, -1, -1};
     int draw_owner = -1;
 };
+const Object::EventCode *find_event(const Object &object, Object::EventKey key) {
+    const auto found = std::lower_bound(object.events.begin(), object.events.end(), key,
+                                        [](const Object::EventCode &event, Object::EventKey target) {
+                                            return event.key < target;
+                                        });
+    return found != object.events.end() && found->key == key ? &*found : nullptr;
+}
+int find_event_owner(const Object &object, Object::EventKey key) {
+    const auto found = std::lower_bound(object.event_owners.begin(), object.event_owners.end(), key,
+                                        [](const Object::EventOwner &event, Object::EventKey target) {
+                                            return event.key < target;
+                                        });
+    return found != object.event_owners.end() && found->key == key ? found->object : -1;
+}
 struct Placement {
     int object = -1, id = 0, create = -1, precreate = -1;
     double x = 0, y = 0, sx = 1, sy = 1;
@@ -101,7 +158,9 @@ struct Tile {
     unsigned color = 0xffffffff;
 };
 struct Room {
-    std::string name;
+    std::size_t source_offset = 0;
+    bool payload_loaded = false;
+    std::string_view name;
     int width = 640, height = 480, speed = 30, create = -1;
     bool persistent = false;
     unsigned color = 0;
@@ -121,17 +180,11 @@ struct Path {
 };
 struct Instance {
     int id = 0, object = 0;
-#if REGML_WIIU
     std::size_t references = 0;
-#endif
     bool alive = true, outside_room = false, deactivated = false;
     VariableStore vars;
 };
-#if REGML_WIIU
-using InstancePtr = regml::WiiUInstancePtr<Instance>;
-#else
-using InstancePtr = std::shared_ptr<Instance>;
-#endif
+using InstancePtr = regml::IntrusivePtr<Instance>;
 struct GameBuffer {
     std::vector<std::uint8_t> bytes;
     std::size_t position = 0;
@@ -168,7 +221,10 @@ struct GameSession::Impl {
     std::unordered_map<int, SavedRoom> saved_rooms;
     VariableStore globals, engine;
     KeyboardState held{}, pressed{}, previous_held{}, released{};
-    std::unordered_map<int, VariableStore> maps;
+    // DS maps hold arbitrary game data, so their keys need owned storage rather
+    // than the shared pool used for bytecode variable names.
+    using DynamicMap = std::unordered_map<std::string, Value, VariableStoreHash, std::equal_to<>>;
+    std::unordered_map<int, DynamicMap> maps;
     std::unordered_map<int, std::vector<Value>> lists;
     std::unordered_map<int, GameBuffer> buffers;
     std::unordered_map<int, Canvas> surfaces;
@@ -213,7 +269,7 @@ struct GameSession::Impl {
     mutable std::unordered_map<std::string, std::vector<std::uint8_t>> load_chunks;
     explicit Impl(const std::filesystem::path &path, std::optional<std::uint32_t> seed,
                   const std::filesystem::path &save_directory)
-        : package(load_stage("package metadata", [&] { return Package::load(path); })),
+        : package(load_stage("package metadata", [&] { return load_game_package(path); })),
           linked(load_stage(
               "bytecode",
               [&] { return link_legacy_package(package, {}, false, build_instruction_index, lazy_programs); })),
@@ -311,7 +367,7 @@ struct GameSession::Impl {
                 const auto header = record(p, *chunk, 20);
                 Path path;
                 path.smooth = header.u32(4) != 0;
-                path.precision = std::clamp(header.u32(12), 1u, 8u);
+                path.precision = std::clamp<std::uint32_t>(header.u32(12), 1, 8);
                 const auto count = header.u32(16);
                 if (count > 65536)
                     throw Error(ErrorKind::malformed, "path point limit", p);
@@ -397,30 +453,51 @@ struct GameSession::Impl {
                         const auto ar = record(a, *ob, 56);
                         const auto code = ar.i32(32);
                         code_valid(code);
-                        if (code >= 0)
-                            o.events[{static_cast<int>(type), subtype}].push_back(code);
+                        if (code >= 0) {
+                            const Object::EventKey key{static_cast<int>(type), subtype};
+                            const auto found = std::find_if(o.events.begin(), o.events.end(),
+                                                            [key](const Object::EventCode &entry) {
+                                                                return entry.key == key;
+                                                            });
+                            if (found == o.events.end())
+                                o.events.push_back({key, {code}});
+                            else
+                                found->code.push_back(code);
+                        }
                     }
                 }
+            std::sort(o.events.begin(), o.events.end(),
+                      [](const Object::EventCode &left, const Object::EventCode &right) {
+                          return left.key < right.key;
+                      });
             objects.push_back(std::move(o));
         }
         for (auto &object : objects) {
             const Object *definition = &object;
             for (std::size_t guard = 0; definition && guard < objects.size(); ++guard) {
-                for (const auto &[key, code] : definition->events) {
-                    object.has_collision_events |= key.first == 4;
-                    object.has_keyboard_events |= key.first == 5 || key.first == 9;
-                    object.event_owners.try_emplace(key, static_cast<int>(definition - objects.data()));
+                for (const auto &event : definition->events) {
+                    object.has_collision_events |= event.key.first == 4;
+                    object.has_keyboard_events |= event.key.first == 5 || event.key.first == 9;
+                    object.event_owners.push_back({event.key, static_cast<int>(definition - objects.data())});
                 }
                 const int parent = definition->parent;
                 definition = parent >= 0 && static_cast<std::size_t>(parent) < objects.size()
                                  ? &objects[static_cast<std::size_t>(parent)]
                                  : nullptr;
             }
+            std::stable_sort(object.event_owners.begin(), object.event_owners.end(),
+                             [](const Object::EventOwner &left, const Object::EventOwner &right) {
+                                 return left.key < right.key;
+                             });
+            object.event_owners.erase(
+                std::unique(object.event_owners.begin(), object.event_owners.end(),
+                            [](const Object::EventOwner &left, const Object::EventOwner &right) {
+                                return left.key == right.key;
+                            }),
+                object.event_owners.end());
             for (int step = 0; step < 3; ++step)
-                if (const auto found = object.event_owners.find({3, step}); found != object.event_owners.end())
-                    object.step_owners[static_cast<std::size_t>(step)] = found->second;
-            if (const auto found = object.event_owners.find({8, 0}); found != object.event_owners.end())
-                object.draw_owner = found->second;
+                object.step_owners[static_cast<std::size_t>(step)] = find_event_owner(object, {3, step});
+            object.draw_owner = find_event_owner(object, {8, 0});
         }
         for (auto p : list(ro->data_offset, *ro)) {
             const auto r = record(p, *ro, 88);
@@ -433,50 +510,12 @@ struct GameSession::Impl {
             room.create = r.i32(32);
             code_valid(room.create);
             room.persistent = r.u32(20) != 0;
-            room.views["view_enabled"] = std::int32_t{(r.u32(36) & 1) != 0};
-            room.views["view_current"] = std::int32_t{0};
-            const auto view_list = list(r.u32(44), *ro);
-            const std::string_view fields[] = {"view_visible", "view_xview",   "view_yview",   "view_wview",
-                                               "view_hview",   "view_xport",   "view_yport",   "view_wport",
-                                               "view_hport",   "view_hborder", "view_vborder", "view_hspeed",
-                                               "view_vspeed",  "view_object"};
-            for (std::size_t v = 0; v < view_list.size(); ++v) {
-                const auto vr = record(view_list[v], *ro, 56);
-                for (std::size_t f = 0; f < 14; ++f)
-                    room.views[std::string(fields[f]) + "[" + std::to_string(v) + "]"] = vr.i32(f * 4);
-            }
+            room.source_offset = p;
             if (room.speed < 1 || room.speed > 1000 || room.width < 1 || room.height < 1)
                 throw Error(ErrorKind::malformed, "invalid room dimensions/speed", p);
-            for (auto q : list(r.u32(48), *ro)) {
-                const auto ir = record(q, *ro, 40);
-                Placement placement;
-                placement.x = ir.i32(0);
-                placement.y = ir.i32(4);
-                placement.object = ir.i32(8);
-                placement.id = ir.i32(12);
-                placement.create = ir.i32(16);
-                placement.precreate = ir.i32(36);
-                placement.sx = std::bit_cast<float>(ir.u32(20));
-                placement.sy = std::bit_cast<float>(ir.u32(24));
-                if (placement.object < 0 || static_cast<std::size_t>(placement.object) >= objects.size())
-                    throw Error(ErrorKind::malformed, "invalid placed object", q + 8);
-                code_valid(placement.create);
-                code_valid(placement.precreate);
-                room.instances.push_back(placement);
-            }
-            for (auto q : list(r.u32(40), *ro)) {
-                const auto b = record(q, *ro, 40);
-                if (b.i32(0) && b.i32(8) >= 0)
-                    room.backgrounds.push_back({b.i32(8), b.i32(12), b.i32(16), b.i32(4) != 0});
-            }
-            for (auto q : list(r.u32(52), *ro)) {
-                const auto t = record(q, *ro, 48);
-                room.tiles.push_back({t.i32(8), t.i32(0), t.i32(4), t.i32(12), t.i32(16), t.i32(20), t.i32(24),
-                                      t.i32(28), std::bit_cast<float>(t.u32(36)), std::bit_cast<float>(t.u32(40)),
-                                      t.u32(44)});
-            }
-            std::stable_sort(room.tiles.begin(), room.tiles.end(),
-                             [](const Tile &a, const Tile &b) { return a.depth > b.depth; });
+#if !REGML_LOW_MEMORY
+            load_room_payload(room);
+#endif
             rooms.push_back(std::move(room));
         }
         const auto gr = record(ge->data_offset, *ge, ge->size);
@@ -491,6 +530,56 @@ struct GameSession::Impl {
         }
         // The parsed world is now in structs; keeping every source chunk would waste Wii RAM for nostalgia.
         load_chunks.clear();
+    }
+    void load_room_payload(Room &room) {
+        if (room.payload_loaded)
+            return;
+        const auto *ro = package.find_chunk("ROOM");
+        const auto p = room.source_offset;
+        const auto r = record(p, *ro, 88);
+        room.views["view_enabled"] = std::int32_t{(r.u32(36) & 1) != 0};
+        room.views["view_current"] = std::int32_t{0};
+        const auto view_list = list(r.u32(44), *ro);
+        const std::string_view fields[] = {"view_visible", "view_xview",   "view_yview",   "view_wview",
+                                           "view_hview",   "view_xport",   "view_yport",   "view_wport",
+                                           "view_hport",   "view_hborder", "view_vborder", "view_hspeed",
+                                           "view_vspeed",  "view_object"};
+        for (std::size_t v = 0; v < view_list.size(); ++v) {
+            const auto vr = record(view_list[v], *ro, 56);
+            for (std::size_t f = 0; f < 14; ++f)
+                room.views[std::string(fields[f]) + "[" + std::to_string(v) + "]"] = vr.i32(f * 4);
+        }
+        for (auto q : list(r.u32(48), *ro)) {
+            const auto ir = record(q, *ro, 40);
+            Placement placement;
+            placement.x = ir.i32(0);
+            placement.y = ir.i32(4);
+            placement.object = ir.i32(8);
+            placement.id = ir.i32(12);
+            placement.create = ir.i32(16);
+            placement.precreate = ir.i32(36);
+            placement.sx = std::bit_cast<float>(ir.u32(20));
+            placement.sy = std::bit_cast<float>(ir.u32(24));
+            if (placement.object < 0 || static_cast<std::size_t>(placement.object) >= objects.size())
+                throw Error(ErrorKind::malformed, "invalid placed object", q + 8);
+            code_valid(placement.create);
+            code_valid(placement.precreate);
+            room.instances.push_back(placement);
+        }
+        for (auto q : list(r.u32(40), *ro)) {
+            const auto b = record(q, *ro, 40);
+            if (b.i32(0) && b.i32(8) >= 0)
+                room.backgrounds.push_back({b.i32(8), b.i32(12), b.i32(16), b.i32(4) != 0});
+        }
+        for (auto q : list(r.u32(52), *ro)) {
+            const auto t = record(q, *ro, 48);
+            room.tiles.push_back({t.i32(8), t.i32(0), t.i32(4), t.i32(12), t.i32(16), t.i32(20), t.i32(24),
+                                  t.i32(28), std::bit_cast<float>(t.u32(36)), std::bit_cast<float>(t.u32(40)),
+                                  t.u32(44)});
+        }
+        std::stable_sort(room.tiles.begin(), room.tiles.end(),
+                         [](const Tile &a, const Tile &b) { return a.depth > b.depth; });
+        room.payload_loaded = true;
     }
     InstancePtr make(const Placement &p) {
         static constexpr std::array<std::string_view, 12> alarm_variables = {
@@ -601,11 +690,11 @@ struct GameSession::Impl {
         mask.sy = sy;
         mask.c = angle == 0 ? 1 : std::cos(angle);
         mask.sn = angle == 0 ? 0 : std::sin(angle);
-        if (sprite.precise && !sprite.masks.empty()) {
+        if (sprite.precise && sprite.mask_count != 0) {
             const double frame = value_number(i.vars.at("image_index"));
-            const auto count = static_cast<double>(sprite.masks.size());
+            const auto count = static_cast<double>(sprite.mask_count);
             const auto index = static_cast<std::size_t>(std::fmod(std::fmod(std::floor(frame), count) + count, count));
-            mask.pixels = sprite.masks[index];
+            mask.pixels = assets.mask_frame(id, index);
             mask.stride = (static_cast<std::size_t>(sprite.width) + 7) / 8;
         }
         return mask;
@@ -692,7 +781,7 @@ struct GameSession::Impl {
             int other = target;
             for (std::size_t tg = 0;
                  other >= 0 && static_cast<std::size_t>(other) < objects.size() && tg < objects.size(); ++tg) {
-                if (objects[static_cast<std::size_t>(source)].events.contains({4, other}))
+                if (find_event(objects[static_cast<std::size_t>(source)], {4, other}))
                     return remember({source, other});
                 other = objects[static_cast<std::size_t>(other)].parent;
             }
@@ -712,18 +801,19 @@ struct GameSession::Impl {
             owner = definition.step_owners[static_cast<std::size_t>(subtype)];
         else if (type == 8 && subtype == 0)
             owner = definition.draw_owner;
-        else if (const auto found = definition.event_owners.find({type, subtype});
-                 found != definition.event_owners.end())
-            owner = found->second;
+        else
+            owner = find_event_owner(definition, {type, subtype});
         if (owner < 0)
             return;
-        const auto &code = objects[static_cast<std::size_t>(owner)].events.at({type, subtype});
+        const auto *event_code = find_event(objects[static_cast<std::size_t>(owner)], {type, subtype});
+        if (!event_code)
+            throw Error(ErrorKind::vm, "event owner has no matching event code");
         event_stack.push_back({type, subtype, owner});
         struct Guard {
             std::vector<EventFrame> &frames;
             ~Guard() { frames.pop_back(); }
         } guard{event_stack};
-        for (const auto entry : code)
+        for (const auto entry : event_code->code)
             execute(entry, inst, {}, other);
     }
     void enter(int id) {
@@ -751,6 +841,19 @@ struct GameSession::Impl {
                 saved_rooms.erase(current_room);
         }
         std::erase_if(instances, [](const auto &i) { return !i->alive || number(i->vars.at("persistent")) == 0; });
+#if REGML_LOW_MEMORY
+        // Only the room we're standing in needs its placements, views and tiles in RAM.
+        if (current_room >= 0) {
+            auto &previous_room = rooms[static_cast<std::size_t>(current_room)];
+            std::vector<Placement>{}.swap(previous_room.instances);
+            VariableStore{}.swap(previous_room.views);
+            std::vector<Background>{}.swap(previous_room.backgrounds);
+            std::vector<Tile>{}.swap(previous_room.tiles);
+            previous_room.payload_loaded = false;
+        }
+        load_room_payload(rooms[static_cast<std::size_t>(id)]);
+        std::unordered_map<std::string, std::vector<std::uint8_t>>{}.swap(load_chunks);
+#endif
         current_room = id;
         pending_room = -1;
         const auto &room = rooms[static_cast<std::size_t>(id)];
@@ -858,6 +961,10 @@ struct GameSession::Impl {
                 if (++event_budget > 2'000'000)
                     throw Error(ErrorKind::vm, "event instruction budget exhausted", program.origin + pc);
                 ++instruction_count;
+#if REGML_PS2
+                if (frame == 0 && instruction_count % 10000 == 0)
+                    ps2_memory_trace(package.code_name(static_cast<std::size_t>(code)), pc);
+#endif
                 const auto &ins = program.instructions[instruction_index];
                 current_code = code;
                 current_vm_address = program.origin + pc;
@@ -966,7 +1073,7 @@ struct GameSession::Impl {
                                     throw Error(ErrorKind::vm, "array element limit reached");
                                 (*array)->elements[array_index] = value;
                                 auto &length = (*array)->row_lengths[row];
-                                length = std::max(length, col + 1);
+                                length = std::max<std::int64_t>(length, static_cast<std::int64_t>(col) + 1);
                                 return value;
                             }
                             const auto length = (*array)->row_lengths.find(row);
@@ -1027,10 +1134,12 @@ struct GameSession::Impl {
                     if (ins.type1 == DataType::variable)
                         push(variable(false));
                     else if (ins.type1 == DataType::string)
-                        push(std::string(package.string_at(ins.reference_value())));
+                        push(PackageString{package.string_at(ins.reference_value())});
                     else if (ins.immediate_kind == Instruction::ImmediateKind::int32)
                         push(ins.immediate_i32());
                     else if (ins.immediate_kind == Instruction::ImmediateKind::real64)
+                        push(ins.immediate_real());
+                    else if (ins.immediate_kind == Instruction::ImmediateKind::real32)
                         push(ins.immediate_real());
                     else if (ins.immediate_kind == Instruction::ImmediateKind::int64)
                         push(static_cast<double>(ins.immediate_i64()));
@@ -1100,13 +1209,16 @@ struct GameSession::Impl {
                 case Opcode::shl:
                 case Opcode::shr: {
                     const auto right = pop(), left = pop();
-                    if (std::holds_alternative<std::string>(left) && std::holds_alternative<std::string>(right)) {
-                        const auto &a = std::get<std::string>(left);
-                        const auto &b = std::get<std::string>(right);
+                    if (value_is_string(left) && value_is_string(right)) {
+                        const auto a = value_string_view(left);
+                        const auto b = value_string_view(right);
                         if (ins.opcode() == Opcode::add) {
                             if (a.size() + b.size() > 1'048'576)
                                 throw Error(ErrorKind::vm, "string limit");
-                            push(a + b);
+                            std::string result;
+                            result.reserve(a.size() + b.size());
+                            result.append(a).append(b);
+                            push(std::move(result));
                         } else if (ins.opcode() == Opcode::cmp) {
                             const int c = a.compare(b);
                             push(ins.comparison() == 1   ? c < 0
@@ -1347,7 +1459,7 @@ struct GameSession::Impl {
         if (name == "string")
             return text(0);
         if (name == "real") {
-            if (std::holds_alternative<std::string>(args[0])) {
+            if (value_is_string(args[0])) {
                 // Legacy runners convert the empty string to zero.
                 if (text(0).empty())
                     return 0.0;
@@ -1365,11 +1477,11 @@ struct GameSession::Impl {
             return std::holds_alternative<std::monostate>(args[0]);
         }
         if (name == "is_string")
-            return std::holds_alternative<std::string>(args[0]);
+            return value_is_string(args[0]);
         if (name == "is_array")
             return std::holds_alternative<ArrayPtr>(args[0]);
         if (name == "is_real")
-            return !std::holds_alternative<std::string>(args[0]) && !std::holds_alternative<std::monostate>(args[0]);
+            return !value_is_string(args[0]) && !std::holds_alternative<std::monostate>(args[0]);
         if (name == "string_upper" || name == "string_lower") {
             auto str = text(0);
             for (auto &c : str)
@@ -1459,7 +1571,7 @@ struct GameSession::Impl {
         }
         if (name == "ds_map_set" || name == "ds_map_replace" || name == "ds_map_add" || name == "ds_map_set_post") {
             auto &map = maps.at(static_cast<int>(n(0)));
-            const auto key = (std::holds_alternative<std::string>(args[1]) ? "s:" : "n:") + text(1);
+            const auto key = (value_is_string(args[1]) ? "s:" : "n:") + text(1);
             if (name == "ds_map_add" && map.contains(key))
                 return false;
             map[key] = args[2];
@@ -1467,7 +1579,7 @@ struct GameSession::Impl {
         }
         if (name == "ds_map_exists" || name == "ds_map_find_value") {
             const auto &map = maps.at(static_cast<int>(n(0)));
-            const auto key = (std::holds_alternative<std::string>(args[1]) ? "s:" : "n:") + text(1);
+            const auto key = (value_is_string(args[1]) ? "s:" : "n:") + text(1);
             if (name == "ds_map_exists")
                 return map.contains(key);
             const auto it = map.find(key);
@@ -1479,7 +1591,7 @@ struct GameSession::Impl {
         }
         if (name == "ds_map_delete") {
             auto &map = maps.at(static_cast<int>(n(0)));
-            const auto key = (std::holds_alternative<std::string>(args[1]) ? "s:" : "n:") + text(1);
+            const auto key = (value_is_string(args[1]) ? "s:" : "n:") + text(1);
             return map.erase(key) != 0;
         }
         if (name == "json_encode") {
@@ -1509,8 +1621,8 @@ struct GameSession::Impl {
                 first = false;
                 json += quote(key.size() >= 2 ? std::string_view(key).substr(2) : std::string_view(key));
                 json += ':';
-                if (const auto *str = std::get_if<std::string>(&value))
-                    json += quote(*str);
+                if (value_is_string(value))
+                    json += quote(value_string_view(value));
                 else if (const auto *boolean = std::get_if<bool>(&value))
                     json += *boolean ? "true" : "false";
                 else if (std::holds_alternative<std::monostate>(value))
@@ -2692,7 +2804,7 @@ struct GameSession::Impl {
             const int id = number(args[0]);
             if (id < 0 || static_cast<std::size_t>(id) >= rooms.size())
                 throw Error(ErrorKind::vm, "room ID out of range");
-            return rooms[static_cast<std::size_t>(id)].name;
+            return std::string(rooms[static_cast<std::size_t>(id)].name);
         }
         if (name == "room_goto") {
             pending_room = static_cast<int>(n(0));
@@ -3047,8 +3159,24 @@ struct GameSession::Impl {
                         if (j->alive && i != j) {
                             const auto route = collision_event(i->object, j->object);
                             if (route.source >= 0 &&
-                                collides(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), *j))
+                                collides(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), *j)) {
+                                const double other_x = value_number(j->vars.at("x"));
+                                const double other_y = value_number(j->vars.at("y"));
+                                const double other_step_x = other_x - value_number(j->vars.at("xprevious"));
+                                const double other_step_y = other_y - value_number(j->vars.at("yprevious"));
                                 event(i, 4, route.target, route.source, j);
+                                if (j->alive) {
+                                    // Collision handlers can push `other` by the same amount it already moved
+                                    // this step. The collision is dispatched after Step, so don't count that
+                                    // movement twice.
+                                    const double pushed_x = value_number(j->vars.at("x")) - other_x;
+                                    const double pushed_y = value_number(j->vars.at("y")) - other_y;
+                                    if (other_step_x != 0 && std::abs(pushed_x - other_step_x) < 1e-9)
+                                        j->vars["x"] = value_number(j->vars.at("x")) - other_step_x;
+                                    if (other_step_y != 0 && std::abs(pushed_y - other_step_y) < 1e-9)
+                                        j->vars["y"] = value_number(j->vars.at("y")) - other_step_y;
+                                }
+                            }
                         }
             for (const auto &i : snapshot)
                 event(i, 3, 2);
@@ -3213,7 +3341,7 @@ std::size_t GameSession::instructions() const {
     return impl_->instruction_count;
 }
 std::string GameSession::room_name() const {
-    return impl_->rooms.at(static_cast<std::size_t>(impl_->current_room)).name;
+    return std::string(impl_->rooms.at(static_cast<std::size_t>(impl_->current_room)).name);
 }
 std::string_view GameSession::vm_code_name() const {
     if (impl_->current_code < 0)
@@ -3233,7 +3361,8 @@ std::vector<GameSession::InstanceState> GameSession::instance_states() const {
     std::vector<InstanceState> result;
     for (const auto &i : impl_->instances)
         if (i->alive)
-            result.push_back({i->id, impl_->objects.at(static_cast<std::size_t>(i->object)).name, i->vars});
+            result.push_back(
+                {i->id, std::string(impl_->objects.at(static_cast<std::size_t>(i->object)).name), i->vars});
     return result;
 }
 } // namespace regml

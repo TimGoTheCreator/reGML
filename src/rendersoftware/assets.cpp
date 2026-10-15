@@ -3,9 +3,94 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <limits>
 #include <png.h>
 namespace regml {
 namespace {
+#if REGML_LOW_MEMORY
+std::vector<std::uint32_t> read_png_region(const Package &package, std::size_t offset, int x, int y, int w, int h) {
+    struct Input {
+        const Package *package;
+        std::size_t position, end;
+    } input{&package, offset, package.find_chunk("TXTR")->data_offset + package.find_chunk("TXTR")->size};
+    auto *png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    if (!png)
+        throw Error(ErrorKind::io, "PNG reader allocation failed");
+    auto *info = png_create_info_struct(png);
+    if (!info) {
+        png_destroy_read_struct(&png, nullptr, nullptr);
+        throw Error(ErrorKind::io, "PNG metadata allocation failed");
+    }
+    struct Guard {
+        png_structp &png;
+        png_infop &info;
+        ~Guard() { png_destroy_read_struct(&png, &info, nullptr); }
+    } guard{png, info};
+    std::vector<std::uint32_t> pixels;
+    std::vector<unsigned char> row;
+    if (setjmp(png_jmpbuf(png)))
+        throw Error(ErrorKind::malformed, "streamed texture PNG decode failed", offset);
+    png_set_read_fn(png, &input, [](png_structp decoder, png_bytep output, png_size_t length) {
+        auto &source = *static_cast<Input *>(png_get_io_ptr(decoder));
+        bool failed = source.position > source.end || length > source.end - source.position;
+        if (!failed) {
+            try {
+                source.package->read_into(source.position, {output, length});
+                source.position += length;
+            } catch (...) {
+                failed = true;
+            }
+        }
+        if (failed)
+            png_error(decoder, "texture read exceeds package or failed");
+    });
+    png_read_info(png, info);
+    const auto width = png_get_image_width(png, info), height = png_get_image_height(png, info);
+    const int color = png_get_color_type(png, info), bits = png_get_bit_depth(png, info);
+    if (!width || !height || width > 8192 || height > 8192 || x < 0 || y < 0 || w < 0 || h < 0 ||
+        static_cast<std::size_t>(x) + w > width || static_cast<std::size_t>(y) + h > height)
+        throw Error(ErrorKind::malformed, "texture region outside page", offset);
+    if (bits == 16)
+        png_set_strip_16(png);
+    if (color == PNG_COLOR_TYPE_PALETTE)
+        png_set_palette_to_rgb(png);
+    if (color == PNG_COLOR_TYPE_GRAY && bits < 8)
+        png_set_expand_gray_1_2_4_to_8(png);
+    const bool transparent = png_get_valid(png, info, PNG_INFO_tRNS);
+    if (transparent)
+        png_set_tRNS_to_alpha(png);
+    if (color == PNG_COLOR_TYPE_GRAY || color == PNG_COLOR_TYPE_GRAY_ALPHA)
+        png_set_gray_to_rgb(png);
+    if (!(color & PNG_COLOR_MASK_ALPHA) && !transparent)
+        png_set_add_alpha(png, 255, PNG_FILLER_AFTER);
+    if constexpr (std::endian::native == std::endian::little)
+        png_set_bgr(png);
+    else
+        png_set_swap_alpha(png);
+    const int passes = png_set_interlace_handling(png);
+    png_read_update_info(png, info);
+    row.resize(png_get_rowbytes(png, info));
+    pixels.resize(static_cast<std::size_t>(w) * h);
+    // Decompress the atlas a row at a time; only the requested sprite survives.
+    for (int pass = 0; pass < passes; ++pass)
+        for (png_uint_32 iy = 0; iy < height; ++iy) {
+            const bool selected = iy >= static_cast<unsigned>(y) && iy - y < static_cast<unsigned>(h);
+            auto *destination = selected ? pixels.data() + static_cast<std::size_t>(iy - y) * w : nullptr;
+            if (passes > 1) {
+                std::fill(row.begin(), row.end(), 0);
+                if (selected)
+                    std::copy_n(reinterpret_cast<const unsigned char *>(destination), static_cast<std::size_t>(w) * 4,
+                                row.data() + static_cast<std::size_t>(x) * 4);
+            }
+            png_read_row(png, row.data(), nullptr);
+            if (selected)
+                std::copy_n(row.data() + static_cast<std::size_t>(x) * 4, static_cast<std::size_t>(w) * 4,
+                            reinterpret_cast<unsigned char *>(destination));
+        }
+    png_read_end(png, info);
+    return pixels;
+}
+#endif
 std::size_t frame_index(double frame, std::size_t count) {
     if (frame >= 0 && frame < static_cast<double>(count))
         return static_cast<std::size_t>(frame);
@@ -34,7 +119,7 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
                     const auto at = view.u32(4 + i * 4);
                     if (at < c.data_offset || at - c.data_offset > c.size || c.size - (at - c.data_offset) < 8)
                         throw Error(ErrorKind::malformed, "texture record range", at);
-                    size = std::max(size, at - c.data_offset + 8);
+                    size = std::max<std::size_t>(size, static_cast<std::size_t>(at - c.data_offset) + 8);
                 }
             }
             it->second = package.read_bytes(c.data_offset, size);
@@ -77,17 +162,36 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
             throw Error(ErrorKind::malformed, "PNG outside TXTR", p + 4);
         pages_.push_back({0, 0, image, {}});
     }
-    for (auto p : list(tp->data_offset, *tp)) {
+    const auto texture_pages = list(tp->data_offset, *tp);
+    regions_.reserve(texture_pages.size());
+    for (auto p : texture_pages) {
         const auto r = rec(p, *tp, 22);
         Region region{r.u16(0), r.u16(2), r.u16(4), r.u16(6), r.u16(8), r.u16(10), r.u16(12), r.u16(14), r.i16(20)};
         if (region.page < 0 || static_cast<std::size_t>(region.page) >= pages_.size())
             throw Error(ErrorKind::malformed, "invalid texture page ID", p + 20);
-        regions_.emplace(p, region);
+        regions_.push_back({static_cast<std::uint32_t>(p), region});
     }
-    for (auto p : list(sp->data_offset, *sp)) {
+    std::sort(regions_.begin(), regions_.end(),
+              [](const RegionEntry &left, const RegionEntry &right) { return left.pointer < right.pointer; });
+    for (std::size_t i = 1; i < regions_.size(); ++i)
+        if (regions_[i - 1].pointer == regions_[i].pointer)
+            throw Error(ErrorKind::malformed, "duplicate texture page pointer", regions_[i].pointer);
+    const auto sprite_records = list(sp->data_offset, *sp);
+    std::size_t total_sprite_frames = 0;
+    for (const auto p : sprite_records) {
+        const auto count = rec(p, *sp, 60).u32(56);
+        if (count > 10000 || count > std::numeric_limits<std::size_t>::max() - total_sprite_frames)
+            throw Error(ErrorKind::unsupported, "special sprite profile is unsupported", p + 56);
+        total_sprite_frames += count;
+    }
+    sprite_frame_regions_.reserve(total_sprite_frames);
+    std::vector<std::pair<std::size_t, std::size_t>> sprite_frame_ranges;
+    sprite_frame_ranges.reserve(sprite_records.size());
+    sprites_.reserve(sprite_records.size());
+    for (auto p : sprite_records) {
         const auto r = rec(p, *sp, 60);
         Sprite sprite;
-        sprite.name = std::string(package.string_pointer(r.u32(0)));
+        sprite.name = package.string_pointer(r.u32(0));
         sprite.width = r.i32(4);
         sprite.height = r.i32(8);
         sprite.ox = r.i32(48);
@@ -102,10 +206,12 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
         const auto frames = rec(p + 60, *sp, static_cast<std::size_t>(count) * 4);
         for (std::size_t i = 0; i < count; ++i) {
             const auto region = frames.u32(i * 4);
-            if (region && !regions_.contains(region))
+            const auto index = region ? find_region_index(region) : std::numeric_limits<std::uint32_t>::max();
+            if (region && index == std::numeric_limits<std::uint32_t>::max())
                 throw Error(ErrorKind::malformed, "sprite TPAG reference invalid", p + 60 + i * 4);
-            sprite.frames.push_back(region);
+            sprite_frame_regions_.push_back(index);
         }
+        sprite_frame_ranges.emplace_back(sprite_frame_regions_.size() - count, count);
         sprite.precise = r.u32(44) != 0;
         const auto mask_at = p + 60 + static_cast<std::size_t>(count) * 4;
         const auto mask_count = rec(mask_at, *sp, 4).u32(0);
@@ -116,16 +222,20 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
         if (mask_size > 64ULL * 1024 * 1024 || (mask_size && mask_count > sp->size / mask_size))
             throw Error(ErrorKind::malformed, "sprite collision mask size exceeds chunk", mask_at);
         const auto masks = rec(mask_at + 4, *sp, mask_size * mask_count).bytes();
-        for (std::size_t i = 0; i < mask_count; ++i)
-            sprite.masks.emplace_back(masks.begin() + static_cast<std::ptrdiff_t>(i * mask_size),
-                                      masks.begin() + static_cast<std::ptrdiff_t>((i + 1) * mask_size));
+        sprite.mask_offset = mask_data_.size();
+        sprite.mask_count = mask_count;
+        mask_data_.insert(mask_data_.end(), masks.begin(), masks.end());
         sprites_.push_back(std::move(sprite));
+    }
+    for (std::size_t i = 0; i < sprites_.size(); ++i) {
+        const auto [offset, count] = sprite_frame_ranges[i];
+        sprites_[i].frames = std::span<const std::uint32_t>(sprite_frame_regions_).subspan(offset, count);
     }
     if (const auto *bg = package.find_chunk("BGND"))
         for (auto p : list(bg->data_offset, *bg)) {
             const auto r = rec(p, *bg, 20);
             const auto ptr = r.u32(16);
-            if (ptr && !regions_.contains(ptr))
+            if (ptr && !find_region(ptr))
                 throw Error(ErrorKind::malformed, "background TPAG reference invalid", p + 16);
             backgrounds_.push_back(ptr);
         }
@@ -134,7 +244,7 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
         Font font;
         font.size = r.i32(8);
         font.region = r.u32(28);
-        if (!regions_.contains(font.region))
+        if (!find_region(font.region))
             throw Error(ErrorKind::malformed, "font TPAG reference invalid", p + 28);
         for (auto q : list(p + 40, *fo)) {
             const auto g = rec(q, *fo, 16);
@@ -146,18 +256,28 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
         }
         fonts_.push_back(std::move(font));
     }
-    sprite_regions_.reserve(sprites_.size());
-    for (const auto &sprite : sprites_) {
-        auto &frame_regions = sprite_regions_.emplace_back();
-        frame_regions.reserve(sprite.frames.size());
-        for (const auto pointer : sprite.frames)
-            frame_regions.push_back(pointer ? &regions_.at(pointer) : nullptr);
-    }
     background_regions_.reserve(backgrounds_.size());
     for (const auto pointer : backgrounds_)
-        background_regions_.push_back(pointer ? &regions_.at(pointer) : nullptr);
+        background_regions_.push_back(pointer ? find_region(pointer) : nullptr);
     for (auto &font : fonts_)
-        font.atlas = &regions_.at(font.region);
+        font.atlas = find_region(font.region);
+}
+std::uint32_t GameAssets::find_region_index(std::size_t pointer) const noexcept {
+    if (pointer > std::numeric_limits<std::uint32_t>::max())
+        return std::numeric_limits<std::uint32_t>::max();
+    const auto key = static_cast<std::uint32_t>(pointer);
+    const auto found = std::lower_bound(regions_.begin(), regions_.end(), key,
+                                        [](const RegionEntry &entry, std::uint32_t value) {
+                                            return entry.pointer < value;
+                                        });
+    if (found == regions_.end() || found->pointer != key ||
+        static_cast<std::size_t>(found - regions_.begin()) >= std::numeric_limits<std::uint32_t>::max())
+        return std::numeric_limits<std::uint32_t>::max();
+    return static_cast<std::uint32_t>(found - regions_.begin());
+}
+const GameAssets::Region *GameAssets::find_region(std::size_t pointer) const noexcept {
+    const auto index = find_region_index(pointer);
+    return index == std::numeric_limits<std::uint32_t>::max() ? nullptr : &regions_[index].region;
 }
 const GameAssets::Sprite &GameAssets::sprite(int id) const {
     if (id < 0 || static_cast<std::size_t>(id) >= sprites_.size())
@@ -168,14 +288,23 @@ bool GameAssets::mask_pixel(int id, double frame, int x, int y) const {
     const auto &s = sprite(id);
     if (x < s.left || x > s.right || y < s.top || y > s.bottom || x < 0 || y < 0 || x >= s.width || y >= s.height)
         return false;
-    if (!s.precise || s.masks.empty())
+    if (!s.precise || s.mask_count == 0)
         return true;
     const auto index = static_cast<std::size_t>(std::fmod(
-        std::fmod(std::floor(frame), static_cast<double>(s.masks.size())) + static_cast<double>(s.masks.size()),
-        static_cast<double>(s.masks.size())));
+        std::fmod(std::floor(frame), static_cast<double>(s.mask_count)) + static_cast<double>(s.mask_count),
+        static_cast<double>(s.mask_count)));
     const auto stride = (static_cast<std::size_t>(s.width) + 7) / 8;
-    const auto byte = s.masks[index][static_cast<std::size_t>(y) * stride + static_cast<std::size_t>(x) / 8];
+    const auto mask = mask_frame(id, index);
+    const auto byte = mask[static_cast<std::size_t>(y) * stride + static_cast<std::size_t>(x) / 8];
     return (byte & (0x80U >> (x & 7))) != 0;
+}
+std::span<const std::uint8_t> GameAssets::mask_frame(int id, std::size_t frame) const {
+    const auto &s = sprite(id);
+    if (frame >= s.mask_count)
+        throw Error(ErrorKind::vm, "sprite mask frame out of range");
+    const auto mask_size = ((static_cast<std::size_t>(s.width) + 7) / 8) * static_cast<std::size_t>(s.height);
+    const auto offset = s.mask_offset + frame * mask_size;
+    return std::span<const std::uint8_t>(mask_data_).subspan(offset, mask_size);
 }
 std::pair<int, int> GameAssets::background_size(int id) const {
     if (id < 0 || static_cast<std::size_t>(id) >= backgrounds_.size())
@@ -189,11 +318,17 @@ std::pair<int, int> GameAssets::background_size(int id) const {
     const auto &r = *region;
     return {r.tw, r.th};
 }
-void GameAssets::load_page(int id) {
+GameAssets::Page &GameAssets::load_page(int id) {
     auto &page = pages_.at(static_cast<std::size_t>(id));
     if (!page.pixels.empty()) {
         page.last_used = ++page_cache_clock_;
-        return;
+        return page;
+    }
+    if constexpr (page_cache_limit_ != 0) {
+        if (scratch_page_id_ == id && !scratch_page_.pixels.empty())
+            return scratch_page_;
+        if (scratch_page_id_ != -1)
+            release_scratch_page();
     }
     const auto *chunk = package_.find_chunk("TXTR");
     const auto png_header = package_.read_bytes(page.png, 8);
@@ -235,44 +370,94 @@ void GameAssets::load_page(int id) {
     const auto decoded_size = width * height * sizeof(std::uint32_t);
     if (decoded_size > 16ULL * 1024 * 1024)
         throw Error(ErrorKind::unsupported, "texture page exceeds Wii decode limit", page.png);
+    const bool oversized_for_cache = page_cache_limit_ != 0 && decoded_size > page_cache_limit_;
     std::vector<std::uint32_t> pixels;
-    pixels.swap(page_buffer_);
+    if (oversized_for_cache) {
+        // Keep a page larger than the whole cache alive only for the draw that
+        // needs it. blit() releases this scratch allocation on every exit path.
+        scratch_page_ = {};
+        scratch_page_id_ = id;
+        pixels.swap(scratch_page_.pixels);
+    } else {
+        pixels.swap(page_buffer_);
+    }
     if constexpr (page_cache_limit_ != 0) {
-        while (page_cache_bytes_ + decoded_size > page_cache_limit_) {
-            auto oldest = pages_.end();
-            for (auto candidate = pages_.begin(); candidate != pages_.end(); ++candidate) {
-                if (&*candidate == &page || candidate->pixels.empty())
-                    continue;
-                if (oldest == pages_.end() || candidate->last_used < oldest->last_used)
-                    oldest = candidate;
+        if (!oversized_for_cache) {
+            while (page_cache_bytes_ + decoded_size > page_cache_limit_) {
+                auto oldest = pages_.end();
+                for (auto candidate = pages_.begin(); candidate != pages_.end(); ++candidate) {
+                    if (&*candidate == &page || candidate->pixels.empty())
+                        continue;
+                    if (oldest == pages_.end() || candidate->last_used < oldest->last_used)
+                        oldest = candidate;
+                }
+                if (oldest == pages_.end())
+                    break;
+                page_cache_bytes_ -= oldest->pixels.capacity() * sizeof(std::uint32_t);
+                if (oldest->pixels.capacity() >= width * height && pixels.capacity() < width * height) {
+                    pixels.swap(oldest->pixels);
+                    pixels.clear();
+                } else {
+                    std::vector<std::uint32_t>().swap(oldest->pixels);
+                }
             }
-            if (oldest == pages_.end())
-                break;
-            page_cache_bytes_ -= oldest->pixels.capacity() * sizeof(std::uint32_t);
-            if (oldest->pixels.capacity() >= width * height && pixels.capacity() < width * height) {
-                pixels.swap(oldest->pixels);
-                pixels.clear();
-            } else {
-                std::vector<std::uint32_t>().swap(oldest->pixels);
+        } else {
+            // Keep only one oversized page hot. Undertale uses many 8-16 MiB
+            // pages, so throwing this away after every sprite would re-decode
+            // the same PNG thousands of times in a room.
+            for (auto &candidate : pages_) {
+                if (!candidate.pixels.empty()) {
+                    page_cache_bytes_ -= candidate.pixels.capacity() * sizeof(std::uint32_t);
+                    std::vector<std::uint32_t>().swap(candidate.pixels);
+                }
             }
         }
     }
     pixels.resize(width * height);
     if (!png_image_finish_read(&image, nullptr, reinterpret_cast<unsigned char *>(pixels.data()), 0, nullptr))
         throw Error(ErrorKind::malformed, "texture PNG decode failed", page.png);
+    if (oversized_for_cache) {
+        scratch_page_.width = static_cast<int>(width);
+        scratch_page_.height = static_cast<int>(height);
+        scratch_page_.pixels = std::move(pixels);
+        return scratch_page_;
+    }
+    const auto allocation_bytes = pixels.capacity() * sizeof(std::uint32_t);
+    if constexpr (page_cache_limit_ != 0) {
+        if (page_cache_bytes_ + allocation_bytes > page_cache_limit_) {
+            for (auto &candidate : pages_) {
+                if (!candidate.pixels.empty()) {
+                    page_cache_bytes_ -= candidate.pixels.capacity() * sizeof(std::uint32_t);
+                    std::vector<std::uint32_t>().swap(candidate.pixels);
+                }
+            }
+            scratch_page_ = {};
+            scratch_page_id_ = id;
+            scratch_page_.width = static_cast<int>(width);
+            scratch_page_.height = static_cast<int>(height);
+            scratch_page_.pixels = std::move(pixels);
+            return scratch_page_;
+        }
+    }
     page.width = static_cast<int>(width);
     page.height = static_cast<int>(height);
     page.pixels = std::move(pixels);
     page.last_used = ++page_cache_clock_;
-    page_cache_bytes_ += page.pixels.capacity() * sizeof(std::uint32_t);
+    page_cache_bytes_ += allocation_bytes;
+    return page;
+}
+void GameAssets::release_scratch_page() noexcept {
+    std::vector<std::uint32_t>().swap(scratch_page_.pixels);
+    scratch_page_.width = scratch_page_.height = 0;
+    scratch_page_id_ = -1;
 }
 void GameAssets::prefetch(int id) {
-    (void)sprite(id);
+    const auto &spr = sprite(id);
     if constexpr (page_cache_limit_ != 0)
         return;
-    for (const auto *region : sprite_regions_[static_cast<std::size_t>(id)])
-        if (region)
-            load_page(region->page);
+    for (const auto region : spr.frames)
+        if (region != std::numeric_limits<std::uint32_t>::max())
+            load_page(regions_[region].region.page);
 }
 void GameAssets::draw_background(Canvas &canvas, int id, double x, double y) {
     if (id < 0 || static_cast<std::size_t>(id) >= backgrounds_.size())
@@ -367,7 +552,7 @@ void GameAssets::rectangle(Canvas &canvas, double x1, double y1, double x2, doub
 const GameAssets::Page &GameAssets::region_pixels(const Region &r, int &source_x, int &source_y) {
     source_x = r.x;
     source_y = r.y;
-    constexpr std::size_t budget = 1ULL * 1024 * 1024;
+    constexpr std::size_t budget = region_cache_limit_;
     const auto bytes = static_cast<std::size_t>(r.w) * static_cast<std::size_t>(r.h) * sizeof(std::uint32_t);
     const std::array<int, 5> key{r.page, r.x, r.y, r.w, r.h};
     if constexpr (page_cache_limit_ != 0) {
@@ -377,19 +562,34 @@ const GameAssets::Page &GameAssets::region_pixels(const Region &r, int &source_x
             return found->second;
         }
     }
-    load_page(r.page);
-    const auto &source = pages_.at(static_cast<std::size_t>(r.page));
+#if REGML_LOW_MEMORY
+    while (region_cache_bytes_ + bytes > budget && !region_cache_.empty()) {
+        const auto oldest = std::min_element(
+            region_cache_.begin(), region_cache_.end(),
+            [](const auto &left, const auto &right) { return left.second.last_used < right.second.last_used; });
+        region_cache_bytes_ -= oldest->second.pixels.capacity() * sizeof(std::uint32_t);
+        region_cache_.erase(oldest);
+    }
+    Page cropped;
+    cropped.width = r.w;
+    cropped.height = r.h;
+    cropped.last_used = ++page_cache_clock_;
+    cropped.pixels = read_png_region(package_, pages_.at(static_cast<std::size_t>(r.page)).png, r.x, r.y, r.w, r.h);
+    source_x = source_y = 0;
+    if (bytes <= budget) {
+        auto [entry, inserted] = region_cache_.emplace(key, std::move(cropped));
+        region_cache_bytes_ += entry->second.pixels.capacity() * sizeof(std::uint32_t);
+        return entry->second;
+    }
+    scratch_page_ = std::move(cropped);
+    scratch_page_id_ = -1;
+    return scratch_page_;
+#else
+    const auto &source = load_page(r.page);
     if (r.x < 0 || r.y < 0 || r.w < 0 || r.h < 0 || r.x + r.w > source.width || r.y + r.h > source.height)
         throw Error(ErrorKind::malformed, "texture region outside page");
     if constexpr (page_cache_limit_ != 0) {
         if (bytes <= budget) {
-            while (region_cache_bytes_ + bytes > budget && !region_cache_.empty()) {
-                const auto oldest = std::min_element(
-                    region_cache_.begin(), region_cache_.end(),
-                    [](const auto &left, const auto &right) { return left.second.last_used < right.second.last_used; });
-                region_cache_bytes_ -= oldest->second.pixels.size() * sizeof(std::uint32_t);
-                region_cache_.erase(oldest);
-            }
             Page cached;
             cached.width = r.w;
             cached.height = r.h;
@@ -398,13 +598,24 @@ const GameAssets::Page &GameAssets::region_pixels(const Region &r, int &source_x
             for (int row = 0; row < r.h; ++row)
                 std::copy_n(source.pixels.begin() + static_cast<std::ptrdiff_t>(r.y + row) * source.width + r.x, r.w,
                             cached.pixels.begin() + static_cast<std::ptrdiff_t>(row) * r.w);
-            auto [it, inserted] = region_cache_.emplace(key, std::move(cached));
-            region_cache_bytes_ += bytes;
-            source_x = source_y = 0;
-            return it->second;
+            const auto allocation_bytes = cached.pixels.capacity() * sizeof(std::uint32_t);
+            while (region_cache_bytes_ + allocation_bytes > budget && !region_cache_.empty()) {
+                const auto oldest = std::min_element(
+                    region_cache_.begin(), region_cache_.end(),
+                    [](const auto &left, const auto &right) { return left.second.last_used < right.second.last_used; });
+                region_cache_bytes_ -= oldest->second.pixels.capacity() * sizeof(std::uint32_t);
+                region_cache_.erase(oldest);
+            }
+            if (region_cache_bytes_ + allocation_bytes <= budget) {
+                auto [it, inserted] = region_cache_.emplace(key, std::move(cached));
+                region_cache_bytes_ += allocation_bytes;
+                source_x = source_y = 0;
+                return it->second;
+            }
         }
     }
     return source;
+#endif
 }
 void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, double sx, double sy, double angle,
                       unsigned color, double alpha) {
@@ -665,10 +876,10 @@ void GameAssets::draw_sprite(Canvas &canvas, int id, double frame, double x, dou
     if (!std::isfinite(frame))
         throw Error(ErrorKind::vm, "nonfinite sprite frame");
     const auto index = frame_index(frame, spr.frames.size());
-    const auto *region = sprite_regions_[static_cast<std::size_t>(id)][index];
-    if (!region)
+    const auto region_index = spr.frames[index];
+    if (region_index == std::numeric_limits<std::uint32_t>::max())
         return;
-    const auto &r = *region;
+    const auto &r = regions_[region_index].region;
     const double ox = (r.tx - spr.ox) * sx, oy = (r.ty - spr.oy) * sy;
     if (angle == 0) {
         blit(canvas, r, x + ox, y + oy, sx, sy, 0, color, alpha);
@@ -689,10 +900,10 @@ void GameAssets::draw_sprite_part(Canvas &canvas, int id, double frame, double l
     if (width <= 0 || height <= 0 || sx == 0 || sy == 0)
         return;
     const auto index = frame_index(frame, spr.frames.size());
-    const auto *region = sprite_regions_[static_cast<std::size_t>(id)][index];
-    if (!region)
+    const auto region_index = spr.frames[index];
+    if (region_index == std::numeric_limits<std::uint32_t>::max())
         return;
-    const auto &r = *region;
+    const auto &r = regions_[region_index].region;
     const double l = std::max({left, 0.0, static_cast<double>(r.tx)}),
                  t = std::max({top, 0.0, static_cast<double>(r.ty)});
     const double rr = std::min({left + width, static_cast<double>(spr.width), static_cast<double>(r.tx + r.tw)}),

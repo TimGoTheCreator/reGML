@@ -1,5 +1,6 @@
 #include "demo/demo.hpp"
 #include "game.hpp"
+#include "instance_ptr.hpp"
 #include "interpreter.hpp"
 #include "linker.hpp"
 #include "package.hpp"
@@ -10,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -382,6 +384,11 @@ int main(int argc, char **argv) {
              check(linked.variable_at.at(f.blob + 12) == 0, "second occurrence");
              auto lazy_linked = regml::link_legacy_package(regml::Package::from_bytes(f.bytes), {}, false, false, true);
              check(lazy_linked.programs[0].instructions.empty(), "lazy linker releases decoded code after validation");
+             check(lazy_linked.reference_symbols == std::vector<std::uint32_t>{0, 0} &&
+                       lazy_linked.program_reference_ranges.size() == 1 &&
+                       lazy_linked.program_reference_ranges[0].offset == 0 &&
+                       lazy_linked.program_reference_ranges[0].count == 2,
+                   "lazy linker stores compact per-program symbol bindings");
              const auto package = regml::Package::from_bytes(f.bytes);
              const auto &lazy_program = lazy_linked.program(package, 0);
              for (std::size_t i = 0; i < linked.programs[0].instructions.size(); ++i)
@@ -431,10 +438,40 @@ int main(int argc, char **argv) {
              finish(f.bytes);
              const auto linked = regml::link_legacy_package(regml::Package::from_bytes(f.bytes));
              check(linked.functions.size() == 1 && linked.function_at.at(f.blob) == 0, "function linking");
+             auto lazy_linked = regml::link_legacy_package(regml::Package::from_bytes(f.bytes), {}, false, false, true);
+             check(lazy_linked.programs[0].instructions.empty(), "lazy function linker releases decoded code");
+             check(lazy_linked.reference_symbols == std::vector<std::uint32_t>{0} &&
+                       lazy_linked.program_reference_ranges[0].count == 1,
+                   "lazy function linker stores its symbol in the compact table");
+             const auto package = regml::Package::from_bytes(f.bytes);
+             check(lazy_linked.program(package, 0).instructions[0].symbol_id == 0,
+                   "lazy decode restores resolved function symbol");
              patch(f.bytes, f.blob + 4, 2);
              error_is(regml::ErrorKind::malformed,
                       [&] { (void)regml::link_legacy_package(regml::Package::from_bytes(f.bytes)); });
          }},
+#if REGML_WII || REGML_LOW_MEMORY
+        {"low-memory bytecode cache stays under its retained limit",
+         [] {
+             regml::LinkedPackage linked;
+             linked.lazy_programs = true;
+             regml::Program small;
+             small.instructions.resize(100);
+             linked.decoded_program_bytes = small.instructions.capacity() * sizeof(regml::Instruction);
+             linked.programs.push_back(std::move(small));
+             linked.release_programs();
+             check(linked.programs[0].instructions.size() == 100, "small bytecode cache should remain hot");
+
+             regml::Program large;
+             large.instructions.resize(50000);
+             linked.decoded_program_bytes += large.instructions.capacity() * sizeof(regml::Instruction);
+             linked.programs.push_back(std::move(large));
+             linked.release_programs();
+             check(linked.programs[0].instructions.empty() && linked.programs[1].instructions.empty() &&
+                       linked.decoded_program_bytes == 0,
+                   "large bytecode cache should release all decoded programs");
+         }},
+#endif
         {"binary reads and absolute bounds",
          [] {
              const auto bytes = words({0x78563412, 0x3ff00000});
@@ -465,6 +502,18 @@ int main(int argc, char **argv) {
              auto moved_again = std::move(moved);
              check(moved_again.code_name(0) == "gml_Script_test", "package ownership after copy/move");
          }},
+        {"STRG pointer lookup handles unsorted records",
+         [] {
+             auto f = fixture();
+             const auto first = regml::BinaryView(f.bytes).u32(f.strg + 4);
+             const auto second = regml::BinaryView(f.bytes).u32(f.strg + 8);
+             patch(f.bytes, f.strg + 4, second);
+             patch(f.bytes, f.strg + 8, first);
+             const auto package = regml::Package::from_bytes(std::move(f.bytes));
+             check(package.string_pointer(first + 4) == "reGML fixture" &&
+                       package.string_pointer(second + 4) == "gml_Script_test",
+                   "sorted offset index preserves pointer resolution");
+         }},
         {"v14 inventory is separate from instruction support",
          [] {
              const auto package = regml::Package::from_bytes(fixture(14).bytes);
@@ -473,6 +522,24 @@ int main(int argc, char **argv) {
                  const auto code = package.code_bytes(0);
                  (void)regml::decode(regml::BinaryView(code, package.code()[0].bytecode_offset), 14);
              });
+         }},
+        {"file-backed CODE headers parse without loading the whole chunk",
+         [] {
+             const auto f = fixture();
+             const auto path = std::filesystem::temp_directory_path() / "regml-file-backed-test.data.win";
+             {
+                 std::ofstream output(path, std::ios::binary | std::ios::trunc);
+                 output.write(reinterpret_cast<const char *>(f.bytes.data()),
+                              static_cast<std::streamsize>(f.bytes.size()));
+                 check(static_cast<bool>(output), "write file-backed package fixture");
+             }
+             {
+                 const auto package = regml::Package::load(path);
+                 check(package.code().size() == 1, "file-backed CODE inventory");
+                 check(package.code_bytes(0).size() == regml::demo_bytecode().size(),
+                       "file-backed code byte range");
+             }
+             std::filesystem::remove(path);
          }},
         {"truncated containers and trailing bytes",
          [] {
@@ -574,13 +641,39 @@ int main(int argc, char **argv) {
                        sentinel.instructions[0].reference_value() == 0xffffffffU,
                    "all-ones reference is still present");
          }},
+        {"v17 float and break instructions decode and link",
+         [] {
+             const auto bytes = words({0xc0010000, 0x3fc00000, 0xff020000, 0xfffffffb, 0x9d000000});
+             const auto decoded = regml::decode(regml::BinaryView(bytes), 17);
+             check(decoded.instructions.size() == 3, "v17 instruction widths");
+             check(decoded.instructions[0].type1 == regml::DataType::float32 &&
+                       decoded.instructions[0].immediate_kind == regml::Instruction::ImmediateKind::real32 &&
+                       decoded.instructions[0].immediate_real() == 1.5,
+                   "v17 float immediate");
+             check(decoded.instructions[1].opcode() == regml::Opcode::extended &&
+                       decoded.instructions[1].immediate_i32() == -5,
+                   "v17 break sub-opcode and payload");
+             const auto float_program = regml::decode(
+                 regml::BinaryView(words({0xc0010000, 0x3fc00000, 0xc0010000, 0x3e800000, 0x0c110000,
+                                         0x9c010000})),
+                 17);
+             const auto float_result = regml::execute_numeric(float_program);
+             check(float_result.returned && std::get<double>(*float_result.returned) == 1.75,
+                   "numeric VM executes bytecode 17 float32 arithmetic");
+             auto f = fixture(17);
+             patch(f.bytes, f.gen + 44, 2);
+             patch(f.bytes, f.gen + 48, 3);
+             const auto package = regml::Package::from_bytes(f.bytes);
+             const auto linked = regml::link_legacy_package(package);
+             check(linked.programs[0].bytecode_version == 17, "v17 package symbol/link stage");
+         }},
         {"truncated payload and unsupported opcode",
          [] {
              auto bytes = words({0xc0000000});
              error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); });
              bytes = words({0xfe000000});
              error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); }, 0);
-             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 17); });
+             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 99); });
              bytes = words({0x840f0001, 0x9c020000});
              error_is(
                  regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 16, {1}); }, 4);
@@ -684,6 +777,41 @@ int main(int argc, char **argv) {
              context.self = &state;
              bindings.variables[12].name = "absent";
              error_is(regml::ErrorKind::vm, [&] { (void)regml::execute(program, context); }, 12);
+         }},
+        {"variable stores share immutable key storage",
+         [] {
+             regml::VariableStore first, second;
+             first["shared_variable_key"] = std::int32_t{1};
+             second[std::string("shared_variable_key")] = std::int32_t{2};
+             check(first.begin()->first.data() == second.begin()->first.data(),
+                   "matching variable names should use the same interned storage");
+             check(std::get<std::int32_t>(first.at("shared_variable_key")) == 1 &&
+                       std::get<std::int32_t>(second.at("shared_variable_key")) == 2,
+                   "interning must not merge values between stores");
+         }},
+        {"intrusive instance pointers retain and release without a control block",
+         [] {
+             struct Tracked {
+                 std::size_t references = 0;
+                 int *destroyed = nullptr;
+                 ~Tracked() { ++*destroyed; }
+             };
+             int destroyed = 0;
+             check(sizeof(regml::IntrusivePtr<Tracked>) == sizeof(Tracked *) &&
+                       sizeof(regml::IntrusivePtr<Tracked>) < sizeof(std::shared_ptr<Tracked>),
+                   "intrusive pointers are one word without shared ownership metadata");
+             auto first = regml::IntrusivePtr<Tracked>(new Tracked{0, &destroyed});
+             check(first->references == 1 && destroyed == 0, "initial intrusive ownership");
+             {
+                 auto second = first;
+                 check(second->references == 2 && first == second, "copy increments one shared instance count");
+                 auto moved = std::move(second);
+                 check(!second && moved->references == 2, "move transfers an intrusive reference");
+                 moved.reset();
+                 check(first->references == 1 && destroyed == 0, "reset releases only its own reference");
+             }
+             first.reset();
+             check(!first && destroyed == 1, "last intrusive reference destroys the instance");
          }},
         {"built-in calls preserve argument order and diagnostics",
          [] {

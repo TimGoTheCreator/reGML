@@ -39,13 +39,20 @@ Package Package::from_bytes(std::vector<std::uint8_t> bytes, LoadLimits limits) 
     return package;
 }
 std::vector<std::uint8_t> Package::read_bytes(std::size_t offset, std::size_t length) const {
+    std::vector<std::uint8_t> bytes(length);
+    read_into(offset, bytes);
+    return bytes;
+}
+void Package::read_into(std::size_t offset, std::span<std::uint8_t> output) const {
+    const auto length = output.size();
     if (offset > size_ || length > size_ - offset)
         throw Error(ErrorKind::malformed, "package read exceeds file bounds", offset);
-    if (!bytes_.empty())
-        return {bytes_.begin() + static_cast<std::ptrdiff_t>(offset),
-                bytes_.begin() + static_cast<std::ptrdiff_t>(offset + length)};
+    if (!bytes_.empty()) {
+        std::copy_n(bytes_.data() + offset, length, output.data());
+        return;
+    }
     if (source_path_.empty() && size_ == 0)
-        return {};
+        return;
     if (source_path_.empty())
         throw Error(ErrorKind::io, "package bytes are unavailable", offset);
     if (!reader_)
@@ -54,12 +61,10 @@ std::vector<std::uint8_t> Package::read_bytes(std::size_t offset, std::size_t le
     auto &stream = reader_->stream;
     stream.clear();
     stream.seekg(static_cast<std::streamoff>(offset));
-    std::vector<std::uint8_t> bytes(length);
     if (length)
-        stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(length));
+        stream.read(reinterpret_cast<char *>(output.data()), static_cast<std::streamsize>(length));
     if (!stream)
         throw Error(ErrorKind::io, "could not read package range", offset);
-    return bytes;
 }
 const Chunk *Package::find_chunk(std::string_view name) const noexcept {
     const auto it = std::find_if(chunks_.begin(), chunks_.end(), [name](const Chunk &c) { return c.name() == name; });
@@ -146,11 +151,21 @@ std::size_t Package::list_count(const Chunk &c, LoadLimits limits) const {
     return count;
 }
 void Package::parse_strings(const Chunk &c, LoadLimits limits) {
-    const auto bytes = read_bytes(c.data_offset, c.size);
-    const BinaryView data(bytes, c.data_offset);
     const auto count = list_count(c, limits);
     const auto records_start = c.data_offset + 4 + 4 * count;
+    std::vector<std::uint8_t> file_chunk;
+    std::span<const std::uint8_t> chunk_bytes;
+    if (bytes_.empty()) {
+        // One sequential read avoids tens of thousands of seek/read calls on console storage.
+        file_chunk = read_bytes(c.data_offset, c.size);
+        chunk_bytes = file_chunk;
+    } else {
+        chunk_bytes = std::span<const std::uint8_t>(bytes_).subspan(c.data_offset, c.size);
+    }
+    const BinaryView data(chunk_bytes, c.data_offset);
     strings_.reserve(count);
+    string_lookup_.reserve(count);
+    std::size_t compact_size = 0;
     for (std::size_t i = 0; i < count; ++i) {
         const auto field = 4 + i * 4;
         const auto pointer = static_cast<std::size_t>(data.u32(field));
@@ -167,49 +182,82 @@ void Package::parse_strings(const Chunk &c, LoadLimits limits) {
             throw Error(ErrorKind::malformed, "STRG reference leaves its chunk", absolute_pointer);
         if (data.u8(local_pointer + 4 + length) != 0)
             throw Error(ErrorKind::malformed, "STRG string has no NUL terminator", absolute_pointer + 4 + length);
-        strings_.push_back({absolute_pointer, length});
-        string_values_.emplace_back(reinterpret_cast<const char *>(data.bytes().data() + local_pointer + 4), length);
+        if (absolute_pointer > std::numeric_limits<std::uint32_t>::max() ||
+            length > std::numeric_limits<std::uint32_t>::max() ||
+            absolute_pointer > std::numeric_limits<std::uint32_t>::max() - 4 ||
+            i > std::numeric_limits<std::uint32_t>::max())
+            throw Error(ErrorKind::unsupported, "STRG entry exceeds 32-bit address range", absolute_pointer);
+        if (length + 1 > std::numeric_limits<std::size_t>::max() - compact_size)
+            throw Error(ErrorKind::unsupported, "STRG strings exceed addressable memory", absolute_pointer);
+        compact_size += length + 1;
+        strings_.push_back({static_cast<std::uint32_t>(absolute_pointer), static_cast<std::uint32_t>(length)});
         // STRG pointers include the length prefix; other string pointers skip it.
-        string_lookup_.emplace(static_cast<std::size_t>(absolute_pointer + 4), i);
+        string_lookup_.push_back(static_cast<std::uint32_t>(i));
+    }
+    std::sort(string_lookup_.begin(), string_lookup_.end(), [&](std::uint32_t left, std::uint32_t right) {
+        return strings_[left].record_offset < strings_[right].record_offset;
+    });
+    if (bytes_.empty()) {
+        string_data_.reserve(compact_size);
+        string_data_offsets_.reserve(count);
+        for (const auto &record : strings_) {
+            const auto local = static_cast<std::size_t>(record.record_offset) - c.data_offset;
+            string_data_offsets_.push_back(string_data_.size());
+            const auto contents = data.slice(local + 4, static_cast<std::size_t>(record.length) + 1).bytes();
+            string_data_.insert(string_data_.end(), reinterpret_cast<const char *>(contents.data()),
+                                reinterpret_cast<const char *>(contents.data() + contents.size()));
+        }
     }
 }
 void Package::parse_code(const Chunk &c, LoadLimits limits) {
-    const auto bytes = read_bytes(c.data_offset, c.size);
-    const BinaryView data(bytes, c.data_offset);
     const auto count = list_count(c, limits);
     const auto records_start = c.data_offset + 4 + 4 * count;
+    // CODE can be several MiB. The pointer table is small; read each fixed-size
+    // record header separately so file-backed loads don't need a second CODE copy.
+    const auto pointers = read_bytes(c.data_offset, 4 + 4 * count);
+    const BinaryView table(pointers, c.data_offset);
     code_.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
         const auto field = 4 + 4 * i;
-        const auto pointer = static_cast<std::size_t>(data.u32(field));
+        const auto pointer = static_cast<std::size_t>(table.u32(field));
         const auto absolute_pointer = pointer;
         if (absolute_pointer < c.data_offset)
             throw Error(ErrorKind::malformed, "CODE pointer precedes its chunk", absolute_pointer);
         const auto local_pointer = absolute_pointer - c.data_offset;
         const bool old = info_->bytecode_version == 14;
+        const auto header_size = old ? 8U : 20U;
         if (absolute_pointer < records_start)
             throw Error(ErrorKind::malformed, "CODE entry targets the pointer table", c.data_offset + field);
-        if (local_pointer > data.size() || (old ? 8U : 20U) > data.size() - local_pointer)
+        if (local_pointer > c.size || header_size > c.size - local_pointer)
             throw Error(ErrorKind::malformed, "CODE reference leaves its chunk", absolute_pointer);
+        std::vector<std::uint8_t> header_storage;
+        std::span<const std::uint8_t> header_view;
+        if (!bytes_.empty())
+            header_view = std::span<const std::uint8_t>(bytes_).subspan(absolute_pointer, header_size);
+        else {
+            header_storage = read_bytes(absolute_pointer, header_size);
+            header_view = header_storage;
+        }
+        const BinaryView data(header_view, absolute_pointer);
         CodeEntry entry;
         entry.record_offset = absolute_pointer;
-        entry.name_pointer = data.u32(local_pointer);
+        entry.name_pointer = data.u32(0);
         if (entry.name_pointer != 0)
             (void)string_pointer(entry.name_pointer);
-        entry.bytecode_length = data.u32(local_pointer + 4);
+        entry.bytecode_length = data.u32(4);
         if (old)
             entry.bytecode_offset = absolute_pointer + 8;
         else {
-            entry.locals = data.u16(local_pointer + 8);
-            const auto args = data.u16(local_pointer + 10);
+            entry.locals = data.u16(8);
+            const auto args = data.u16(10);
             entry.arguments = static_cast<std::uint16_t>(args & 0x7fff);
             entry.locals_flag = (args & 0x8000) != 0;
-            const auto target = static_cast<std::int64_t>(absolute_pointer + 12) + data.i32(local_pointer + 12);
+            const auto target = static_cast<std::int64_t>(absolute_pointer + 12) + data.i32(12);
             if (target < 0 || static_cast<std::uint64_t>(target) > size())
                 throw Error(ErrorKind::malformed, "CODE relative bytecode address is out of bounds",
                             absolute_pointer + 12);
             entry.bytecode_offset = static_cast<std::size_t>(target);
-            entry.entry_offset = data.u32(local_pointer + 16);
+            entry.entry_offset = data.u32(16);
         }
         if (entry.bytecode_offset < c.data_offset || entry.bytecode_offset - c.data_offset > c.size ||
             entry.bytecode_length > c.size - (entry.bytecode_offset - c.data_offset))
@@ -225,15 +273,21 @@ void Package::parse_code(const Chunk &c, LoadLimits limits) {
 std::string_view Package::string_at(std::size_t index) const {
     if (index >= strings_.size())
         throw Error(ErrorKind::usage, "string index is out of range");
-    return string_values_.at(index);
+    const auto &record = strings_[index];
+    if (!bytes_.empty())
+        return {reinterpret_cast<const char *>(bytes_.data() + record.record_offset + 4), record.length};
+    return {string_data_.data() + string_data_offsets_[index], record.length};
 }
 std::string_view Package::string_pointer(std::uint32_t pointer) const {
     if (pointer == 0)
         return {};
-    const auto it = string_lookup_.find(pointer);
-    if (it == string_lookup_.end())
+    const auto it = std::lower_bound(string_lookup_.begin(), string_lookup_.end(), pointer,
+                                     [&](std::uint32_t index, std::uint32_t key) {
+                                         return strings_[index].record_offset + 4 < key;
+                                     });
+    if (it == string_lookup_.end() || strings_[*it].record_offset + 4 != pointer)
         throw Error(ErrorKind::malformed, "string reference does not target a STRG string", pointer);
-    return string_at(it->second);
+    return string_at(*it);
 }
 std::vector<std::uint8_t> Package::code_bytes(std::size_t index) const {
     if (index >= code_.size())

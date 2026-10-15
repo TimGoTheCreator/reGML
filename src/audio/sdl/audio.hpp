@@ -39,10 +39,12 @@ class GameAudio {
         std::vector<float> stereo;
         std::vector<std::uint8_t> compressed;
         std::string file_path;
+        const Package *package = nullptr;
+        std::size_t package_offset = 0, package_length = 0;
         std::size_t streamed_frames = 0;
         double gain = 1;
         std::size_t frames() const noexcept {
-            return compressed.empty() && file_path.empty() ? stereo.size() / 2 : streamed_frames;
+            return compressed.empty() && file_path.empty() && !package ? stereo.size() / 2 : streamed_frames;
         }
     };
     struct Stream;
