@@ -121,7 +121,8 @@ BoundProgram create_program() {
 }
 BoundProgram step_program() {
     Assembler b;
-    b.when(b.call("keyboard_check_pressed", {b.integer(82)}), [&] { b.statement(b.call("game_restart", {})); });
+    b.when(b.call("keyboard_check_pressed", {b.integer(82)}),
+           [&] { b.statement(b.call("game_restart", {})); });
     b.when(b.cmp(3, b.v("game_over"), b.n(0)), [&] {
         b.set("speed", b.n(4));
         b.when(b.call("keyboard_check", {b.integer(32)}), [&] { b.set("speed", b.n(2)); });
@@ -138,17 +139,20 @@ BoundProgram step_program() {
         b.set("timer", b.math(Opcode::add, b.v("timer"), b.n(1)));
         b.set("hazard_x",
               b.math(Opcode::add, b.n(320),
-                     b.math(Opcode::mul, b.call("sin", {b.math(Opcode::div, b.v("timer"), b.n(45))}), b.n(220))));
+                     b.math(Opcode::mul, b.call("sin", {b.math(Opcode::div, b.v("timer"), b.n(45))}),
+                            b.n(220))));
         b.set("cooldown", b.call("max", {b.n(0), b.math(Opcode::sub, b.v("cooldown"), b.n(1))}));
         b.when(b.cmp(3, b.v("cooldown"), b.n(0)), [&] {
-            b.when(b.call("point_in_rectangle", {b.v("x"), b.v("y"), b.math(Opcode::sub, b.v("hazard_x"), b.n(48)),
-                                                 b.n(234), b.math(Opcode::add, b.v("hazard_x"), b.n(48)), b.n(266)}),
+            b.when(b.call("point_in_rectangle",
+                          {b.v("x"), b.v("y"), b.math(Opcode::sub, b.v("hazard_x"), b.n(48)), b.n(234),
+                           b.math(Opcode::add, b.v("hazard_x"), b.n(48)), b.n(266)}),
                    [&] {
                        b.set("lives", b.math(Opcode::sub, b.v("lives"), b.n(1)));
                        b.set("cooldown", b.n(90));
                    });
         });
-        b.when(b.cmp(1, b.call("point_distance", {b.v("x"), b.v("y"), b.v("target_x"), b.v("target_y")}), b.n(20)),
+        b.when(b.cmp(1, b.call("point_distance", {b.v("x"), b.v("y"), b.v("target_x"), b.v("target_y")}),
+                     b.n(20)),
                [&] {
                    b.set("score", b.math(Opcode::add, b.v("score"), b.n(1)));
                    b.set("target_x", b.math(Opcode::sub, b.n(640), b.v("target_x")));
@@ -168,7 +172,8 @@ BoundProgram draw_program() {
         b.statement(b.call("draw_text", {b.n(x), b.n(y), b.text(std::move(message))}));
     };
     auto rect = [&](double x1, double y1, double x2, double y2, bool outline) {
-        b.statement(b.call("draw_rectangle", {b.n(x1), b.n(y1), b.n(x2), b.n(y2), b.integer(outline ? 1 : 0)}));
+        b.statement(
+            b.call("draw_rectangle", {b.n(x1), b.n(y1), b.n(x2), b.n(y2), b.integer(outline ? 1 : 0)}));
     };
     b.statement(b.call("draw_clear", {b.integer(color(12, 17, 31))}));
     b.statement(b.call("draw_set_alpha", {b.n(1)}));
@@ -194,25 +199,30 @@ BoundProgram draw_program() {
     shade(255, 232, 158);
     b.statement(b.call("draw_circle", {b.v("target_x"), b.v("target_y"), b.n(16), b.integer(1)}));
     shade(252, 94, 116);
-    b.statement(b.call("draw_rectangle", {b.math(Opcode::sub, b.v("hazard_x"), b.n(40)), b.n(242),
-                                          b.math(Opcode::add, b.v("hazard_x"), b.n(40)), b.n(258), b.integer(0)}));
+    b.statement(
+        b.call("draw_rectangle", {b.math(Opcode::sub, b.v("hazard_x"), b.n(40)), b.n(242),
+                                  b.math(Opcode::add, b.v("hazard_x"), b.n(40)), b.n(258), b.integer(0)}));
     b.when(b.cmp(5, b.v("cooldown"), b.n(0)), [&] { b.statement(b.call("draw_set_alpha", {b.n(0.45)})); });
     shade(106, 229, 242);
-    b.statement(b.call("draw_rectangle",
-                       {b.math(Opcode::sub, b.v("x"), b.n(8)), b.math(Opcode::sub, b.v("y"), b.n(8)),
-                        b.math(Opcode::add, b.v("x"), b.n(8)), b.math(Opcode::add, b.v("y"), b.n(8)), b.integer(0)}));
+    b.statement(
+        b.call("draw_rectangle",
+               {b.math(Opcode::sub, b.v("x"), b.n(8)), b.math(Opcode::sub, b.v("y"), b.n(8)),
+                b.math(Opcode::add, b.v("x"), b.n(8)), b.math(Opcode::add, b.v("y"), b.n(8)), b.integer(0)}));
     shade(235, 255, 255);
-    b.statement(b.call("draw_rectangle",
-                       {b.math(Opcode::sub, b.v("x"), b.n(3)), b.math(Opcode::sub, b.v("y"), b.n(3)),
-                        b.math(Opcode::add, b.v("x"), b.n(3)), b.math(Opcode::add, b.v("y"), b.n(3)), b.integer(0)}));
+    b.statement(
+        b.call("draw_rectangle",
+               {b.math(Opcode::sub, b.v("x"), b.n(3)), b.math(Opcode::sub, b.v("y"), b.n(3)),
+                b.math(Opcode::add, b.v("x"), b.n(3)), b.math(Opcode::add, b.v("y"), b.n(3)), b.integer(0)}));
     b.statement(b.call("draw_set_alpha", {b.n(1)}));
     font(1);
     shade(229, 238, 251);
-    b.statement(b.call("draw_text",
-                       {b.n(36), b.n(445), b.math(Opcode::add, b.text("SCORE: "), b.call("string", {b.v("score")}))}));
+    b.statement(
+        b.call("draw_text", {b.n(36), b.n(445),
+                             b.math(Opcode::add, b.text("SCORE: "), b.call("string", {b.v("score")}))}));
     shade(255, 161, 163);
-    b.statement(b.call("draw_text",
-                       {b.n(452), b.n(445), b.math(Opcode::add, b.text("LIVES: "), b.call("string", {b.v("lives")}))}));
+    b.statement(
+        b.call("draw_text", {b.n(452), b.n(445),
+                             b.math(Opcode::add, b.text("LIVES: "), b.call("string", {b.v("lives")}))}));
     font(0);
     shade(116, 137, 164);
     text(222, 449, "CREATE > STEP > DRAW");
@@ -254,7 +264,9 @@ void DemoSession::run(const BoundProgram &code) {
     context.bindings = &code.bindings;
     context.self = &self_;
     context.globals = &globals_;
-    context.call_builtin = [this](std::string_view name, std::span<const Value> args) { return builtin(name, args); };
+    context.call_builtin = [this](std::string_view name, std::span<const Value> args) {
+        return builtin(name, args);
+    };
     vm_instructions_ += execute(code.program, context).instructions_executed;
 }
 void DemoSession::tick(const KeyboardState &held, const KeyboardState &pressed_events) {
@@ -306,9 +318,10 @@ Value DemoSession::builtin(std::string_view name, std::span<const Value> a) {
     }
     if (name == "point_in_rectangle") {
         arity(a, 6);
-        const auto x = number(a[0]), y = number(a[1]), x1 = number(a[2]), y1 = number(a[3]), x2 = number(a[4]),
-                   y2 = number(a[5]);
-        return x >= std::min(x1, x2) && x <= std::max(x1, x2) && y >= std::min(y1, y2) && y <= std::max(y1, y2);
+        const auto x = number(a[0]), y = number(a[1]), x1 = number(a[2]), y1 = number(a[3]),
+                   x2 = number(a[4]), y2 = number(a[5]);
+        return x >= std::min(x1, x2) && x <= std::max(x1, x2) && y >= std::min(y1, y2) &&
+               y <= std::max(y1, y2);
     }
     if (name == "string") {
         arity(a, 1);

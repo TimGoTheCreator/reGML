@@ -22,8 +22,8 @@ void report_wii_memory(std::string_view stage) {
     if (!file)
         return;
     const auto heap = mallinfo();
-    std::fprintf(file, "%.*s: heap used=%d free=%d MEM1=%u MEM2=%u\n", static_cast<int>(stage.size()), stage.data(),
-                 heap.uordblks, heap.fordblks, SYS_GetArenaSize(), SYS_GetArena2Size());
+    std::fprintf(file, "%.*s: heap used=%d free=%d MEM1=%u MEM2=%u\n", static_cast<int>(stage.size()),
+                 stage.data(), heap.uordblks, heap.fordblks, SYS_GetArenaSize(), SYS_GetArena2Size());
     std::fclose(file);
 }
 void initialize_wii_platform() {

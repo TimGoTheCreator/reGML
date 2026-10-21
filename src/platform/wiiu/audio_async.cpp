@@ -28,8 +28,12 @@ void GameAudio::AsyncState::post(Completion completion) {
     SDL_UnlockMutex(mutex_);
 }
 
-void GameAudio::AsyncState::request(int sound, std::filesystem::path path, const Package &package,
-                                    std::size_t embedded_offset, std::size_t embedded_size, bool has_embedded) {
+void GameAudio::AsyncState::request(int sound,
+                                    std::filesystem::path path,
+                                    const Package &package,
+                                    std::size_t embedded_offset,
+                                    std::size_t embedded_size,
+                                    bool has_embedded) {
     auto task = std::make_unique<Task>(
         Task{this, sound, std::move(path), &package, embedded_offset, embedded_size, has_embedded});
     auto *thread = SDL_CreateThread(thread_entry, "reGML audio decode", task.get());

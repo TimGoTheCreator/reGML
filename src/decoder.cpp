@@ -139,7 +139,8 @@ Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
         throw Error(ErrorKind::unsupported, "instruction decoding currently supports bytecode 15, 16, and 17",
                     code.origin());
     if (code.size() > std::numeric_limits<std::uint32_t>::max())
-        throw Error(ErrorKind::unsupported, "code blob exceeds compact instruction address range", code.origin());
+        throw Error(ErrorKind::unsupported, "code blob exceeds compact instruction address range",
+                    code.origin());
     if (code.size() % 4 != 0)
         throw Error(ErrorKind::malformed, "bytecode length is not word aligned", code.origin());
     Program program;
@@ -150,7 +151,8 @@ Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
         program.index_by_word.assign(code.size() / 4 + 1, std::numeric_limits<std::uint32_t>::max());
     for (std::size_t offset = 0; offset < code.size();) {
         if (program.instructions.size() >= limits.max_instructions)
-            throw Error(ErrorKind::unsupported, "instruction count exceeds configured limit", code.origin() + offset);
+            throw Error(ErrorKind::unsupported, "instruction count exceeds configured limit",
+                        code.origin() + offset);
         Instruction ins;
         ins.offset = static_cast<std::uint32_t>(offset);
         ins.word = code.u32(offset);
@@ -161,7 +163,8 @@ Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
         switch (ins.opcode()) {
         case Opcode::push_i:
             if (static_cast<std::uint8_t>((ins.word >> 16) & 0xff) != 15)
-                throw Error(ErrorKind::unsupported, "pushi with unexpected operand type", code.origin() + offset);
+                throw Error(ErrorKind::unsupported, "pushi with unexpected operand type",
+                            code.origin() + offset);
             ins.set_immediate(
                 static_cast<std::int32_t>(std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word))));
             break;
@@ -227,7 +230,7 @@ Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
                 ins.set_environment_exit();
                 break;
             }
-            // Signed 23-bit displacement in words, relative to this instruction.
+            // signed 23bit displacement in words, relative to (this) instruction
             if ((encoded & 0x800000) != 0)
                 throw Error(ErrorKind::malformed, "invalid branch sign encoding", code.origin() + offset);
             auto words = static_cast<std::int64_t>(encoded & 0x7fffff);

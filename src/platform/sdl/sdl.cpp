@@ -38,12 +38,17 @@ class FrameProfileLog {
         file_.open(path, std::ios::trunc);
         if (!file_)
             throw Error(ErrorKind::io, "frame profile cannot be opened");
-        file_ << "frame,room,samples,frame_ms,tick_ms,present_ms,max_tick_ms,max_present_ms,instructions_per_frame\n";
+        file_ << "frame,room,samples,frame_ms,tick_ms,present_ms,max_tick_ms,max_present_ms,instructions_per_"
+                 "frame\n";
         file_ << std::fixed << std::setprecision(3);
     }
     ~FrameProfileLog() { flush(); }
     bool enabled() const noexcept { return file_.is_open(); }
-    void sample(std::size_t frame, const std::string &room, std::size_t instructions, double frame_ms, double tick_ms,
+    void sample(std::size_t frame,
+                const std::string &room,
+                std::size_t instructions,
+                double frame_ms,
+                double tick_ms,
                 double present_ms) {
         if (room != room_) {
             flush();
@@ -67,8 +72,8 @@ class FrameProfileLog {
             return;
         const auto count = static_cast<double>(samples_);
         file_ << frame_ << ',' << std::quoted(room_) << ',' << samples_ << ',' << frame_ms_ / count << ','
-              << tick_ms_ / count << ',' << present_ms_ / count << ',' << max_tick_ms_ << ',' << max_present_ms_ << ','
-              << static_cast<double>(instructions_) / count << '\n';
+              << tick_ms_ / count << ',' << present_ms_ / count << ',' << max_tick_ms_ << ','
+              << max_present_ms_ << ',' << static_cast<double>(instructions_) / count << '\n';
         file_.flush();
         samples_ = instructions_ = 0;
         frame_ms_ = tick_ms_ = present_ms_ = max_tick_ms_ = max_present_ms_ = 0;
@@ -130,7 +135,8 @@ class VideoWindow {
         : escape_quits_(escape_quits), speed_controls_(speed_controls) {
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
 #if REGML_WII
-        const auto flags = static_cast<Uint32>(SDL_WINDOW_FULLSCREEN | (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN));
+        const auto flags =
+            static_cast<Uint32>(SDL_WINDOW_FULLSCREEN | (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN));
         constexpr int window_width = 640, window_height = 480;
 #else
         const auto flags = static_cast<Uint32>(SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
@@ -138,8 +144,8 @@ class VideoWindow {
         constexpr int window_width = 800, window_height = 600;
 #endif
         window_.reset(SDL_CreateWindow(escape_quits ? "reGML - VM Arcade" : "reGML - Game (experimental)",
-                                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, window_width, window_height,
-                                       flags));
+                                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, window_width,
+                                       window_height, flags));
         if (!window_)
             throw Error(ErrorKind::io, std::string("window creation: ") + SDL_GetError());
         renderer_.reset(SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_ACCELERATED));
@@ -148,8 +154,8 @@ class VideoWindow {
         if (!renderer_)
             throw Error(ErrorKind::io, std::string("renderer creation: ") + SDL_GetError());
         sdl_ok(SDL_RenderSetLogicalSize(renderer_.get(), 640, 480), "logical resolution");
-        texture_.reset(SDL_CreateTexture(renderer_.get(), SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-                                         render_width, render_height));
+        texture_.reset(SDL_CreateTexture(renderer_.get(), SDL_PIXELFORMAT_ARGB8888,
+                                         SDL_TEXTUREACCESS_STREAMING, render_width, render_height));
         if (!texture_)
             throw Error(ErrorKind::io, std::string("framebuffer texture: ") + SDL_GetError());
         sdl_ok(SDL_SetTextureBlendMode(texture_.get(), SDL_BLENDMODE_NONE), "texture blend mode");
@@ -180,8 +186,9 @@ class VideoWindow {
                 return false;
             if (speed_controls_ && speed_multiplier && event.type == SDL_KEYDOWN && !event.key.repeat) {
                 if (event.key.keysym.sym == SDLK_LEFTBRACKET || event.key.keysym.sym == SDLK_RIGHTBRACKET) {
-                    *speed_multiplier = std::clamp(
-                        *speed_multiplier * (event.key.keysym.sym == SDLK_LEFTBRACKET ? 0.5 : 2.0), 0.01, 1000.0);
+                    *speed_multiplier =
+                        std::clamp(*speed_multiplier * (event.key.keysym.sym == SDLK_LEFTBRACKET ? 0.5 : 2.0),
+                                   0.01, 1000.0);
                     std::ostringstream title;
                     title << "reGML - Game (" << std::setprecision(3) << *speed_multiplier << "x)";
                     SDL_SetWindowTitle(window_.get(), title.str().c_str());
@@ -219,14 +226,16 @@ class VideoWindow {
                     if (event.type == SDL_CONTROLLERBUTTONDOWN)
                         pressed_[index] = true;
                 }
-                if (event.type == SDL_CONTROLLERBUTTONDOWN && event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)
+                if (event.type == SDL_CONTROLLERBUTTONDOWN &&
+                    event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)
                     return false;
             }
         }
         return true;
     }
     template <class Session> void tick(Session &session, bool autoplay) {
-        session.tick(autoplay ? demo_autoplay(session.frames()) : held_, autoplay ? KeyboardState{} : pressed_);
+        session.tick(autoplay ? demo_autoplay(session.frames()) : held_,
+                     autoplay ? KeyboardState{} : pressed_);
         pressed_.fill(false);
     }
     void present(const Canvas &canvas) {
@@ -267,7 +276,7 @@ class VideoWindow {
             return -1;
         }
     }
-    // Keep SDL alive until the window and renderer are destroyed.
+    // SDL needs to outlive the window and renderer
     SdlLifetime lifetime_;
     std::unique_ptr<SDL_Window, WindowDelete> window_;
     std::unique_ptr<SDL_Renderer, RendererDelete> renderer_;
@@ -297,7 +306,8 @@ class VideoWindow {
     }
     template <class Session> void tick(Session &session, bool autoplay) {
         const auto pressed = input_.take_pressed();
-        session.tick(autoplay ? demo_autoplay(session.frames()) : input_.held(), autoplay ? KeyboardState{} : pressed);
+        session.tick(autoplay ? demo_autoplay(session.frames()) : input_.held(),
+                     autoplay ? KeyboardState{} : pressed);
     }
     void tick_game(GameSession &session, const KeyboardState *replay) {
         session.canvas().gpu_target(true);
@@ -369,7 +379,8 @@ class AudioDevice {
         constexpr std::size_t queued_bytes = 8192 * 2 * sizeof(float);
         while (SDL_GetQueuedAudioSize(device_) < queued_bytes) {
             session_.mix_audio(audio_buffer_, playback_rate_);
-            sdl_ok(SDL_QueueAudio(device_, audio_buffer_.data(), static_cast<Uint32>(block_samples * sizeof(float))),
+            sdl_ok(SDL_QueueAudio(device_, audio_buffer_.data(),
+                                  static_cast<Uint32>(block_samples * sizeof(float))),
                    "audio queue");
         }
 #endif
@@ -397,16 +408,16 @@ class AudioDevice {
 #endif
 void draw_debug_overlay(GameSession &session, double frame_ms) {
     std::ostringstream metrics;
-    metrics << std::fixed << std::setprecision(1) << debug_overlay_fps_label << (1000.0 / std::max(frame_ms, 0.1))
-            << "  " << debug_overlay_frame_label << session.frames() << "  " << frame_ms
-            << debug_overlay_milliseconds_label;
+    metrics << std::fixed << std::setprecision(1) << debug_overlay_fps_label
+            << (1000.0 / std::max(frame_ms, 0.1)) << "  " << debug_overlay_frame_label << session.frames()
+            << "  " << frame_ms << debug_overlay_milliseconds_label;
     std::ostringstream address;
     address << debug_overlay_address_label << std::hex << std::uppercase << std::setw(8) << std::setfill('0')
             << session.vm_address();
     const auto code = session.vm_code_name();
-    std::array<std::string, 4> storage{metrics.str(), std::string(debug_overlay_room_label) + session.room_name(),
-                                       std::string(debug_overlay_code_label) + std::string(code.empty() ? "-" : code),
-                                       address.str()};
+    std::array<std::string, 4> storage{
+        metrics.str(), std::string(debug_overlay_room_label) + session.room_name(),
+        std::string(debug_overlay_code_label) + std::string(code.empty() ? "-" : code), address.str()};
     std::array<std::string_view, 4> lines{storage[0], storage[1], storage[2], storage[3]};
     session.canvas().debug_text_overlay(lines);
 }
@@ -441,7 +452,7 @@ PlayReport play_demo(const PlayOptions &options) {
             const auto now = Clock::now();
             accumulated += std::min(std::chrono::duration<double>(now - previous).count(), 0.25);
             previous = now;
-            // Limit catch-up after a stall; retain input edges for each step.
+            // don't try to catch up forever after a stall; keep input edges for each step
             std::size_t steps = 0;
             while (accumulated >= step && steps < 5 &&
                    (options.frame_limit == 0 || session.frames() < options.frame_limit)) {
@@ -540,12 +551,16 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             using Clock = std::chrono::steady_clock;
             const auto start = profile.enabled() ? Clock::now() : Clock::time_point{};
             const auto instructions_begin = session.instructions();
-            session.tick(!replay.empty() ? input() : options.autoplay ? demo_autoplay(i) : KeyboardState{}, {});
+            session.tick(!replay.empty()    ? input()
+                         : options.autoplay ? demo_autoplay(i)
+                                            : KeyboardState{},
+                         {});
             const auto tick_end = profile.enabled() ? Clock::now() : Clock::time_point{};
             silent_audio.resize(static_cast<std::size_t>(96000 / session.speed()));
             session.mix_audio(silent_audio);
             if (profile.enabled())
-                profile.sample(session.frames(), session.room_name(), session.instructions() - instructions_begin,
+                profile.sample(session.frames(), session.room_name(),
+                               session.instructions() - instructions_begin,
                                std::chrono::duration<double, std::milli>(Clock::now() - start).count(),
                                std::chrono::duration<double, std::milli>(tick_end - start).count(), 0);
         }
@@ -607,7 +622,7 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(frame_time);
 #if !REGML_PS2
             if (!options.hidden) {
-                // Drop missed deadlines instead of replaying the backlog at full speed.
+                // skip missed frames instead of racing through the backlog
                 next = std::max(next, std::chrono::steady_clock::now());
                 std::this_thread::sleep_until(next);
             }
@@ -616,8 +631,9 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
                 const auto ms = [](auto duration) {
                     return std::chrono::duration<double, std::milli>(duration).count();
                 };
-                profile.sample(session.frames(), session.room_name(), session.instructions() - instructions_begin,
-                               ms(Clock::now() - frame_begin), ms(tick_end - tick_begin), ms(present_end - tick_end));
+                profile.sample(session.frames(), session.room_name(),
+                               session.instructions() - instructions_begin, ms(Clock::now() - frame_begin),
+                               ms(tick_end - tick_begin), ms(present_end - tick_end));
             }
         }
 #else

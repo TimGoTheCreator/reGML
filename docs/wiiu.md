@@ -1,20 +1,20 @@
-﻿# Wii U
+# Wii U
 
-Experimental, tested in Cemu 2.6 with Undertale
+Experimental, tested with Undertale in Cemu 2.6
 Real hardware and a full playthrough are untested
-Particle effects are still slow
+Particle effects are slow
 
 ## Build
 
 Requires devkitPro with Wii U support
-In its MSYS2 terminal:
+Open its MSYS2 terminal:
 
 ```sh
 pacman -Syu
 pacman -S --needed cmake ninja wiiu-dev wiiu-sdl2 ppc-libpng ppc-libvorbis
 ```
 
-From the repository root:
+Run from the repo root:
 
 ```sh
 /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake -S . -B build-wiiu -DCMAKE_BUILD_TYPE=Release -DREGML_WIIU=ON -DBUILD_TESTING=OFF
@@ -39,8 +39,8 @@ Tiramisu: launch the RPX through the Homebrew Launcher
 
 ## Cemu
 
-Put the game files in `sdcard/reGML/` inside the Cemu directory
-Configure a Wii U GamePad in Input settings and enable TV audio in General settings > Audio
+Put game files in `sdcard/reGML/` inside the Cemu dir
+Set a Wii U GamePad in Input settings and enable TV audio in General settings > Audio
 Load `build-wiiu/regml.wuhb` through File > Load
 
 D-pad maps to arrow keys, A to Z, B to X, X/Y to C, Start to Enter
@@ -48,17 +48,17 @@ D-pad maps to arrow keys, A to Z, B to X, X/Y to C, Start to Enter
 ## Debugging
 
 Create an empty `regml-trace.enabled` beside `data.win` to enable logging
-The output is `regml-trace.log` in the same directory, with frame counts, instruction counts, room names and loop stages
-Remove the marker when finished; logging flushes to disk at each stage
+Output is `regml-trace.log` in the same folder, with frame counts, instruction counts, room names and loop stages
+Remove the marker when done; logs flush to disk at each stage
 
-Create `regml-profile.enabled` beside `data.win` for frame timings in `regml-profile.csv`
-It records average frame, game tick and presentation times in milliseconds, plus the slowest tick and presentation in each group of 30 frames
+Create `regml-profile.enabled` beside `data.win` for timings in `regml-profile.csv`
+It records average frame, game tick and presentation times in ms, plus the slowest tick and presentation in each group of 30 frames
 Desktop: `--profile-log output.csv`
 
-For an on-screen debug HUD, put an empty `regml-debug.enabled` file beside `data.win`.
+For the debug HUD, put an empty `regml-debug.enabled` beside `data.win`
 
-For an input replay, put `regml-input.txt` beside `data.win`
-Each line is a frame number followed by held GML key codes
+For input replay, put `regml-input.txt` beside `data.win`
+Each line has a frame number followed by held GML key codes
 
 ```text
 30 90
@@ -69,5 +69,5 @@ Each line is a frame number followed by held GML key codes
 
 This holds Z on frames 30 and 120, then releases it on the following frames
 A frame number with no keys releases everything
-The format is the same as desktop `--input-script`
+Same format as desktop `--input-script`
 Remove the file to use controller input again

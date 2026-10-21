@@ -3,8 +3,11 @@
 #include <iterator>
 #include <limits>
 namespace regml {
-LinkedPackage link_legacy_package(const Package &package, LoadLimits limits, bool retain_audit_maps,
-                                  bool build_instruction_index, bool lazy_programs) {
+LinkedPackage link_legacy_package(const Package &package,
+                                  LoadLimits limits,
+                                  bool retain_audit_maps,
+                                  bool build_instruction_index,
+                                  bool lazy_programs) {
     if (!package.general_info() || !package.general_info()->has_known_prefix)
         throw Error(ErrorKind::unsupported, "symbol linking requires known metadata");
     const auto version = package.general_info()->bytecode_version;
@@ -54,9 +57,10 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits, boo
             for (std::size_t i = 0; i < count; ++i)
                 add_occurrences(data.u32(8 + i * 12), chunk->data_offset + 8 + i * 12);
         }
-        // Keep malformed occurrence counts from forcing a huge allocation before
-        // the decoded instruction stream proves those references actually exist.
-        const auto reserve_hint = std::min({reference_count, package.code().size() * 64, std::size_t{512 * 1024}});
+        // don't let a bad occurrence count trigger a huge allocation before
+        // we know those references are in the decoded instructions
+        const auto reserve_hint =
+            std::min({reference_count, package.code().size() * 64, std::size_t{512 * 1024}});
         reference_bindings.reserve(reserve_hint);
     }
     std::vector<ProgramRange> ranges;
@@ -67,7 +71,7 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits, boo
         auto program = decode(BinaryView(bytes, package.code()[i].bytecode_offset), version,
                               {1'000'000, build_instruction_index});
         result.instruction_count += program.instructions.size();
-        // Decoder limits apply per program; bound the package total too.
+        // check the total package size too; per-program limits aren't enough
         if (result.instruction_count > 10'000'000)
             throw Error(ErrorKind::unsupported, "package instruction limit exceeded");
         if (program.byte_length)
@@ -81,9 +85,9 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits, boo
                      ins.type1 == DataType::variable);
                 if (ins.opcode() == Opcode::call || variable_op)
                     reference_bindings.push_back({static_cast<std::uint32_t>(program.origin + ins.offset),
-                                                   (ins.reference_value() & reference_operand_mask) |
-                                                       (variable_op ? reference_variable_flag : 0U) |
-                                                       (ins.has_reference() ? reference_site_flag : 0U)});
+                                                  (ins.reference_value() & reference_operand_mask) |
+                                                      (variable_op ? reference_variable_flag : 0U) |
+                                                      (ins.has_reference() ? reference_site_flag : 0U)});
                 if (ins.type1 == DataType::string && ins.has_reference() &&
                     ins.reference_value() >= package.strings().size())
                     throw Error(ErrorKind::malformed, "string immediate is out of range",
@@ -108,9 +112,9 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits, boo
         std::sort(reference_bindings.begin(), reference_bindings.end(),
                   [](const auto &left, const auto &right) { return left.address < right.address; });
     auto find_instruction = [&](std::size_t address) -> Instruction * {
-        const auto it =
-            std::upper_bound(ranges.begin(), ranges.end(), address,
-                             [](std::size_t value, const ProgramRange &range) { return value < range.begin; });
+        const auto it = std::upper_bound(
+            ranges.begin(), ranges.end(), address,
+            [](std::size_t value, const ProgramRange &range) { return value < range.begin; });
         if (it == ranges.begin())
             return nullptr;
         const auto &range = *std::prev(it);
@@ -132,9 +136,11 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits, boo
         symbol.occurrences = data.u32(occurrence_field);
         symbol.first_address = data.u32(occurrence_field + 4);
         if (symbol.occurrences > result.instruction_count)
-            throw Error(ErrorKind::malformed, "symbol occurrence count exceeds instructions", occurrence_field);
+            throw Error(ErrorKind::malformed, "symbol occurrence count exceeds instructions",
+                        occurrence_field);
         if (symbol.occurrences == 0 && symbol.first_address != 0xffffffffU)
-            throw Error(ErrorKind::malformed, "unused symbol must have sentinel first address", occurrence_field + 4);
+            throw Error(ErrorKind::malformed, "unused symbol must have sentinel first address",
+                        occurrence_field + 4);
         return symbol;
     };
     if (const auto *chunk = package.find_chunk("VARI"); chunk && chunk->size) {
@@ -158,7 +164,7 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits, boo
             throw Error(ErrorKind::malformed, "truncated function table", chunk->data_offset);
         for (std::size_t i = 0; i < count; ++i)
             result.functions.push_back(read_symbol(local, 4 + i * 12, false));
-        // FUNC local records do not affect chain resolution.
+        // FUNC local records aren't part of chain resolution
     }
     auto resolve = [&](const std::vector<PackageSymbol> &symbols, bool variable) {
         auto &bindings = variable ? result.variable_at : result.function_at;
@@ -170,37 +176,44 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits, boo
                 LinkedPackage::ReferenceBinding *site = nullptr;
                 std::uint32_t next = 0;
                 if (lazy_programs) {
-                    const auto found = std::lower_bound(reference_bindings.begin(), reference_bindings.end(), address,
-                                                        [](const auto &entry, std::size_t key) {
-                                                            return entry.address < key;
-                                                        });
+                    const auto found = std::lower_bound(
+                        reference_bindings.begin(), reference_bindings.end(), address,
+                        [](const auto &entry, std::size_t key) { return entry.address < key; });
                     if (found != reference_bindings.end() && found->address == address)
                         site = &*found;
                     if (!site)
-                        throw Error(ErrorKind::malformed, "reference chain does not target an instruction", address);
+                        throw Error(ErrorKind::malformed, "reference chain does not target an instruction",
+                                    address);
                     if ((site->symbol & reference_site_flag) == 0 ||
                         ((site->symbol & reference_variable_flag) != 0) != variable)
-                        throw Error(ErrorKind::malformed, "reference chain targets wrong instruction kind", address);
+                        throw Error(ErrorKind::malformed, "reference chain targets wrong instruction kind",
+                                    address);
                     if (site->symbol < reference_variable_flag)
-                        throw Error(ErrorKind::malformed, "reference chain overlaps another occurrence", address);
+                        throw Error(ErrorKind::malformed, "reference chain overlaps another occurrence",
+                                    address);
                     if (id >= reference_variable_flag)
-                        throw Error(ErrorKind::unsupported, "symbol ID exceeds compact reference range", address);
+                        throw Error(ErrorKind::unsupported, "symbol ID exceeds compact reference range",
+                                    address);
                     next = site->symbol & reference_operand_mask;
                     site->symbol = static_cast<std::uint32_t>(id);
                 } else {
                     instruction = find_instruction(address);
                     if (!instruction)
-                        throw Error(ErrorKind::malformed, "reference chain does not target an instruction", address);
-                    const bool variable_op =
-                        instruction->opcode() == Opcode::pop ||
-                        ((instruction->opcode() == Opcode::push || instruction->opcode() == Opcode::push_local ||
-                          instruction->opcode() == Opcode::push_global || instruction->opcode() == Opcode::push_builtin) &&
-                         instruction->type1 == DataType::variable);
+                        throw Error(ErrorKind::malformed, "reference chain does not target an instruction",
+                                    address);
+                    const bool variable_op = instruction->opcode() == Opcode::pop ||
+                                             ((instruction->opcode() == Opcode::push ||
+                                               instruction->opcode() == Opcode::push_local ||
+                                               instruction->opcode() == Opcode::push_global ||
+                                               instruction->opcode() == Opcode::push_builtin) &&
+                                              instruction->type1 == DataType::variable);
                     if (!instruction->has_reference() ||
                         (variable ? !variable_op : instruction->opcode() != Opcode::call))
-                        throw Error(ErrorKind::malformed, "reference chain targets wrong instruction kind", address);
+                        throw Error(ErrorKind::malformed, "reference chain targets wrong instruction kind",
+                                    address);
                     if (instruction->symbol_id != Instruction::no_symbol)
-                        throw Error(ErrorKind::malformed, "reference chain overlaps another occurrence", address);
+                        throw Error(ErrorKind::malformed, "reference chain overlaps another occurrence",
+                                    address);
                     next = instruction->reference_value();
                     instruction->symbol_id = static_cast<std::uint32_t>(id);
                 }
@@ -208,14 +221,16 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits, boo
                     bindings.emplace(address, id);
                 if (n + 1 < symbol.occurrences) {
                     next &= 0x07ffffffU;
-                    if (next == 0 || next % 4 != 0 || next > package.size() || address > package.size() - next)
-                        throw Error(ErrorKind::malformed, "invalid reference chain displacement", address + 4);
+                    if (next == 0 || next % 4 != 0 || next > package.size() ||
+                        address > package.size() - next)
+                        throw Error(ErrorKind::malformed, "invalid reference chain displacement",
+                                    address + 4);
                     address += next;
                 } else {
                     const auto string_id = next & 0xffffffU;
                     if (string_id >= package.strings().size() || package.string_at(string_id) != symbol.name)
-                        throw Error(ErrorKind::malformed, "reference chain terminal name does not match symbol",
-                                    address + 4);
+                        throw Error(ErrorKind::malformed,
+                                    "reference chain terminal name does not match symbol", address + 4);
                 }
             }
         }
@@ -225,25 +240,27 @@ LinkedPackage link_legacy_package(const Package &package, LoadLimits limits, boo
     if (lazy_programs) {
         for (const auto &reference : reference_bindings) {
             if (reference.symbol >= reference_variable_flag)
-                throw Error(ErrorKind::malformed, "variable or function instruction missing from symbol chains",
-                            reference.address);
+                throw Error(ErrorKind::malformed,
+                            "variable or function instruction missing from symbol chains", reference.address);
         }
     } else {
         for (const auto &program : result.programs)
             for (const auto &ins : program.instructions) {
-            const auto address = program.origin + ins.offset;
-            if (ins.opcode() == Opcode::call && ins.symbol_id == Instruction::no_symbol)
-                throw Error(ErrorKind::malformed, "CALL missing from FUNC chains", address);
-            const bool variable_op = (ins.opcode() == Opcode::pop && ins.type1 != DataType::int16) ||
-                                     ((ins.opcode() == Opcode::push || ins.opcode() == Opcode::push_local ||
-                                       ins.opcode() == Opcode::push_global || ins.opcode() == Opcode::push_builtin) &&
-                                      ins.type1 == DataType::variable);
-            if (variable_op && ins.symbol_id == Instruction::no_symbol)
-                throw Error(ErrorKind::malformed, "variable instruction missing from VARI chains", address);
-            if (ins.type1 == DataType::string && ins.has_reference() &&
-                ins.reference_value() >= package.strings().size())
-                throw Error(ErrorKind::malformed, "string immediate is out of range", address + 4);
-        }
+                const auto address = program.origin + ins.offset;
+                if (ins.opcode() == Opcode::call && ins.symbol_id == Instruction::no_symbol)
+                    throw Error(ErrorKind::malformed, "CALL missing from FUNC chains", address);
+                const bool variable_op =
+                    (ins.opcode() == Opcode::pop && ins.type1 != DataType::int16) ||
+                    ((ins.opcode() == Opcode::push || ins.opcode() == Opcode::push_local ||
+                      ins.opcode() == Opcode::push_global || ins.opcode() == Opcode::push_builtin) &&
+                     ins.type1 == DataType::variable);
+                if (variable_op && ins.symbol_id == Instruction::no_symbol)
+                    throw Error(ErrorKind::malformed, "variable instruction missing from VARI chains",
+                                address);
+                if (ins.type1 == DataType::string && ins.has_reference() &&
+                    ins.reference_value() >= package.strings().size())
+                    throw Error(ErrorKind::malformed, "string immediate is out of range", address + 4);
+            }
     }
     if (lazy_programs) {
         result.program_reference_ranges.resize(result.programs.size());
@@ -304,7 +321,8 @@ Program &LinkedPackage::program(const Package &package, std::size_t index) {
         }
     }
     if (binding != binding_end)
-        throw Error(ErrorKind::malformed, "decoded code has fewer references than its compact table", target.origin);
+        throw Error(ErrorKind::malformed, "decoded code has fewer references than its compact table",
+                    target.origin);
     target = std::move(decoded);
     decoded_program_bytes += target.instructions.capacity() * sizeof(Instruction) +
                              target.index_by_word.capacity() * sizeof(std::uint32_t);

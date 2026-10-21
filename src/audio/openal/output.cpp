@@ -126,7 +126,8 @@ struct OpenALOutput::Impl {
     }
 };
 
-OpenALOutput::OpenALOutput(GameSession &session, double speed) : impl_(std::make_unique<Impl>(session, speed)) {}
+OpenALOutput::OpenALOutput(GameSession &session, double speed)
+    : impl_(std::make_unique<Impl>(session, speed)) {}
 OpenALOutput::~OpenALOutput() = default;
 void OpenALOutput::set_speed(double speed) noexcept {
     impl_->playback_rate.store(speed, std::memory_order_relaxed);

@@ -42,8 +42,8 @@ void ps2_memory_trace(std::string_view stage, std::size_t position = 0) {
         return;
     const auto memory = mallinfo();
     if (auto *log = std::fopen("host:reGML/regml-load.log", "a")) {
-        std::fprintf(log, "%.*s at %u heap=%u free=%u arena=%u\n", static_cast<int>(stage.size()), stage.data(),
-                     static_cast<unsigned>(position), static_cast<unsigned>(memory.uordblks),
+        std::fprintf(log, "%.*s at %u heap=%u free=%u arena=%u\n", static_cast<int>(stage.size()),
+                     stage.data(), static_cast<unsigned>(position), static_cast<unsigned>(memory.uordblks),
                      static_cast<unsigned>(memory.fordblks), static_cast<unsigned>(memory.arena));
         std::fclose(log);
     }
@@ -107,8 +107,9 @@ std::string save_profile(const Package &package, const std::filesystem::path &pa
 Package load_game_package(const std::filesystem::path &path) {
     auto package = Package::load(path);
     if (package.general_info() && package.general_info()->bytecode_version == 17)
-        throw Error(ErrorKind::unsupported,
-                    "bytecode 17 can be decoded and linked, but GameMaker 2 runtime support is not implemented");
+        throw Error(
+            ErrorKind::unsupported,
+            "bytecode 17 can be decoded and linked, but GameMaker 2 runtime support is not implemented");
     return package;
 }
 struct Object {
@@ -131,17 +132,15 @@ struct Object {
     int draw_owner = -1;
 };
 const Object::EventCode *find_event(const Object &object, Object::EventKey key) {
-    const auto found = std::lower_bound(object.events.begin(), object.events.end(), key,
-                                        [](const Object::EventCode &event, Object::EventKey target) {
-                                            return event.key < target;
-                                        });
+    const auto found = std::lower_bound(
+        object.events.begin(), object.events.end(), key,
+        [](const Object::EventCode &event, Object::EventKey target) { return event.key < target; });
     return found != object.events.end() && found->key == key ? &*found : nullptr;
 }
 int find_event_owner(const Object &object, Object::EventKey key) {
-    const auto found = std::lower_bound(object.event_owners.begin(), object.event_owners.end(), key,
-                                        [](const Object::EventOwner &event, Object::EventKey target) {
-                                            return event.key < target;
-                                        });
+    const auto found = std::lower_bound(
+        object.event_owners.begin(), object.event_owners.end(), key,
+        [](const Object::EventOwner &event, Object::EventKey target) { return event.key < target; });
     return found != object.event_owners.end() && found->key == key ? found->object : -1;
 }
 struct Placement {
@@ -221,8 +220,8 @@ struct GameSession::Impl {
     std::unordered_map<int, SavedRoom> saved_rooms;
     VariableStore globals, engine;
     KeyboardState held{}, pressed{}, previous_held{}, released{};
-    // DS maps hold arbitrary game data, so their keys need owned storage rather
-    // than the shared pool used for bytecode variable names.
+    // ds maps can have any game data as keys, so they need their own storage
+    // instead of sharing the bytecode name pool
     using DynamicMap = std::unordered_map<std::string, Value, VariableStoreHash, std::equal_to<>>;
     std::unordered_map<int, DynamicMap> maps;
     std::unordered_map<int, std::vector<Value>> lists;
@@ -267,12 +266,15 @@ struct GameSession::Impl {
     std::filesystem::path game_dir;
     std::optional<std::uint32_t> fixed_seed;
     mutable std::unordered_map<std::string, std::vector<std::uint8_t>> load_chunks;
-    explicit Impl(const std::filesystem::path &path, std::optional<std::uint32_t> seed,
+    explicit Impl(const std::filesystem::path &path,
+                  std::optional<std::uint32_t> seed,
                   const std::filesystem::path &save_directory)
         : package(load_stage("package metadata", [&] { return load_game_package(path); })),
-          linked(load_stage(
-              "bytecode",
-              [&] { return link_legacy_package(package, {}, false, build_instruction_index, lazy_programs); })),
+          linked(load_stage("bytecode",
+                            [&] {
+                                return link_legacy_package(package, {}, false, build_instruction_index,
+                                                           lazy_programs);
+                            })),
           assets(load_stage("graphics metadata", [&] { return GameAssets(package); })),
           audio(load_stage("audio metadata", [&] { return GameAudio(package, path.parent_path()); })),
           game_dir(path.parent_path()), fixed_seed(seed) {
@@ -287,7 +289,7 @@ struct GameSession::Impl {
             std::unordered_map<std::string, std::vector<std::uint8_t>>{}.swap(load_chunks);
             return true;
         });
-        // Execution uses IDs baked into instructions; these audit maps can leave the stage now.
+        // instructions already have the IDs they need, so we can drop these lookup maps now
         std::unordered_map<std::size_t, std::size_t>{}.swap(linked.variable_at);
         std::unordered_map<std::size_t, std::size_t>{}.swap(linked.function_at);
         engine = {{"os_type", std::int32_t{0}},
@@ -378,35 +380,38 @@ struct GameSession::Impl {
                     point.y = std::bit_cast<float>(points.u32(j * 12 + 4));
                     point.speed = std::bit_cast<float>(points.u32(j * 12 + 8));
                     if (!path.points.empty())
-                        path.length += std::hypot(point.x - path.points.back().x, point.y - path.points.back().y);
+                        path.length +=
+                            std::hypot(point.x - path.points.back().x, point.y - path.points.back().y);
                     point.distance = path.length;
                     path.points.push_back(point);
                 }
                 const bool closed = header.u32(8) != 0;
                 if (closed && path.points.size() > 1)
                     path.points.push_back(path.points.front());
-                // Arc-length lookup keeps speed independent of curve parameterization.
+                // looking up distance along the curve keeps it moving at a steady speed
                 if (path.smooth && path.points.size() > 1) {
                     const auto controls = std::move(path.points);
                     path.points.clear();
                     path.length = 0;
                     const int subdivisions = static_cast<int>(path.precision * 8);
-                    path.points.reserve((controls.size() - 1) * static_cast<std::size_t>(subdivisions + 1) + 1);
+                    path.points.reserve((controls.size() - 1) * static_cast<std::size_t>(subdivisions + 1) +
+                                        1);
                     for (std::size_t segment = 0; segment + 1 < controls.size(); ++segment) {
                         const auto &p1 = controls[segment];
                         const auto &p2 = controls[segment + 1];
                         const auto &p0 =
                             segment ? controls[segment - 1] : (closed ? controls[controls.size() - 2] : p1);
-                        const auto &p3 =
-                            segment + 2 < controls.size() ? controls[segment + 2] : (closed ? controls[1] : p2);
+                        const auto &p3 = segment + 2 < controls.size() ? controls[segment + 2]
+                                                                       : (closed ? controls[1] : p2);
                         for (int sample = 0; sample < subdivisions; ++sample) {
-                            const double t = static_cast<double>(sample) / subdivisions, t2 = t * t, t3 = t2 * t;
-                            const double x =
-                                0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
-                                       (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3);
-                            const double y =
-                                0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
-                                       (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3);
+                            const double t = static_cast<double>(sample) / subdivisions, t2 = t * t,
+                                         t3 = t2 * t;
+                            const double x = 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t +
+                                                    (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
+                                                    (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3);
+                            const double y = 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t +
+                                                    (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+                                                    (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3);
                             const double speed = p1.speed + (p2.speed - p1.speed) * t;
                             PathPoint point{x, y, speed, 0};
                             if (!path.points.empty())
@@ -417,7 +422,8 @@ struct GameSession::Impl {
                     }
                     const auto &last = controls.back();
                     if (!path.points.empty())
-                        path.length += std::hypot(last.x - path.points.back().x, last.y - path.points.back().y);
+                        path.length +=
+                            std::hypot(last.x - path.points.back().x, last.y - path.points.back().y);
                     path.points.push_back({last.x, last.y, last.speed, path.length});
                 } else {
                     path.length = 0;
@@ -455,10 +461,9 @@ struct GameSession::Impl {
                         code_valid(code);
                         if (code >= 0) {
                             const Object::EventKey key{static_cast<int>(type), subtype};
-                            const auto found = std::find_if(o.events.begin(), o.events.end(),
-                                                            [key](const Object::EventCode &entry) {
-                                                                return entry.key == key;
-                                                            });
+                            const auto found = std::find_if(
+                                o.events.begin(), o.events.end(),
+                                [key](const Object::EventCode &entry) { return entry.key == key; });
                             if (found == o.events.end())
                                 o.events.push_back({key, {code}});
                             else
@@ -528,7 +533,7 @@ struct GameSession::Impl {
                 throw Error(ErrorKind::malformed, "invalid ordered room");
             order.push_back(id);
         }
-        // The parsed world is now in structs; keeping every source chunk would waste Wii RAM for nostalgia.
+        // world data is already in structs, so drop the old chunks and save some Wii RAM
         load_chunks.clear();
     }
     void load_room_payload(Room &room) {
@@ -639,13 +644,14 @@ struct GameSession::Impl {
         if (id < 0)
             return {x, x, y, y, false};
         const auto &s = assets.sprite(id);
-        const double sx = value_number(i.vars.at("image_xscale")), sy = value_number(i.vars.at("image_yscale"));
+        const double sx = value_number(i.vars.at("image_xscale")),
+                     sy = value_number(i.vars.at("image_yscale"));
         const int left = full_sprite ? 0 : s.left, right = full_sprite ? s.width : s.right + 1,
                   top = full_sprite ? 0 : s.top, bottom = full_sprite ? s.height : s.bottom + 1;
         const double a = value_number(i.vars.at("image_angle")) * 3.141592653589793 / 180;
         if (a == 0) {
-            const double x1 = x + (left - s.ox) * sx, x2 = x + (right - s.ox) * sx, y1 = y + (top - s.oy) * sy,
-                         y2 = y + (bottom - s.oy) * sy;
+            const double x1 = x + (left - s.ox) * sx, x2 = x + (right - s.ox) * sx,
+                         y1 = y + (top - s.oy) * sy, y2 = y + (bottom - s.oy) * sy;
             return {std::min(x1, x2), std::max(x1, x2), std::min(y1, y2), std::max(y1, y2), true};
         }
         const double c = std::cos(a), sn = std::sin(a);
@@ -679,7 +685,8 @@ struct GameSession::Impl {
         if (id < 0)
             return mask;
         const auto &sprite = assets.sprite(id);
-        const double sx = value_number(i.vars.at("image_xscale")), sy = value_number(i.vars.at("image_yscale"));
+        const double sx = value_number(i.vars.at("image_xscale")),
+                     sy = value_number(i.vars.at("image_yscale"));
         if (sx == 0 || sy == 0)
             return mask;
         const double angle = value_number(i.vars.at("image_angle")) * 3.141592653589793 / 180;
@@ -693,7 +700,8 @@ struct GameSession::Impl {
         if (sprite.precise && sprite.mask_count != 0) {
             const double frame = value_number(i.vars.at("image_index"));
             const auto count = static_cast<double>(sprite.mask_count);
-            const auto index = static_cast<std::size_t>(std::fmod(std::fmod(std::floor(frame), count) + count, count));
+            const auto index =
+                static_cast<std::size_t>(std::fmod(std::fmod(std::floor(frame), count) + count, count));
             mask.pixels = assets.mask_frame(id, index);
             mask.stride = (static_cast<std::size_t>(sprite.width) + 7) / 8;
         }
@@ -706,12 +714,13 @@ struct GameSession::Impl {
         const double dx = world_x - mask.x, dy = world_y - mask.y;
         const int px = static_cast<int>(std::floor((dx * mask.c - dy * mask.sn) / mask.sx + sprite.ox));
         const int py = static_cast<int>(std::floor((dx * mask.sn + dy * mask.c) / mask.sy + sprite.oy));
-        if (px < sprite.left || px > sprite.right || py < sprite.top || py > sprite.bottom || px < 0 || py < 0 ||
-            px >= sprite.width || py >= sprite.height)
+        if (px < sprite.left || px > sprite.right || py < sprite.top || py > sprite.bottom || px < 0 ||
+            py < 0 || px >= sprite.width || py >= sprite.height)
             return false;
         if (mask.pixels.empty())
             return true;
-        const auto byte = mask.pixels[static_cast<std::size_t>(py) * mask.stride + static_cast<std::size_t>(px) / 8];
+        const auto byte =
+            mask.pixels[static_cast<std::size_t>(py) * mask.stride + static_cast<std::size_t>(px) / 8];
         return (byte & (0x80U >> (px & 7))) != 0;
     }
     bool collides(const Instance &a, double x, double y, const Instance &b) const {
@@ -729,7 +738,8 @@ struct GameSession::Impl {
                   bottom = static_cast<int>(std::ceil(std::min(first.bottom, second.bottom)));
         for (int py = top; py < bottom; ++py)
             for (int px = left; px < right; ++px)
-                if (mask_contains(first_mask, px + 0.5, py + 0.5) && mask_contains(second_mask, px + 0.5, py + 0.5))
+                if (mask_contains(first_mask, px + 0.5, py + 0.5) &&
+                    mask_contains(second_mask, px + 0.5, py + 0.5))
                     return true;
         return false;
     }
@@ -737,8 +747,8 @@ struct GameSession::Impl {
         if (object == -3 || object == i.id)
             return true;
         int n = i.object;
-        for (std::size_t guard = 0; n >= 0 && static_cast<std::size_t>(n) < objects.size() && guard < objects.size();
-             ++guard) {
+        for (std::size_t guard = 0;
+             n >= 0 && static_cast<std::size_t>(n) < objects.size() && guard < objects.size(); ++guard) {
             if (n == object)
                 return true;
             n = objects[static_cast<std::size_t>(n)].parent;
@@ -767,8 +777,8 @@ struct GameSession::Impl {
         return nullptr;
     }
     CollisionRoute collision_event(int source, int target) {
-        const auto key =
-            (static_cast<std::uint64_t>(static_cast<std::uint32_t>(source)) << 32) | static_cast<std::uint32_t>(target);
+        const auto key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(source)) << 32) |
+                         static_cast<std::uint32_t>(target);
         if (const auto found = collision_routes.find(key); found != collision_routes.end())
             return found->second;
         const auto remember = [&](CollisionRoute route) {
@@ -777,10 +787,12 @@ struct GameSession::Impl {
             return route;
         };
         for (std::size_t guard = 0;
-             source >= 0 && static_cast<std::size_t>(source) < objects.size() && guard < objects.size(); ++guard) {
+             source >= 0 && static_cast<std::size_t>(source) < objects.size() && guard < objects.size();
+             ++guard) {
             int other = target;
             for (std::size_t tg = 0;
-                 other >= 0 && static_cast<std::size_t>(other) < objects.size() && tg < objects.size(); ++tg) {
+                 other >= 0 && static_cast<std::size_t>(other) < objects.size() && tg < objects.size();
+                 ++tg) {
                 if (find_event(objects[static_cast<std::size_t>(source)], {4, other}))
                     return remember({source, other});
                 other = objects[static_cast<std::size_t>(other)].parent;
@@ -840,9 +852,10 @@ struct GameSession::Impl {
             } else
                 saved_rooms.erase(current_room);
         }
-        std::erase_if(instances, [](const auto &i) { return !i->alive || number(i->vars.at("persistent")) == 0; });
+        std::erase_if(instances,
+                      [](const auto &i) { return !i->alive || number(i->vars.at("persistent")) == 0; });
 #if REGML_LOW_MEMORY
-        // Only the room we're standing in needs its placements, views and tiles in RAM.
+        // only the current room needs its placements, views, and tiles loaded
         if (current_room >= 0) {
             auto &previous_room = rooms[static_cast<std::size_t>(current_room)];
             std::vector<Placement>{}.swap(previous_room.instances);
@@ -1005,8 +1018,9 @@ struct GameSession::Impl {
                         if (name == "bbox_bottom")
                             return std::ceil(b.bottom) - 1;
                     }
-                    if (!writing && (name == "sprite_width" || name == "sprite_height" || name == "sprite_xoffset" ||
-                                     name == "sprite_yoffset" || name == "image_number")) {
+                    if (!writing &&
+                        (name == "sprite_width" || name == "sprite_height" || name == "sprite_xoffset" ||
+                         name == "sprite_yoffset" || name == "image_number")) {
                         const auto *found = first_target(scope, self, other);
                         if (!found)
                             throw Error(ErrorKind::vm, "sprite variable instance missing");
@@ -1032,8 +1046,8 @@ struct GameSession::Impl {
                         store = &globals;
                     else if (scope == -7 || name.starts_with("argument"))
                         store = &locals;
-                    else if (engine.contains(name) ||
-                             (kind == 0xa0 && ins.opcode() == Opcode::push_builtin && !self->vars.contains(name)))
+                    else if (engine.contains(name) || (kind == 0xa0 && ins.opcode() == Opcode::push_builtin &&
+                                                       !self->vars.contains(name)))
                         store = &engine;
                     else if (scope == -1 && self)
                         store = &self->vars;
@@ -1044,18 +1058,21 @@ struct GameSession::Impl {
                         if (!writing) {
                             auto *found = first_target(scope, self, other);
                             if (!found)
-                                throw Error(ErrorKind::vm, "variable instance not found: " + std::string(name));
+                                throw Error(ErrorKind::vm,
+                                            "variable instance not found: " + std::string(name));
                             store = &found->vars;
                         }
                     }
                     auto access = [&](VariableStore *store) -> Value {
-                        if (!writing && store == &locals && name == "argument_count" && !locals.contains(name))
+                        if (!writing && store == &locals && name == "argument_count" &&
+                            !locals.contains(name))
                             return static_cast<std::int32_t>(arguments.size());
                         if (array_index >= 0 && !store->contains(name)) {
                             auto base = store->find(symbol.name);
                             if (base == store->end()) {
                                 if (!writing)
-                                    throw Error(ErrorKind::vm, "array variable is uninitialized: " + symbol.name);
+                                    throw Error(ErrorKind::vm,
+                                                "array variable is uninitialized: " + symbol.name);
                                 base = store->emplace(symbol.name, ArrayPtr(new ArrayValue)).first;
                             }
                             auto *array = std::get_if<ArrayPtr>(&base->second);
@@ -1064,7 +1081,8 @@ struct GameSession::Impl {
                                 array = std::get_if<ArrayPtr>(&base->second);
                             }
                             if (!array || !*array)
-                                throw Error(ErrorKind::vm, "indexed variable is not an array: " + symbol.name);
+                                throw Error(ErrorKind::vm,
+                                            "indexed variable is not an array: " + symbol.name);
                             const int row = array_index / 32000, col = array_index % 32000;
                             if (writing) {
                                 if (array->use_count() > 1)
@@ -1078,9 +1096,11 @@ struct GameSession::Impl {
                             }
                             const auto length = (*array)->row_lengths.find(row);
                             if (length == (*array)->row_lengths.end() || col >= length->second)
-                                throw Error(ErrorKind::vm, "array read exceeds allocated row: " + symbol.name);
+                                throw Error(ErrorKind::vm,
+                                            "array read exceeds allocated row: " + symbol.name);
                             const auto element = (*array)->elements.find(array_index);
-                            return element == (*array)->elements.end() ? Value{std::int32_t{0}} : element->second;
+                            return element == (*array)->elements.end() ? Value{std::int32_t{0}}
+                                                                       : element->second;
                         }
                         if (writing) {
                             (*store)[name] = value;
@@ -1088,7 +1108,8 @@ struct GameSession::Impl {
                                 pending_room = number(value);
                             if (store != &engine && store != &globals && store != &locals) {
                                 if (name == "speed" || name == "direction") {
-                                    const double rad = value_number(store->at("direction")) * 3.141592653589793 / 180,
+                                    const double rad = value_number(store->at("direction")) *
+                                                       3.141592653589793 / 180,
                                                  speed = value_number(store->at("speed"));
                                     (*store)["hspeed"] = speed * std::cos(rad);
                                     (*store)["vspeed"] = -speed * std::sin(rad);
@@ -1149,7 +1170,7 @@ struct GameSession::Impl {
                 case Opcode::pop: {
                     if (ins.type1 == DataType::int16)
                         throw Error(ErrorKind::unsupported, "native stack swap pending");
-                    // store.v.* puts the value above scope/index; store.*.v puts it below.
+                    // store.v.* leaves the value on top of scope/index; store.*.v puts it underneath
                     if (ins.type1 != DataType::variable) {
                         auto v = pop();
                         variable(true, v);
@@ -1274,7 +1295,8 @@ struct GameSession::Impl {
                                                          << (static_cast<unsigned>(number(right)) & 31)));
                         break;
                     case Opcode::shr:
-                        push(static_cast<std::int32_t>(number(left) >> (static_cast<unsigned>(number(right)) & 31)));
+                        push(static_cast<std::int32_t>(number(left) >>
+                                                       (static_cast<unsigned>(number(right)) & 31)));
                         break;
                     default:
                         break;
@@ -1378,7 +1400,8 @@ struct GameSession::Impl {
                 case Opcode::extended: {
                     const auto sub = std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
                     if (sub != -1)
-                        throw Error(ErrorKind::unsupported, "native extended opcode pending: " + std::to_string(sub));
+                        throw Error(ErrorKind::unsupported,
+                                    "native extended opcode pending: " + std::to_string(sub));
                     if (stack.empty() || number(stack.back()) < 0 || number(stack.back()) >= 32000)
                         throw Error(ErrorKind::vm, "legacy two-dimensional array index out of range");
                     break;
@@ -1400,7 +1423,8 @@ struct GameSession::Impl {
             }
         } catch (const Error &e) {
             throw Error(e.kind(),
-                        std::string(e.what()) + " in " + std::string(package.code_name(static_cast<std::size_t>(code))),
+                        std::string(e.what()) + " in " +
+                            std::string(package.code_name(static_cast<std::size_t>(code))),
                         e.offset().value_or(program.origin + pc));
         } catch (const std::bad_alloc &) {
             throw Error(ErrorKind::io,
@@ -1460,7 +1484,7 @@ struct GameSession::Impl {
             return text(0);
         if (name == "real") {
             if (value_is_string(args[0])) {
-                // Legacy runners convert the empty string to zero.
+                // older runners treat an empty string like zero
                 if (text(0).empty())
                     return 0.0;
                 try {
@@ -1525,15 +1549,17 @@ struct GameSession::Impl {
         }
         if (name == "string_insert") {
             auto str = text(1);
-            const auto at = static_cast<std::size_t>(std::clamp(n(2) - 1, 0.0, static_cast<double>(str.size())));
+            const auto at =
+                static_cast<std::size_t>(std::clamp(n(2) - 1, 0.0, static_cast<double>(str.size())));
             str.insert(at, text(0));
             return str;
         }
         if (name == "string_char_at") {
             auto str = text(0);
             const int at = std::max(0, static_cast<int>(n(1)) - 1);
-            return at >= 0 && static_cast<std::size_t>(at) < str.size() ? str.substr(static_cast<std::size_t>(at), 1)
-                                                                        : std::string{};
+            return at >= 0 && static_cast<std::size_t>(at) < str.size()
+                       ? str.substr(static_cast<std::size_t>(at), 1)
+                       : std::string{};
         }
         if (name == "string_repeat") {
             const auto count = std::clamp(static_cast<int>(n(1)), 0, 1'000'000);
@@ -1569,7 +1595,8 @@ struct GameSession::Impl {
             maps[id] = {};
             return std::int32_t{id};
         }
-        if (name == "ds_map_set" || name == "ds_map_replace" || name == "ds_map_add" || name == "ds_map_set_post") {
+        if (name == "ds_map_set" || name == "ds_map_replace" || name == "ds_map_add" ||
+            name == "ds_map_set_post") {
             auto &map = maps.at(static_cast<int>(n(0)));
             const auto key = (value_is_string(args[1]) ? "s:" : "n:") + text(1);
             if (name == "ds_map_add" && map.contains(key))
@@ -1758,7 +1785,8 @@ struct GameSession::Impl {
                                                                                   : 0;
                 if (!width)
                     throw Error(ErrorKind::vm, "unsupported buffer_write data type");
-                write_integer(static_cast<std::uint64_t>(static_cast<std::int64_t>(value_number(value))), width);
+                write_integer(static_cast<std::uint64_t>(static_cast<std::int64_t>(value_number(value))),
+                              width);
             }
             if (buffer.position + encoded.size() > 64 * 1024 * 1024)
                 throw Error(ErrorKind::vm, "buffer exceeds size limit");
@@ -1854,7 +1882,8 @@ struct GameSession::Impl {
                 return false;
             if (args.size() > 1 && buffers.contains(static_cast<int>(value_number(args[1])))) {
                 const auto &bytes = buffers.at(static_cast<int>(value_number(args[1]))).bytes;
-                output.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+                output.write(reinterpret_cast<const char *>(bytes.data()),
+                             static_cast<std::streamsize>(bytes.size()));
             } else if (args.size() > 1) {
                 const auto contents = value_text(args[1]);
                 output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
@@ -1881,7 +1910,8 @@ struct GameSession::Impl {
                     bytes.resize(static_cast<std::size_t>(input.gcount()));
                     if (offset + bytes.size() > buffer.bytes.size())
                         buffer.bytes.resize(offset + bytes.size());
-                    std::copy(bytes.begin(), bytes.end(), buffer.bytes.begin() + static_cast<std::ptrdiff_t>(offset));
+                    std::copy(bytes.begin(), bytes.end(),
+                              buffer.bytes.begin() + static_cast<std::ptrdiff_t>(offset));
                 }
             } else {
                 if (!prepare_save_directory())
@@ -1897,7 +1927,8 @@ struct GameSession::Impl {
             }
             return std::int32_t{next_async_request++};
         }
-        if (name == "file_text_open_write" || name == "file_text_open_read" || name == "file_text_open_append") {
+        if (name == "file_text_open_write" || name == "file_text_open_read" ||
+            name == "file_text_open_append") {
             const auto path = save_path(text(0));
             if (name != "file_text_open_read" && !prepare_save_directory())
                 return std::int32_t{-1};
@@ -1933,7 +1964,8 @@ struct GameSession::Impl {
             if (!file)
                 return std::string{};
             std::string value;
-            while (file->peek() != std::char_traits<char>::eof() && file->peek() != '\r' && file->peek() != '\n')
+            while (file->peek() != std::char_traits<char>::eof() && file->peek() != '\r' &&
+                   file->peek() != '\n')
                 value.push_back(static_cast<char>(file->get()));
             return value;
         }
@@ -2067,7 +2099,8 @@ struct GameSession::Impl {
         }
         if (name == "randomize") {
             if (!fixed_seed)
-                random.seed(static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+                random.seed(
+                    static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
             return std::monostate{};
         }
         if (name == "audio_channel_num") {
@@ -2173,13 +2206,13 @@ struct GameSession::Impl {
             return std::monostate{};
         }
         if (name == "draw_text_transformed") {
-            assets.draw_text(canvas, draw_font, n(0), n(1), text(2), draw_color, draw_alpha, halign, valign, n(3), n(4),
-                             n(5));
+            assets.draw_text(canvas, draw_font, n(0), n(1), text(2), draw_color, draw_alpha, halign, valign,
+                             n(3), n(4), n(5));
             return std::monostate{};
         }
         if (name == "draw_text_transformed_color") {
-            assets.draw_text(canvas, draw_font, n(0), n(1), text(2), static_cast<unsigned>(n(6)), draw_alpha, halign,
-                             valign, n(3), n(4), n(5));
+            assets.draw_text(canvas, draw_font, n(0), n(1), text(2), static_cast<unsigned>(n(6)), draw_alpha,
+                             halign, valign, n(3), n(4), n(5));
             return std::monostate{};
         }
         if (name == "draw_text_ext") {
@@ -2190,9 +2223,12 @@ struct GameSession::Impl {
             double line_width = 0;
             double y = n(1);
             for (const char ch : value) {
-                const double char_width = ch == '\n' || ch == '#' ? 0 : assets.text_width(draw_font, {&ch, 1});
-                if ((ch == ' ' && max_width > 0 && line_width + char_width > max_width) || ch == '\n' || ch == '#') {
-                    assets.draw_text(canvas, draw_font, n(0), y, line, draw_color, draw_alpha, halign, valign);
+                const double char_width =
+                    ch == '\n' || ch == '#' ? 0 : assets.text_width(draw_font, {&ch, 1});
+                if ((ch == ' ' && max_width > 0 && line_width + char_width > max_width) || ch == '\n' ||
+                    ch == '#') {
+                    assets.draw_text(canvas, draw_font, n(0), y, line, draw_color, draw_alpha, halign,
+                                     valign);
                     line.clear();
                     line_width = 0;
                     y += line_height;
@@ -2211,7 +2247,8 @@ struct GameSession::Impl {
             if (static_cast<std::uint64_t>(width) * height > 64ULL * 1024 * 1024)
                 return std::int32_t{-1};
             const int id = next_surface++;
-            surfaces.emplace(std::piecewise_construct, std::forward_as_tuple(id), std::forward_as_tuple(width, height));
+            surfaces.emplace(std::piecewise_construct, std::forward_as_tuple(id),
+                             std::forward_as_tuple(width, height));
             surfaces.at(id).clear_transparent();
             return std::int32_t{id};
         }
@@ -2253,8 +2290,9 @@ struct GameSession::Impl {
                 return std::monostate{};
             const Canvas source = surfaces.at(id);
             const bool extended = name == "draw_surface_ext";
-            canvas.draw_surface(source, n(1), n(2), extended ? n(3) : 1, extended ? n(4) : 1, extended ? n(5) : 0,
-                                extended ? static_cast<unsigned>(n(6)) : 0xffffff, extended ? n(7) : 1);
+            canvas.draw_surface(source, n(1), n(2), extended ? n(3) : 1, extended ? n(4) : 1,
+                                extended ? n(5) : 0, extended ? static_cast<unsigned>(n(6)) : 0xffffff,
+                                extended ? n(7) : 1);
             return std::monostate{};
         }
         if (name == "string_width")
@@ -2299,7 +2337,8 @@ struct GameSession::Impl {
         if (name == "draw_ellipse_color") {
             draw_color = static_cast<unsigned>(n(4));
             canvas.color(draw_color);
-            canvas.circle((n(0) + n(2)) / 2, (n(1) + n(3)) / 2, std::max(n(2) - n(0), n(3) - n(1)) / 2, n(6) != 0);
+            canvas.circle((n(0) + n(2)) / 2, (n(1) + n(3)) / 2, std::max(n(2) - n(0), n(3) - n(1)) / 2,
+                          n(6) != 0);
             return std::monostate{};
         }
         if (name == "draw_roundrect") {
@@ -2337,8 +2376,8 @@ struct GameSession::Impl {
             return std::monostate{};
         }
         if (name == "draw_background_part_ext") {
-            assets.draw_background_part_ext(canvas, static_cast<int>(n(0)), n(1), n(2), n(3), n(4), n(5), n(6), n(7),
-                                            n(8), static_cast<unsigned>(n(9)), n(10));
+            assets.draw_background_part_ext(canvas, static_cast<int>(n(0)), n(1), n(2), n(3), n(4), n(5),
+                                            n(6), n(7), n(8), static_cast<unsigned>(n(9)), n(10));
             return std::monostate{};
         }
         if (name == "draw_sprite") {
@@ -2348,47 +2387,49 @@ struct GameSession::Impl {
         }
         if (name == "draw_sprite_ext") {
             assets.draw_sprite(canvas, static_cast<int>(n(0)),
-                               n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1), n(2), n(3), n(4), n(5),
-                               n(6), static_cast<unsigned>(n(7)), n(8));
+                               n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1), n(2), n(3), n(4),
+                               n(5), n(6), static_cast<unsigned>(n(7)), n(8));
             return std::monostate{};
         }
         if (name == "draw_sprite_stretched") {
             const auto sprite = static_cast<int>(n(0));
             const auto &info = assets.sprite(sprite);
             const double sx = info.width ? n(4) / info.width : 1, sy = info.height ? n(5) / info.height : 1;
-            assets.draw_sprite(canvas, sprite, n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1), n(2), n(3),
-                               sx, sy, 0, 0xffffff, draw_alpha);
+            assets.draw_sprite(canvas, sprite, n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1),
+                               n(2), n(3), sx, sy, 0, 0xffffff, draw_alpha);
             return std::monostate{};
         }
         if (name == "draw_self") {
             const int sprite = static_cast<int>(value_number(self->vars.at("sprite_index")));
             if (sprite >= 0)
-                assets.draw_sprite(
-                    canvas, sprite, value_number(self->vars.at("image_index")), value_number(self->vars.at("x")),
-                    value_number(self->vars.at("y")), value_number(self->vars.at("image_xscale")),
-                    value_number(self->vars.at("image_yscale")), value_number(self->vars.at("image_angle")),
-                    static_cast<unsigned>(value_number(self->vars.at("image_blend"))),
-                    value_number(self->vars.at("image_alpha")));
+                assets.draw_sprite(canvas, sprite, value_number(self->vars.at("image_index")),
+                                   value_number(self->vars.at("x")), value_number(self->vars.at("y")),
+                                   value_number(self->vars.at("image_xscale")),
+                                   value_number(self->vars.at("image_yscale")),
+                                   value_number(self->vars.at("image_angle")),
+                                   static_cast<unsigned>(value_number(self->vars.at("image_blend"))),
+                                   value_number(self->vars.at("image_alpha")));
             return std::monostate{};
         }
         if (name == "draw_getpixel") {
             const int x = static_cast<int>(n(0)), y = static_cast<int>(n(1));
             if (x < 0 || y < 0 || x >= canvas.logical_width() || y >= canvas.logical_height())
                 return std::int32_t{-1};
-            const auto pixel =
-                canvas.pixel(static_cast<int>(x * canvas.render_scale()), static_cast<int>(y * canvas.render_scale()));
-            return std::int32_t{static_cast<int>(((pixel >> 16) & 0xff) | (pixel & 0xff00) | ((pixel & 0xff) << 16))};
+            const auto pixel = canvas.pixel(static_cast<int>(x * canvas.render_scale()),
+                                            static_cast<int>(y * canvas.render_scale()));
+            return std::int32_t{
+                static_cast<int>(((pixel >> 16) & 0xff) | (pixel & 0xff00) | ((pixel & 0xff) << 16))};
         }
         if (name == "draw_sprite_part") {
             assets.draw_sprite_part(canvas, static_cast<int>(n(0)),
-                                    n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1), n(2), n(3), n(4),
-                                    n(5), n(6), n(7), 1, 1, 0xffffff, draw_alpha);
+                                    n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1), n(2), n(3),
+                                    n(4), n(5), n(6), n(7), 1, 1, 0xffffff, draw_alpha);
             return std::monostate{};
         }
         if (name == "draw_sprite_part_ext") {
             assets.draw_sprite_part(canvas, static_cast<int>(n(0)),
-                                    n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1), n(2), n(3), n(4),
-                                    n(5), n(6), n(7), n(8), n(9), static_cast<unsigned>(n(10)), n(11));
+                                    n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1), n(2), n(3),
+                                    n(4), n(5), n(6), n(7), n(8), n(9), static_cast<unsigned>(n(10)), n(11));
             return std::monostate{};
         }
         if (name == "collision_line") {
@@ -2428,8 +2469,8 @@ struct GameSession::Impl {
                 if (!b.valid)
                     continue;
                 if (point ? (x1 >= b.left && x1 < b.right && y1 >= b.top && y1 < b.bottom)
-                          : (std::max(x1, x2) >= b.left && std::min(x1, x2) < b.right && std::max(y1, y2) >= b.top &&
-                             std::min(y1, y2) < b.bottom))
+                          : (std::max(x1, x2) >= b.left && std::min(x1, x2) < b.right &&
+                             std::max(y1, y2) >= b.top && std::min(y1, y2) < b.bottom))
                     return std::int32_t{i->id};
             }
             return std::int32_t{-4};
@@ -2460,9 +2501,11 @@ struct GameSession::Impl {
                     choices.push_back(k);
             if (choices.empty())
                 return 0.0;
-            const int chosen = choices[std::uniform_int_distribution<std::size_t>(0, choices.size() - 1)(random)];
+            const int chosen =
+                choices[std::uniform_int_distribution<std::size_t>(0, choices.size() - 1)(random)];
             const double angles[] = {225, 270, 315, 180, 0, 0, 135, 90, 45};
-            const double speed = chosen == 4 ? 0 : n(1), angle = angles[chosen], rad = angle * 3.141592653589793 / 180;
+            const double speed = chosen == 4 ? 0 : n(1), angle = angles[chosen],
+                         rad = angle * 3.141592653589793 / 180;
             self->vars["speed"] = speed;
             self->vars["direction"] = angle;
             self->vars["hspeed"] = speed * std::cos(rad);
@@ -2471,7 +2514,8 @@ struct GameSession::Impl {
         }
         if (name == "action_move_point") {
             double target_x = n(0), target_y = n(1);
-            if (auto it = globals.find("__argument_relative"); it != globals.end() && value_number(it->second) != 0) {
+            if (auto it = globals.find("__argument_relative");
+                it != globals.end() && value_number(it->second) != 0) {
                 target_x += value_number(self->vars.at("x"));
                 target_y += value_number(self->vars.at("y"));
             }
@@ -2491,7 +2535,8 @@ struct GameSession::Impl {
         }
         if (name == "action_set_motion") {
             double direction = n(0), speed = n(1);
-            if (auto it = globals.find("__argument_relative"); it != globals.end() && value_number(it->second) != 0) {
+            if (auto it = globals.find("__argument_relative");
+                it != globals.end() && value_number(it->second) != 0) {
                 direction += value_number(self->vars.at("direction"));
                 speed += value_number(self->vars.at("speed"));
             }
@@ -2512,14 +2557,16 @@ struct GameSession::Impl {
         }
         if (name == "action_set_friction") {
             double value = n(0);
-            if (auto it = globals.find("__argument_relative"); it != globals.end() && value_number(it->second) != 0)
+            if (auto it = globals.find("__argument_relative");
+                it != globals.end() && value_number(it->second) != 0)
                 value += value_number(self->vars.at("friction"));
             self->vars["friction"] = value;
             return 0.0;
         }
         if (name == "action_set_gravity") {
             double direction = n(0), gravity = n(1);
-            if (auto it = globals.find("__argument_relative"); it != globals.end() && value_number(it->second) != 0) {
+            if (auto it = globals.find("__argument_relative");
+                it != globals.end() && value_number(it->second) != 0) {
                 direction += value_number(self->vars.at("gravity_direction"));
                 gravity += value_number(self->vars.at("gravity"));
             }
@@ -2530,7 +2577,8 @@ struct GameSession::Impl {
         if (name == "action_set_hspeed" || name == "action_set_vspeed") {
             const auto component = name == "action_set_hspeed" ? "hspeed" : "vspeed";
             double value = n(0);
-            if (auto it = globals.find("__argument_relative"); it != globals.end() && value_number(it->second) != 0)
+            if (auto it = globals.find("__argument_relative");
+                it != globals.end() && value_number(it->second) != 0)
                 value += value_number(self->vars.at(component));
             set_velocity(component, value);
             return std::monostate{};
@@ -2562,8 +2610,9 @@ struct GameSession::Impl {
             return std::monostate{};
         }
         if (name == "move_towards_point") {
-            const double dx = n(0) - value_number(self->vars.at("x")), dy = n(1) - value_number(self->vars.at("y")),
-                         length = std::hypot(dx, dy), speed = n(2);
+            const double dx = n(0) - value_number(self->vars.at("x")),
+                         dy = n(1) - value_number(self->vars.at("y")), length = std::hypot(dx, dy),
+                         speed = n(2);
             self->vars["speed"] = speed;
             self->vars["direction"] = std::fmod(std::atan2(-dy, dx) * 180 / 3.141592653589793 + 360, 360);
             self->vars["hspeed"] = length != 0 ? dx * speed / length : 0;
@@ -2588,7 +2637,9 @@ struct GameSession::Impl {
         if (name == "darctan2")
             return std::atan2(n(0), n(1)) * 180 / 3.141592653589793;
         if (name == "make_color_rgb") {
-            const auto channel = [&](std::size_t i) { return static_cast<unsigned>(std::clamp(n(i), 0.0, 255.0)); };
+            const auto channel = [&](std::size_t i) {
+                return static_cast<unsigned>(std::clamp(n(i), 0.0, 255.0));
+            };
             return std::int32_t{static_cast<int>((channel(2) << 16) | (channel(1) << 8) | channel(0))};
         }
         if (name == "make_color_hsv") {
@@ -2651,8 +2702,9 @@ struct GameSession::Impl {
                 const auto target = bounds(*i);
                 if (source.valid && target.valid)
                     nearest = std::min(
-                        nearest, std::hypot(std::max({target.left - source.right, source.left - target.right, 0.0}),
-                                            std::max({target.top - source.bottom, source.top - target.bottom, 0.0})));
+                        nearest,
+                        std::hypot(std::max({target.left - source.right, source.left - target.right, 0.0}),
+                                   std::max({target.top - source.bottom, source.top - target.bottom, 0.0})));
             }
             return std::isfinite(nearest) ? nearest : -1.0;
         }
@@ -2850,7 +2902,8 @@ struct GameSession::Impl {
             p.object = static_cast<int>(n(0));
             p.x = n(1);
             p.y = n(2);
-            if (auto it = globals.find("__argument_relative"); it != globals.end() && value_number(it->second) != 0) {
+            if (auto it = globals.find("__argument_relative");
+                it != globals.end() && value_number(it->second) != 0) {
                 p.x += value_number(self->vars.at("x"));
                 p.y += value_number(self->vars.at("y"));
             }
@@ -2985,9 +3038,9 @@ struct GameSession::Impl {
         const char *allocation_stage = "audio service";
         try {
             audio.service();
-            static const std::array<std::string, 12> alarm_names = {"alarm[0]", "alarm[1]", "alarm[2]",  "alarm[3]",
-                                                                    "alarm[4]", "alarm[5]", "alarm[6]",  "alarm[7]",
-                                                                    "alarm[8]", "alarm[9]", "alarm[10]", "alarm[11]"};
+            static const std::array<std::string, 12> alarm_names = {
+                "alarm[0]", "alarm[1]", "alarm[2]", "alarm[3]", "alarm[4]",  "alarm[5]",
+                "alarm[6]", "alarm[7]", "alarm[8]", "alarm[9]", "alarm[10]", "alarm[11]"};
             held = input;
             pressed = edges;
             for (std::size_t k = 0; k < 256; ++k) {
@@ -3060,7 +3113,8 @@ struct GameSession::Impl {
                     i->vars["vspeed"] = v;
                     i->vars["speed"] = h == 0 && v == 0 ? 0 : std::hypot(h, v);
                     if (h != 0 || v != 0)
-                        i->vars["direction"] = std::fmod(std::atan2(-v, h) * 180 / 3.141592653589793 + 360, 360);
+                        i->vars["direction"] =
+                            std::fmod(std::atan2(-v, h) * 180 / 3.141592653589793 + 360, 360);
                     const int path_id = number(i->vars.at("path_index"));
                     if (path_id >= 0) {
                         const auto &path = paths.at(static_cast<std::size_t>(path_id));
@@ -3069,9 +3123,10 @@ struct GameSession::Impl {
                             double position = value_number(i->vars.at("path_position")),
                                    distance = position * path.length;
                             auto sample = [&](double d) {
-                                auto next = std::lower_bound(
-                                    path.points.begin() + 1, path.points.end(), d,
-                                    [](const PathPoint &point, double target) { return point.distance < target; });
+                                auto next = std::lower_bound(path.points.begin() + 1, path.points.end(), d,
+                                                             [](const PathPoint &point, double target) {
+                                                                 return point.distance < target;
+                                                             });
                                 if (next == path.points.end())
                                     return path.points.back();
                                 const auto &before = *(next - 1);
@@ -3081,15 +3136,15 @@ struct GameSession::Impl {
                                                  before.y + (next->y - before.y) * t,
                                                  before.speed + (next->speed - before.speed) * t, d};
                             };
-                            distance += value_number(i->vars.at("path_speed")) * sample(distance).speed / 100 /
-                                        std::max(std::abs(scale), 0.000001);
+                            distance += value_number(i->vars.at("path_speed")) * sample(distance).speed /
+                                        100 / std::max(std::abs(scale), 0.000001);
                             const bool ended = distance < 0 || distance >= path.length;
                             const int action = number(i->vars.at("path_endaction"));
                             double continuation_x = 0, continuation_y = 0;
                             if (ended) {
                                 if (action == 1 || action == 2) {
                                     if (action == 2) {
-                                        // Continue offsets the next traversal by the endpoint delta.
+                                        // continue starts the next pass from the endpoint's offset
                                         const double cycles = std::floor(distance / path.length);
                                         continuation_x =
                                             (path.points.back().x - path.points.front().x) * scale * cycles;
@@ -3100,7 +3155,8 @@ struct GameSession::Impl {
                                         i->vars["path_ystart"] =
                                             value_number(i->vars.at("path_ystart")) + continuation_y;
                                     }
-                                    distance = std::fmod(std::fmod(distance, path.length) + path.length, path.length);
+                                    distance = std::fmod(std::fmod(distance, path.length) + path.length,
+                                                         path.length);
                                 } else if (action == 3) {
                                     distance = std::clamp(distance, 0.0, path.length);
                                     i->vars["path_speed"] = -value_number(i->vars.at("path_speed"));
@@ -3137,38 +3193,40 @@ struct GameSession::Impl {
                         }
                     }
                 }
-            // Fire once when the whole sprite crosses the room boundary.
+            // fire once after the whole sprite leaves the room
             const double room_width = value_number(engine.at("room_width")),
                          room_height = value_number(engine.at("room_height"));
             allocation_stage = "collision and end-step events";
             for (const auto &i : snapshot)
                 if (i->alive) {
-                    const auto b = bounds(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), true);
+                    const auto b =
+                        bounds(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), true);
                     const bool outside =
-                        b.valid ? (b.right <= 0 || b.left >= room_width || b.bottom <= 0 || b.top >= room_height)
-                                : (b.left < 0 || b.left > room_width || b.top < 0 || b.top > room_height);
+                        b.valid
+                            ? (b.right <= 0 || b.left >= room_width || b.bottom <= 0 || b.top >= room_height)
+                            : (b.left < 0 || b.left > room_width || b.top < 0 || b.top > room_height);
                     const bool entered = outside && !i->outside_room;
                     i->outside_room = outside;
                     if (entered)
                         event(i, 7, 0);
                 }
-            // Avoid geometry checks for pairs without a collision handler.
+            // skip the geometry work when the pair has no collision handler
             for (const auto &i : snapshot)
                 if (i->alive && objects[static_cast<std::size_t>(i->object)].has_collision_events)
                     for (const auto &j : snapshot)
                         if (j->alive && i != j) {
                             const auto route = collision_event(i->object, j->object);
-                            if (route.source >= 0 &&
-                                collides(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), *j)) {
+                            if (route.source >= 0 && collides(*i, value_number(i->vars.at("x")),
+                                                              value_number(i->vars.at("y")), *j)) {
                                 const double other_x = value_number(j->vars.at("x"));
                                 const double other_y = value_number(j->vars.at("y"));
                                 const double other_step_x = other_x - value_number(j->vars.at("xprevious"));
                                 const double other_step_y = other_y - value_number(j->vars.at("yprevious"));
                                 event(i, 4, route.target, route.source, j);
                                 if (j->alive) {
-                                    // Collision handlers can push `other` by the same amount it already moved
-                                    // this step. The collision is dispatched after Step, so don't count that
-                                    // movement twice.
+                                    // collision code can move `other` by the same amount it already moved
+                                    // this step. the collision runs after Step, so don't count that
+                                    // movement twice
                                     const double pushed_x = value_number(j->vars.at("x")) - other_x;
                                     const double pushed_y = value_number(j->vars.at("y")) - other_y;
                                     if (other_step_x != 0 && std::abs(pushed_x - other_step_x) < 1e-9)
@@ -3185,8 +3243,9 @@ struct GameSession::Impl {
                 const double vw = value_number(engine.at("view_wview[0]")),
                              vh = value_number(engine.at("view_hview[0]"));
                 if (target >= 0 && vw > 0 && vh > 0) {
-                    const auto tracked = std::find_if(instances.begin(), instances.end(),
-                                                      [&](const auto &i) { return i->alive && i->object == target; });
+                    const auto tracked = std::find_if(instances.begin(), instances.end(), [&](const auto &i) {
+                        return i->alive && i->object == target;
+                    });
                     if (tracked != instances.end()) {
                         const auto &room = rooms.at(static_cast<std::size_t>(current_room));
                         auto follow = [&](const char *view_key, const char *speed_key, const char *coordinate,
@@ -3207,22 +3266,25 @@ struct GameSession::Impl {
                             origin = std::clamp(origin, 0.0, maximum);
                             engine[view_key] = origin;
                         };
-                        follow("view_xview[0]", "view_hspeed[0]", "x", vw, value_number(engine.at("view_hborder[0]")),
-                               room.width);
-                        follow("view_yview[0]", "view_vspeed[0]", "y", vh, value_number(engine.at("view_vborder[0]")),
-                               room.height);
+                        follow("view_xview[0]", "view_hspeed[0]", "x", vw,
+                               value_number(engine.at("view_hborder[0]")), room.width);
+                        follow("view_yview[0]", "view_vspeed[0]", "y", vh,
+                               value_number(engine.at("view_vborder[0]")), room.height);
                     }
                 }
             }
             allocation_stage = "room view setup";
             canvas.clear(rooms.at(static_cast<std::size_t>(current_room)).color);
             if (number(engine.at("view_enabled")) != 0 && number(engine.at("view_visible[0]")) != 0) {
-                const auto w = value_number(engine.at("view_wview[0]")), h = value_number(engine.at("view_hview[0]"));
+                const auto w = value_number(engine.at("view_wview[0]")),
+                           h = value_number(engine.at("view_hview[0]"));
                 if (w <= 0 || h <= 0)
                     throw Error(ErrorKind::vm, "invalid view dimensions");
-                assets.view(value_number(engine.at("view_xview[0]")), value_number(engine.at("view_yview[0]")),
-                            value_number(engine.at("view_wport[0]")) / w, value_number(engine.at("view_hport[0]")) / h,
-                            value_number(engine.at("view_xport[0]")), value_number(engine.at("view_yport[0]")));
+                assets.view(
+                    value_number(engine.at("view_xview[0]")), value_number(engine.at("view_yview[0]")),
+                    value_number(engine.at("view_wport[0]")) / w,
+                    value_number(engine.at("view_hport[0]")) / h, value_number(engine.at("view_xport[0]")),
+                    value_number(engine.at("view_yport[0]")));
             } else
                 assets.view(0, 0, 1, 1, 0, 0);
             const auto &room = rooms.at(static_cast<std::size_t>(current_room));
@@ -3236,11 +3298,11 @@ struct GameSession::Impl {
                 const auto offset = tile_layer_offsets.find(t.id);
                 const double ox = offset == tile_layer_offsets.end() ? 0 : offset->second.first;
                 const double oy = offset == tile_layer_offsets.end() ? 0 : offset->second.second;
-                assets.draw_tile(canvas, t.id, t.source_x, t.source_y, t.width, t.height, t.x + ox, t.y + oy, t.sx,
-                                 t.sy, t.color);
+                assets.draw_tile(canvas, t.id, t.source_x, t.source_y, t.width, t.height, t.x + ox, t.y + oy,
+                                 t.sx, t.sy, t.color);
             };
             std::size_t tile = 0;
-        allocation_stage = "draw-list allocation";
+            allocation_stage = "draw-list allocation";
             draw_entries.clear();
             if (draw_entries.capacity() < snapshot.size())
                 draw_entries.reserve(snapshot.size());
@@ -3251,40 +3313,46 @@ struct GameSession::Impl {
             std::sort(draw_entries.begin(), draw_entries.end(), [](const auto &a, const auto &b) {
                 return a.depth != b.depth ? a.depth > b.depth : a.order < b.order;
             });
-        allocation_stage = "instance draw calls";
+            allocation_stage = "instance draw calls";
             for (auto &entry : draw_entries) {
                 const auto &i = snapshot[entry.order];
                 if (i->alive && !i->deactivated && number(i->vars.at("visible"))) {
-                    while (tile < room.tiles.size() && room.tiles[tile].depth >= value_number(i->vars.at("depth")))
+                    while (tile < room.tiles.size() &&
+                           room.tiles[tile].depth >= value_number(i->vars.at("depth")))
                         draw_tile(room.tiles[tile++]);
                     if (objects[static_cast<std::size_t>(i->object)].draw_owner >= 0)
                         event(i, 8, 0);
                     else {
                         const auto sprite = number(i->vars.at("sprite_index"));
                         if (sprite >= 0)
-                            assets.draw_sprite(
-                                canvas, sprite, value_number(i->vars.at("image_index")), value_number(i->vars.at("x")),
-                                value_number(i->vars.at("y")), value_number(i->vars.at("image_xscale")),
-                                value_number(i->vars.at("image_yscale")), value_number(i->vars.at("image_angle")),
-                                static_cast<unsigned>(number(i->vars.at("image_blend"))),
-                                value_number(i->vars.at("image_alpha")));
+                            assets.draw_sprite(canvas, sprite, value_number(i->vars.at("image_index")),
+                                               value_number(i->vars.at("x")), value_number(i->vars.at("y")),
+                                               value_number(i->vars.at("image_xscale")),
+                                               value_number(i->vars.at("image_yscale")),
+                                               value_number(i->vars.at("image_angle")),
+                                               static_cast<unsigned>(number(i->vars.at("image_blend"))),
+                                               value_number(i->vars.at("image_alpha")));
                     }
-                    const int animated_object = i->object, animated_sprite = number(i->vars.at("sprite_index"));
+                    const int animated_object = i->object,
+                              animated_sprite = number(i->vars.at("sprite_index"));
                     const double old_index = value_number(i->vars.at("image_index")),
                                  image_speed = value_number(i->vars.at("image_speed"));
                     if (animated_sprite >= 0 && image_speed != 0) {
                         const auto frame_count = assets.sprite(animated_sprite).frames.size();
                         if (frame_count) {
-                            const double count = static_cast<double>(frame_count), next_index = old_index + image_speed;
-                            const bool ended = (image_speed > 0 && old_index < count && next_index >= count) ||
-                                               (image_speed < 0 && old_index >= 0 && next_index < 0);
+                            const double count = static_cast<double>(frame_count),
+                                         next_index = old_index + image_speed;
+                            const bool ended =
+                                (image_speed > 0 && old_index < count && next_index >= count) ||
+                                (image_speed < 0 && old_index >= 0 && next_index < 0);
                             i->vars["image_index"] = next_index;
                             if (ended)
                                 event(i, 7, 7);
                             if (i->alive && i->object == animated_object &&
                                 number(i->vars.at("sprite_index")) == animated_sprite &&
                                 value_number(i->vars.at("image_index")) == next_index)
-                                i->vars["image_index"] = std::fmod(std::fmod(next_index, count) + count, count);
+                                i->vars["image_index"] =
+                                    std::fmod(std::fmod(next_index, count) + count, count);
                         }
                     }
                 }
@@ -3302,7 +3370,8 @@ struct GameSession::Impl {
         }
     }
 };
-GameSession::GameSession(const std::filesystem::path &path, std::optional<std::uint32_t> seed,
+GameSession::GameSession(const std::filesystem::path &path,
+                         std::optional<std::uint32_t> seed,
                          const std::filesystem::path &save_directory)
     : impl_(std::make_unique<Impl>(path, seed, save_directory)) {}
 GameSession::~GameSession() = default;

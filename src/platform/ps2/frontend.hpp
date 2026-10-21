@@ -20,7 +20,8 @@ class Ps2Frontend {
     bool poll(double *speed_multiplier = nullptr);
     template <class Session> void tick(Session &session, bool autoplay) {
         const auto pressed = take_pressed();
-        session.tick(autoplay ? demo_autoplay(session.frames()) : held_, autoplay ? KeyboardState{} : pressed);
+        session.tick(autoplay ? demo_autoplay(session.frames()) : held_,
+                     autoplay ? KeyboardState{} : pressed);
     }
     void tick_game(GameSession &session, const KeyboardState *replay);
     void present(const Canvas &canvas);

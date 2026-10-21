@@ -12,7 +12,8 @@ class GameSession {
         std::string object_name;
         VariableStore variables;
     };
-    explicit GameSession(const std::filesystem::path &package, std::optional<std::uint32_t> seed = {},
+    explicit GameSession(const std::filesystem::path &package,
+                         std::optional<std::uint32_t> seed = {},
                          const std::filesystem::path &save_directory = {});
     ~GameSession();
     void tick(const KeyboardState &held, const KeyboardState &pressed);

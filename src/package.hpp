@@ -75,8 +75,8 @@ class Package {
     std::vector<std::uint8_t> string_chunk_;
     std::vector<char> string_data_;
     std::vector<std::size_t> string_data_offsets_;
-    // STRG record indices are enough to build the sorted pointer lookup. Keeping
-    // another pointer beside every index wastes 4 bytes per string.
+    // STRG record indices are enough for the sorted pointer lookup; storing
+    // another pointer for each one would cost 4 bytes per string
     std::vector<std::uint32_t> string_lookup_;
     std::vector<CodeEntry> code_;
 };

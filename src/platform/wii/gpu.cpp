@@ -89,8 +89,8 @@ void pipeline(bool textured) {
     GX_SetNumChans(1);
     GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
     GX_SetNumTexGens(textured ? 1 : 0);
-    GX_SetTevOrder(GX_TEVSTAGE0, textured ? GX_TEXCOORD0 : GX_TEXCOORDNULL, textured ? GX_TEXMAP0 : GX_TEXMAP_NULL,
-                   GX_COLOR0A0);
+    GX_SetTevOrder(GX_TEVSTAGE0, textured ? GX_TEXCOORD0 : GX_TEXCOORDNULL,
+                   textured ? GX_TEXMAP0 : GX_TEXMAP_NULL, GX_COLOR0A0);
     GX_SetTevOp(GX_TEVSTAGE0, textured ? GX_MODULATE : GX_PASSCLR);
     if (textured) {
         GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
@@ -99,8 +99,16 @@ void pipeline(bool textured) {
     GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_COPY);
     GX_SetAlphaCompare(GX_GREATER, 0, GX_AOP_AND, GX_ALWAYS, 0);
 }
-void draw_image(Texture &texture, int width, int height, double x, double y, double dw, double dh, double angle,
-                unsigned tint, double opacity) {
+void draw_image(Texture &texture,
+                int width,
+                int height,
+                double x,
+                double y,
+                double dw,
+                double dh,
+                double angle,
+                unsigned tint,
+                double opacity) {
     texture.used = ++clock;
     pipeline(true);
     if (image_batch_size && image_batch_texture != &texture)
@@ -152,13 +160,14 @@ Texture upload(std::span<const std::uint32_t> pixels, int stride, int left, int 
         for (int tx = 0; tx < t.width; tx += 4) {
             const bool full = tx + 4 <= width;
             for (int yy = 0; yy < 4; ++yy) {
-                const auto *row =
-                    pixels.data() + static_cast<std::size_t>(top + std::min(ty + yy, height - 1)) * stride + left;
+                const auto *row = pixels.data() +
+                                  static_cast<std::size_t>(top + std::min(ty + yy, height - 1)) * stride +
+                                  left;
                 for (int pair = 0; pair < 2; ++pair) {
                     const int sx = tx + pair * 2;
                     const u32 a = row[full ? sx : std::min(sx, width - 1)];
                     const u32 b = row[full ? sx + 1 : std::min(sx + 1, width - 1)];
-                    // Wii is big-endian: each word packs two AR or GB pairs.
+                    // the Wii is big endian; each word packs two AR or GB pairs
                     out[yy * 2 + pair] = (a & 0xffff0000U) | (b >> 16);
                     out[8 + yy * 2 + pair] = (a << 16) | (b & 0xffffU);
                 }
@@ -170,8 +179,8 @@ Texture upload(std::span<const std::uint32_t> pixels, int stride, int left, int 
     DCFlushRange(t.data.get(), t.bytes);
     GX_InvalidateTexAll();
     bound_texture = nullptr;
-    GX_InitTexObj(&t.object, t.data.get(), static_cast<u16>(t.width), static_cast<u16>(t.height), GX_TF_RGBA8, GX_CLAMP,
-                  GX_CLAMP, GX_FALSE);
+    GX_InitTexObj(&t.object, t.data.get(), static_cast<u16>(t.width), static_cast<u16>(t.height), GX_TF_RGBA8,
+                  GX_CLAMP, GX_CLAMP, GX_FALSE);
 #if REGML_240P
     GX_InitTexObjLOD(&t.object, GX_LINEAR, GX_LINEAR, 0, 0, 0, GX_FALSE, GX_FALSE, GX_ANISO_1);
 #else
@@ -180,8 +189,16 @@ Texture upload(std::span<const std::uint32_t> pixels, int stride, int left, int 
     return t;
 }
 } // namespace
-bool wii_gpu_cached_image(int width, int height, double x, double y, double dw, double dh, double angle, unsigned tint,
-                          double opacity, std::uint64_t key) {
+bool wii_gpu_cached_image(int width,
+                          int height,
+                          double x,
+                          double y,
+                          double dw,
+                          double dh,
+                          double angle,
+                          unsigned tint,
+                          double opacity,
+                          std::uint64_t key) {
     if (!key)
         return false;
     if (width <= 1024 && height <= 1024) {
@@ -193,7 +210,7 @@ bool wii_gpu_cached_image(int width, int height, double x, double y, double dw, 
     }
     if (!cached(width, height, key))
         return false;
-    // A cache hit needs no decoded PNG or CPU region copy.
+    // on a cache hit, we can skip decoding the PNG and copying the CPU region
     wii_gpu_image({}, 0, 0, 0, width, height, x, y, dw, dh, angle, tint, opacity, key);
     return true;
 }
@@ -209,7 +226,9 @@ void wii_gpu_begin() {
     GX_LoadProjectionMtx(projection, GX_ORTHOGRAPHIC);
     GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);
 }
-void wii_gpu_flush() { flush_image_batch(); }
+void wii_gpu_flush() {
+    flush_image_batch();
+}
 void wii_gpu_presented() {
     presented = true;
     dirty = false;
@@ -219,15 +238,17 @@ void wii_gpu_box(double x, double y, double width, double height, std::uint32_t 
         return;
     if (box_batch_active) {
         if (box_batch_size < box_batch.size())
-            box_batch[box_batch_size++] = {static_cast<float>(x), static_cast<float>(y), static_cast<float>(width),
-                                           static_cast<float>(height), color(rgba)};
+            box_batch[box_batch_size++] = {static_cast<float>(x), static_cast<float>(y),
+                                           static_cast<float>(width), static_cast<float>(height),
+                                           color(rgba)};
         return;
     }
     pipeline(false);
     const auto c = color(rgba);
     GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
     for (int i : {0, 1, 3, 2}) {
-        GX_Position2f32(static_cast<float>(x + (i & 1 ? width : 0)), static_cast<float>(y + (i & 2 ? height : 0)));
+        GX_Position2f32(static_cast<float>(x + (i & 1 ? width : 0)),
+                        static_cast<float>(y + (i & 2 ? height : 0)));
         GX_Color4u8(c.r, c.g, c.b, c.a);
     }
     GX_End();
@@ -316,8 +337,19 @@ void wii_gpu_circle(double x, double y, double radius, bool outline, std::uint32
     GX_End();
     dirty = true;
 }
-void wii_gpu_image(std::span<const std::uint32_t> pixels, int stride, int left, int top, int width, int height,
-                   double x, double y, double dw, double dh, double angle, unsigned tint, double opacity,
+void wii_gpu_image(std::span<const std::uint32_t> pixels,
+                   int stride,
+                   int left,
+                   int top,
+                   int width,
+                   int height,
+                   double x,
+                   double y,
+                   double dw,
+                   double dh,
+                   double angle,
+                   unsigned tint,
+                   double opacity,
                    std::uint64_t key) {
     if (width <= 0 || height <= 0 || opacity <= 0)
         return;
@@ -329,8 +361,9 @@ void wii_gpu_image(std::span<const std::uint32_t> pixels, int stride, int left, 
                 const int w = std::min(1024, width - xx), h = std::min(1024, height - yy);
                 const double u = dw * xx / width, v = dh * yy / height;
                 const auto child = child_key(key, xx, yy);
-                wii_gpu_image(pixels, stride, left + xx, top + yy, w, h, x + u * cs + v * sn, y - u * sn + v * cs,
-                              dw * w / width, dh * h / height, angle, tint, opacity, child);
+                wii_gpu_image(pixels, stride, left + xx, top + yy, w, h, x + u * cs + v * sn,
+                              y - u * sn + v * cs, dw * w / width, dh * h / height, angle, tint, opacity,
+                              child);
             }
         return;
     }
@@ -344,9 +377,10 @@ void wii_gpu_image(std::span<const std::uint32_t> pixels, int stride, int left, 
             const auto requested_bytes = texture_width * texture_height * 4;
             bool waited = false;
             while (cache_bytes + requested_bytes > budget && !textures.empty()) {
-                auto oldest = std::min_element(textures.begin(), textures.end(), [](const auto &a, const auto &b) {
-                    return a.second.used < b.second.used;
-                });
+                auto oldest =
+                    std::min_element(textures.begin(), textures.end(), [](const auto &a, const auto &b) {
+                        return a.second.used < b.second.used;
+                    });
                 if (!waited) {
                     flush_image_batch();
                     GX_DrawDone();

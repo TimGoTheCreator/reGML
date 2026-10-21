@@ -13,7 +13,7 @@ void finite(double value) {
     if (!std::isfinite(value))
         throw Error(ErrorKind::vm, "drawing coordinate must be finite");
 }
-// 5x7 glyphs, one row per byte, most significant bit first.
+// 5x7 glyphs: one row per byte, with the leftmost pixel in the top bit
 std::array<unsigned, 7> glyph(char c) {
     if (c >= 'a' && c <= 'z')
         c = static_cast<char>(c - 'a' + 'A');
@@ -146,7 +146,8 @@ std::uint32_t Canvas::pixel(int x, int y) const {
     if (gpu_)
         return wii_gpu_pixel(x, y);
 #endif
-    return pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
+    return pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) +
+                   static_cast<std::size_t>(x)];
 }
 void Canvas::clear(std::uint32_t bgr) {
 #if REGML_WII
@@ -179,11 +180,13 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
     }
 #endif
     const unsigned source_alpha =
-        opacity == 1 ? rgba >> 24
-                     : static_cast<unsigned>(static_cast<double>(rgba >> 24) * std::clamp(opacity, 0.0, 1.0) + 0.5);
+        opacity == 1
+            ? rgba >> 24
+            : static_cast<unsigned>(static_cast<double>(rgba >> 24) * std::clamp(opacity, 0.0, 1.0) + 0.5);
     if (source_alpha == 0)
         return;
-    auto &dest = pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
+    auto &dest =
+        pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
     if (source_alpha == 255) {
         if (tint == 0xffffff) {
             dest = rgba;
@@ -224,13 +227,15 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
 void Canvas::rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tint, double opacity) noexcept {
     if (y < 0 || y >= height_ || count <= 0 || x >= width_ || opacity <= 0)
         return;
-    const int end = static_cast<int>(std::min(static_cast<std::int64_t>(x) + count, static_cast<std::int64_t>(width_)));
+    const int end =
+        static_cast<int>(std::min(static_cast<std::int64_t>(x) + count, static_cast<std::int64_t>(width_)));
     x = std::max(x, 0);
     if (x >= end)
         return;
     const unsigned alpha =
-        opacity == 1 ? rgba >> 24
-                     : static_cast<unsigned>(static_cast<double>(rgba >> 24) * std::clamp(opacity, 0.0, 1.0) + 0.5);
+        opacity == 1
+            ? rgba >> 24
+            : static_cast<unsigned>(static_cast<double>(rgba >> 24) * std::clamp(opacity, 0.0, 1.0) + 0.5);
     if (!alpha)
         return;
     const unsigned red = ((rgba >> 16) & 255) * ((tint >> 16) & 255) / 255;
@@ -260,8 +265,16 @@ void Canvas::rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tin
                  ((source_blue + (previous & 255) * inverse + 127) / 255);
     }
 }
-void Canvas::blit_rgba(std::span<const std::uint32_t> source, int source_width, int source_x, int source_y,
-                       int destination_x, int destination_y, int width, int height, unsigned tint, double opacity,
+void Canvas::blit_rgba(std::span<const std::uint32_t> source,
+                       int source_width,
+                       int source_x,
+                       int source_y,
+                       int destination_x,
+                       int destination_y,
+                       int width,
+                       int height,
+                       unsigned tint,
+                       double opacity,
                        std::int8_t source_alpha_mode) noexcept {
     if (opacity <= 0)
         return;
@@ -270,7 +283,8 @@ void Canvas::blit_rgba(std::span<const std::uint32_t> source, int source_width, 
         const auto *src = source.data() +
                           static_cast<std::size_t>(source_y + row) * static_cast<std::size_t>(source_width) +
                           static_cast<std::size_t>(source_x);
-        auto *dst = pixels_.data() + static_cast<std::size_t>(destination_y + row) * static_cast<std::size_t>(width_) +
+        auto *dst = pixels_.data() +
+                    static_cast<std::size_t>(destination_y + row) * static_cast<std::size_t>(width_) +
                     static_cast<std::size_t>(destination_x);
         if (plain && source_alpha_mode == 2) {
             std::copy_n(src, width, dst);
@@ -307,8 +321,9 @@ void Canvas::blit_rgba(std::span<const std::uint32_t> source, int source_width, 
                 const auto previous = dst[column];
                 unsigned result = 0xff000000;
                 for (unsigned shift : {0U, 8U, 16U})
-                    result |= (((pixel >> shift & 255) * alpha + (previous >> shift & 255) * inverse + 127) / 255)
-                              << shift;
+                    result |=
+                        (((pixel >> shift & 255) * alpha + (previous >> shift & 255) * inverse + 127) / 255)
+                        << shift;
                 dst[column] = result;
                 continue;
             }
@@ -316,8 +331,14 @@ void Canvas::blit_rgba(std::span<const std::uint32_t> source, int source_width, 
         }
     }
 }
-void Canvas::draw_surface(const Canvas &source, double x, double y, double sx, double sy, double angle,
-                          std::uint32_t tint, double opacity) {
+void Canvas::draw_surface(const Canvas &source,
+                          double x,
+                          double y,
+                          double sx,
+                          double sy,
+                          double angle,
+                          std::uint32_t tint,
+                          double opacity) {
     x *= render_scale_;
     y *= render_scale_;
     sx *= render_scale_;
@@ -333,33 +354,39 @@ void Canvas::draw_surface(const Canvas &source, double x, double y, double sx, d
         return;
 #if REGML_WII
     if (gpu_) {
-        wii_gpu_image(source.pixels_, source.width_, 0, 0, source.width_, source.height_, x, y, source.width_ * sx,
-                      source.height_ * sy, angle, tint, opacity);
+        wii_gpu_image(source.pixels_, source.width_, 0, 0, source.width_, source.height_, x, y,
+                      source.width_ * sx, source.height_ * sy, angle, tint, opacity);
         return;
     }
 #endif
     if (render_scale_ != 1) {
-        const double radians = angle * 3.141592653589793 / 180, cs = std::cos(radians), sn = std::sin(radians);
+        const double radians = angle * 3.141592653589793 / 180, cs = std::cos(radians),
+                     sn = std::sin(radians);
         const double w = source.width_ * sx, h = source.height_ * sy;
         const double xx[] = {x, x + w * cs, x + h * sn, x + w * cs + h * sn};
         const double yy[] = {y, y - w * sn, y + h * cs, y - w * sn + h * cs};
-        const int left = static_cast<int>(std::clamp(std::floor(*std::min_element(xx, xx + 4)), 0.0, double(width_)));
-        const int right = static_cast<int>(std::clamp(std::ceil(*std::max_element(xx, xx + 4)), 0.0, double(width_)));
-        const int top = static_cast<int>(std::clamp(std::floor(*std::min_element(yy, yy + 4)), 0.0, double(height_)));
-        const int bottom = static_cast<int>(std::clamp(std::ceil(*std::max_element(yy, yy + 4)), 0.0, double(height_)));
+        const int left =
+            static_cast<int>(std::clamp(std::floor(*std::min_element(xx, xx + 4)), 0.0, double(width_)));
+        const int right =
+            static_cast<int>(std::clamp(std::ceil(*std::max_element(xx, xx + 4)), 0.0, double(width_)));
+        const int top =
+            static_cast<int>(std::clamp(std::floor(*std::min_element(yy, yy + 4)), 0.0, double(height_)));
+        const int bottom =
+            static_cast<int>(std::clamp(std::ceil(*std::max_element(yy, yy + 4)), 0.0, double(height_)));
         const unsigned rgb = to_rgb(tint);
         for (int py = top; py < bottom; ++py)
             for (int px = left; px < right; ++px) {
                 const double dx = px + 0.5 - x, dy = py + 0.5 - y;
                 const double u = (dx * cs - dy * sn) / sx, v = (dx * sn + dy * cs) / sy;
                 if (u >= 0 && v >= 0 && u < source.width_ && v < source.height_)
-                    rgba_pixel_tinted(px, py, source.pixel(static_cast<int>(u), static_cast<int>(v)), rgb, opacity);
+                    rgba_pixel_tinted(px, py, source.pixel(static_cast<int>(u), static_cast<int>(v)), rgb,
+                                      opacity);
             }
         return;
     }
-    // Overlapping self-blits need the generic path.
+    // use the general path when a blit overlaps itself
     if (this != &source && sx == 1 && sy == 1 && angle == 0 && tint == 0xffffff && opacity == 1) {
-        // Cull before narrowing coordinates to int.
+        // clip first, before converting the coordinates to int
         if (x < -static_cast<double>(source.width_) - 1 || x > width_ + 1.0 ||
             y < -static_cast<double>(source.height_) - 1 || y > height_ + 1.0)
             return;
@@ -394,7 +421,8 @@ void Canvas::draw_surface(const Canvas &source, double x, double y, double sx, d
                     for (unsigned shift : {0U, 8U, 16U}) {
                         const auto source_channel = (rgba >> shift) & 255;
                         const auto dest_channel = (previous >> shift) & 255;
-                        result |= ((source_channel * alpha + dest_channel * inverse_alpha + 127) / 255) << shift;
+                        result |= ((source_channel * alpha + dest_channel * inverse_alpha + 127) / 255)
+                                  << shift;
                     }
                     dst[column] = result;
                 }
@@ -438,7 +466,8 @@ void Canvas::plot(int x, int y) {
         return;
     }
 #endif
-    auto &dest = pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
+    auto &dest =
+        pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
     if (alpha_ == 255) {
         dest = 0xff000000 | rgb_;
         return;
@@ -527,9 +556,11 @@ void Canvas::circle(double x, double y, double radius, bool outline) {
     }
 #endif
     const int left = static_cast<int>(std::clamp(std::floor(x - radius), 0.0, static_cast<double>(width_)));
-    const int right = static_cast<int>(std::clamp(std::ceil(x + radius + 1), 0.0, static_cast<double>(width_)));
+    const int right =
+        static_cast<int>(std::clamp(std::ceil(x + radius + 1), 0.0, static_cast<double>(width_)));
     const int top = static_cast<int>(std::clamp(std::floor(y - radius), 0.0, static_cast<double>(height_)));
-    const int bottom = static_cast<int>(std::clamp(std::ceil(y + radius + 1), 0.0, static_cast<double>(height_)));
+    const int bottom =
+        static_cast<int>(std::clamp(std::ceil(y + radius + 1), 0.0, static_cast<double>(height_)));
     const auto outer = radius * radius;
     const auto inner = std::max(0.0, radius - 1) * std::max(0.0, radius - 1);
     for (int py = top; py < bottom; ++py)
@@ -552,7 +583,8 @@ void Canvas::line(double x1, double y1, double x2, double y2, double width) {
     finite(x2);
     finite(y2);
     finite(width);
-    if (width <= 0 || width > 2048 || std::max({std::abs(x1), std::abs(y1), std::abs(x2), std::abs(y2)}) > 1e9)
+    if (width <= 0 || width > 2048 ||
+        std::max({std::abs(x1), std::abs(y1), std::abs(x2), std::abs(y2)}) > 1e9)
         throw Error(ErrorKind::unsupported, "line is outside supported limits");
 #if REGML_WII
     if (gpu_) {
@@ -612,9 +644,12 @@ void Canvas::triangle(double x1, double y1, double x2, double y2, double x3, dou
     const double area = (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1);
     if (std::abs(area) < 1e-12)
         return;
-    const int left = static_cast<int>(std::clamp(std::floor(std::min({x1, x2, x3})), 0.0, static_cast<double>(width_)));
-    const int right = static_cast<int>(std::clamp(std::ceil(std::max({x1, x2, x3})), 0.0, static_cast<double>(width_)));
-    const int top = static_cast<int>(std::clamp(std::floor(std::min({y1, y2, y3})), 0.0, static_cast<double>(height_)));
+    const int left =
+        static_cast<int>(std::clamp(std::floor(std::min({x1, x2, x3})), 0.0, static_cast<double>(width_)));
+    const int right =
+        static_cast<int>(std::clamp(std::ceil(std::max({x1, x2, x3})), 0.0, static_cast<double>(width_)));
+    const int top =
+        static_cast<int>(std::clamp(std::floor(std::min({y1, y2, y3})), 0.0, static_cast<double>(height_)));
     const int bottom =
         static_cast<int>(std::clamp(std::ceil(std::max({y1, y2, y3})), 0.0, static_cast<double>(height_)));
     for (int y = top; y < bottom; ++y)
@@ -642,8 +677,10 @@ void Canvas::text(double x, double y, std::string_view value) {
         const auto bitmap = glyph(c);
         for (int row = 0; row < 7; ++row)
             for (int column = 0; column < 5; ++column) {
-                if ((bitmap[static_cast<std::size_t>(row)] & (1U << static_cast<unsigned>(4 - column))) != 0) {
-                    const auto px = std::floor(x) + column * font_scale_, py = std::floor(y) + row * font_scale_;
+                if ((bitmap[static_cast<std::size_t>(row)] & (1U << static_cast<unsigned>(4 - column))) !=
+                    0) {
+                    const auto px = std::floor(x) + column * font_scale_,
+                               py = std::floor(y) + row * font_scale_;
                     rectangle(px, py, px + font_scale_, py + font_scale_, false);
                 }
             }
@@ -665,7 +702,8 @@ void Canvas::debug_text_overlay(std::span<const std::string_view> lines) {
         longest = std::max(longest, lines[i].size());
     const int max_columns = std::max(0, (width_ - 12) / 6);
     const int panel_width = std::min(
-        width_ - 4, 8 + static_cast<int>(std::min<std::size_t>(longest, static_cast<std::size_t>(max_columns))) * 6);
+        width_ - 4,
+        8 + static_cast<int>(std::min<std::size_t>(longest, static_cast<std::size_t>(max_columns))) * 6);
     const int panel_height = 8 + static_cast<int>(visible_lines) * 9;
 #if REGML_WII
     if (gpu_)

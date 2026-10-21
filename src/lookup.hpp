@@ -1,6 +1,5 @@
-/* 
-  this actually isn't a lookup table, its called lookup.hpp because i got tired of changing version on each platform
-*/
+/* this actually isn't a lookup table, it's called lookup.hpp because i got tired of changing the version on
+ * each platform */
 #pragma once
 #include <string_view>
 

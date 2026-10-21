@@ -24,8 +24,12 @@ struct GameAudio::AsyncState {
     bool pending(int sound) const;
     void finish(int sound);
     void post(Completion completion);
-    void request(int sound, std::filesystem::path path, const Package &package, std::size_t embedded_offset = 0,
-                 std::size_t embedded_size = 0, bool has_embedded = false);
+    void request(int sound,
+                 std::filesystem::path path,
+                 const Package &package,
+                 std::size_t embedded_offset = 0,
+                 std::size_t embedded_size = 0,
+                 bool has_embedded = false);
     std::vector<Completion> take_completed();
 
   private:

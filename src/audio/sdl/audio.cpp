@@ -41,9 +41,8 @@ struct GameAudio::Stream {
             const auto items = size ? std::min(count, available / size) : 0;
             if (stream.package) {
                 try {
-                    stream.package->read_into(
-                        stream.package_offset + stream.position,
-                        {static_cast<std::uint8_t *>(ptr), items * size});
+                    stream.package->read_into(stream.package_offset + stream.position,
+                                              {static_cast<std::uint8_t *>(ptr), items * size});
                 } catch (...) {
                     return std::size_t{0};
                 }
@@ -56,7 +55,7 @@ struct GameAudio::Stream {
         callbacks.seek_func = [](void *context, ogg_int64_t offset, int origin) {
             auto &stream = *static_cast<Stream *>(context);
             if (stream.file_stream.is_open()) {
-                const auto direction = origin == SEEK_SET ? std::ios::beg
+                const auto direction = origin == SEEK_SET   ? std::ios::beg
                                        : origin == SEEK_CUR ? std::ios::cur
                                                             : std::ios::end;
                 stream.file_stream.clear();
@@ -182,7 +181,8 @@ std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::vector<std::uint8_t> own
             std::size_t position = 0;
         } reader{bytes};
         ov_callbacks callbacks{};
-        callbacks.read_func = [](void *ptr, std::size_t size, std::size_t count, void *context) -> std::size_t {
+        callbacks.read_func = [](void *ptr, std::size_t size, std::size_t count,
+                                 void *context) -> std::size_t {
             auto &r = *static_cast<Reader *>(context);
             if (size == 0)
                 return 0;
@@ -243,7 +243,8 @@ std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::vector<std::uint8_t> own
                 break;
             if (count < 0)
                 throw Error(ErrorKind::malformed, "Ogg decode failed");
-            if (source.size() + static_cast<std::size_t>(count) * static_cast<std::size_t>(channels) > 100'000'000)
+            if (source.size() + static_cast<std::size_t>(count) * static_cast<std::size_t>(channels) >
+                100'000'000)
                 throw Error(ErrorKind::unsupported, "decoded audio exceeds clip limit");
             for (long i = 0; i < count; ++i)
                 for (int c = 0; c < channels; ++c)
@@ -270,7 +271,8 @@ std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::vector<std::uint8_t> own
                 pcm = block.bytes();
             at += 8 + size + (size & 1);
         }
-        if (channels < 1 || channels > 2 || rate < 1 || rate > 192000 || format != 1 || (bits != 8 && bits != 16))
+        if (channels < 1 || channels > 2 || rate < 1 || rate > 192000 || format != 1 ||
+            (bits != 8 && bits != 16))
             throw Error(ErrorKind::unsupported, "unsupported WAV sample profile");
         const BinaryView samples(pcm);
         for (std::size_t at = 0; at + static_cast<std::size_t>(bits / 8) <= samples.size();
@@ -282,7 +284,8 @@ std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::vector<std::uint8_t> own
     const auto count = source.size() / static_cast<std::size_t>(channels);
     if (count == 0)
         throw Error(ErrorKind::malformed, "empty audio clip");
-    const auto frames = static_cast<std::size_t>(static_cast<double>(count) * 48000 / static_cast<double>(rate));
+    const auto frames =
+        static_cast<std::size_t>(static_cast<double>(count) * 48000 / static_cast<double>(rate));
     if (frames > 50'000'000)
         throw Error(ErrorKind::unsupported, "resampled audio exceeds limit");
     clip->stereo.resize(frames * 2);
@@ -354,8 +357,8 @@ GameAudio::Clip *GameAudio::load(int id) {
                 if (valid) {
                     auto clip = std::make_unique<Clip>();
                     clip->file_path = path_text;
-                    clip->streamed_frames = static_cast<std::size_t>(
-                        static_cast<double>(total) * 48000 / static_cast<double>(info->rate));
+                    clip->streamed_frames = static_cast<std::size_t>(static_cast<double>(total) * 48000 /
+                                                                     static_cast<double>(info->rate));
                     clip->gain = sound.gain;
                     ov_clear(&file);
                     sound.clip = std::move(clip);
@@ -378,8 +381,8 @@ GameAudio::Clip *GameAudio::load(int id) {
             if (!probe.rate || probe.channels < 1 || probe.channels > 2 || total <= 0 ||
                 total > 100'000'000 / probe.channels)
                 throw Error(ErrorKind::unsupported, "Ogg duration exceeds clip limit");
-            clip->streamed_frames = static_cast<std::size_t>(
-                static_cast<double>(total) * 48000 / static_cast<double>(probe.rate));
+            clip->streamed_frames = static_cast<std::size_t>(static_cast<double>(total) * 48000 /
+                                                             static_cast<double>(probe.rate));
             if (clip->streamed_frames > 50'000'000)
                 throw Error(ErrorKind::unsupported, "resampled audio exceeds limit");
             clip->gain = sound.gain;
@@ -411,8 +414,8 @@ GameAudio::Clip *GameAudio::load(int id) {
             if (!probe.rate || probe.channels < 1 || probe.channels > 2 || total <= 0 ||
                 total > 100'000'000 / probe.channels)
                 throw Error(ErrorKind::unsupported, "embedded Ogg duration exceeds clip limit", at);
-            clip->streamed_frames = static_cast<std::size_t>(
-                static_cast<double>(total) * 48000 / static_cast<double>(probe.rate));
+            clip->streamed_frames = static_cast<std::size_t>(static_cast<double>(total) * 48000 /
+                                                             static_cast<double>(probe.rate));
             if (clip->streamed_frames > 50'000'000)
                 throw Error(ErrorKind::unsupported, "resampled audio exceeds limit", at);
             clip->gain = sound.gain;
@@ -558,8 +561,9 @@ void GameAudio::position(int id, double seconds) {
         throw Error(ErrorKind::vm, "invalid audio seek");
     std::scoped_lock lock(voices_mutex_);
     if (auto it = voices_.find(id); it != voices_.end())
-        it->second.frame = it->second.clip ? std::min(seconds * 48000, static_cast<double>(it->second.clip->frames()))
-                                           : seconds * 48000;
+        it->second.frame = it->second.clip
+                               ? std::min(seconds * 48000, static_cast<double>(it->second.clip->frames()))
+                               : seconds * 48000;
 }
 std::vector<float> GameAudio::mix(std::size_t frames) {
     std::vector<float> output;
@@ -627,7 +631,8 @@ void GameAudio::mix(std::span<float> out, double playback_rate) noexcept {
         }
     }
     std::erase_if(voices_, [](const auto &p) {
-        return p.second.clip && !p.second.loop && p.second.frame >= static_cast<double>(p.second.clip->frames());
+        return p.second.clip && !p.second.loop &&
+               p.second.frame >= static_cast<double>(p.second.clip->frames());
     });
     for (auto &sample : out)
         sample = std::clamp(sample, -1.0f, 1.0f);

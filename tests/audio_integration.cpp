@@ -34,8 +34,8 @@ int main(int argc, char **argv) {
         const auto music_local = music_record - sond->data_offset;
         const int music_group = data.i32(music_local + 28);
         const int music_audio = data.i32(music_local + 32);
-        std::cout << "mus_story sound id=" << *music_id << " group=" << music_group << " audio id=" << music_audio
-                  << " (SOND entries=" << data.u32(0) << ")\n";
+        std::cout << "mus_story sound id=" << *music_id << " group=" << music_group
+                  << " audio id=" << music_audio << " (SOND entries=" << data.u32(0) << ")\n";
 
         const double music_length = audio.length(*music_id);
         const int external_music = audio.create_stream("mus_story.ogg");

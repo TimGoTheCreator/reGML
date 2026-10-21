@@ -46,9 +46,9 @@ int main(int argc, char **argv) {
                                 const double u = (dx + 0.5 - x) / sx + sprite.ox;
                                 const double v = (dy + 0.5 - y) / sy + sprite.oy;
                                 if (u >= 0 && v >= 0 && u < sprite.width && v < sprite.height)
-                                    expected.rgba_pixel_tinted(dx, dy,
-                                                               source.pixel(static_cast<int>(u), static_cast<int>(v)),
-                                                               0xcc6633, alpha);
+                                    expected.rgba_pixel_tinted(
+                                        dx, dy, source.pixel(static_cast<int>(u), static_cast<int>(v)),
+                                        0xcc6633, alpha);
                             }
                         if (actual.hash() != expected.hash())
                             throw std::runtime_error(
@@ -72,8 +72,9 @@ int main(int argc, char **argv) {
                         for (int dx = 0; dx < 2; ++dx)
                             green += (full.pixel(x * 2 + dx, y * 2 + dy) >> 8) & 255;
                     if (green >= 4 && ((reduced.pixel(x, y) >> 8) & 255) == 0)
-                        throw std::runtime_error("240p drops a battle-grid stroke: frame " + std::to_string(frame) +
-                                                 " x " + std::to_string(x) + " y " + std::to_string(y));
+                        throw std::runtime_error("240p drops a battle-grid stroke: frame " +
+                                                 std::to_string(frame) + " x " + std::to_string(x) + " y " +
+                                                 std::to_string(y));
                 }
         }
         std::cout << "240p preserves thin grid strokes in both battle-background frames\n";

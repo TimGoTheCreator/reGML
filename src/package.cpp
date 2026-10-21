@@ -67,7 +67,8 @@ void Package::read_into(std::size_t offset, std::span<std::uint8_t> output) cons
         throw Error(ErrorKind::io, "could not read package range", offset);
 }
 const Chunk *Package::find_chunk(std::string_view name) const noexcept {
-    const auto it = std::find_if(chunks_.begin(), chunks_.end(), [name](const Chunk &c) { return c.name() == name; });
+    const auto it =
+        std::find_if(chunks_.begin(), chunks_.end(), [name](const Chunk &c) { return c.name() == name; });
     return it == chunks_.end() ? nullptr : &*it;
 }
 void Package::parse(LoadLimits limits) {
@@ -102,7 +103,7 @@ void Package::parse(LoadLimits limits) {
         if (!seen.emplace(c.name()).second)
             throw Error(ErrorKind::unsupported, "duplicate chunk tags are not supported", offset);
         chunks_.push_back(c);
-        // Chunk sizes already include padding.
+        // chunk sizes already include their padding
         offset = c.data_offset + c.size;
     }
     if (const auto *c = find_chunk("GEN8"))
@@ -156,7 +157,7 @@ void Package::parse_strings(const Chunk &c, LoadLimits limits) {
     std::vector<std::uint8_t> file_chunk;
     std::span<const std::uint8_t> chunk_bytes;
     if (bytes_.empty()) {
-        // One sequential read avoids tens of thousands of seek/read calls on console storage.
+        // one long read is much faster than thousands of seeks on console storage
         file_chunk = read_bytes(c.data_offset, c.size);
         chunk_bytes = file_chunk;
     } else {
@@ -174,14 +175,16 @@ void Package::parse_strings(const Chunk &c, LoadLimits limits) {
             throw Error(ErrorKind::malformed, "STRG pointer precedes its chunk", absolute_pointer);
         const auto local_pointer = absolute_pointer - c.data_offset;
         if (absolute_pointer < records_start)
-            throw Error(ErrorKind::malformed, "STRG pointer targets the pointer table", c.data_offset + field);
+            throw Error(ErrorKind::malformed, "STRG pointer targets the pointer table",
+                        c.data_offset + field);
         if (local_pointer > data.size() || data.size() - local_pointer < 4)
             throw Error(ErrorKind::malformed, "STRG reference leaves its chunk", absolute_pointer);
         const auto length = static_cast<std::size_t>(data.u32(local_pointer));
         if (length > data.size() - local_pointer - 4 || data.size() - local_pointer - 4 - length < 1)
             throw Error(ErrorKind::malformed, "STRG reference leaves its chunk", absolute_pointer);
         if (data.u8(local_pointer + 4 + length) != 0)
-            throw Error(ErrorKind::malformed, "STRG string has no NUL terminator", absolute_pointer + 4 + length);
+            throw Error(ErrorKind::malformed, "STRG string has no NUL terminator",
+                        absolute_pointer + 4 + length);
         if (absolute_pointer > std::numeric_limits<std::uint32_t>::max() ||
             length > std::numeric_limits<std::uint32_t>::max() ||
             absolute_pointer > std::numeric_limits<std::uint32_t>::max() - 4 ||
@@ -190,8 +193,9 @@ void Package::parse_strings(const Chunk &c, LoadLimits limits) {
         if (length + 1 > std::numeric_limits<std::size_t>::max() - compact_size)
             throw Error(ErrorKind::unsupported, "STRG strings exceed addressable memory", absolute_pointer);
         compact_size += length + 1;
-        strings_.push_back({static_cast<std::uint32_t>(absolute_pointer), static_cast<std::uint32_t>(length)});
-        // STRG pointers include the length prefix; other string pointers skip it.
+        strings_.push_back(
+            {static_cast<std::uint32_t>(absolute_pointer), static_cast<std::uint32_t>(length)});
+        // STRG pointers include the length prefix; the other string pointers don't
         string_lookup_.push_back(static_cast<std::uint32_t>(i));
     }
     std::sort(string_lookup_.begin(), string_lookup_.end(), [&](std::uint32_t left, std::uint32_t right) {
@@ -212,8 +216,8 @@ void Package::parse_strings(const Chunk &c, LoadLimits limits) {
 void Package::parse_code(const Chunk &c, LoadLimits limits) {
     const auto count = list_count(c, limits);
     const auto records_start = c.data_offset + 4 + 4 * count;
-    // CODE can be several MiB. The pointer table is small; read each fixed-size
-    // record header separately so file-backed loads don't need a second CODE copy.
+    // CODE can be huge, but the pointer table is small. read each fixed-size
+    // header on its own so file-backed loads don't copy all of CODE again
     const auto pointers = read_bytes(c.data_offset, 4 + 4 * count);
     const BinaryView table(pointers, c.data_offset);
     code_.reserve(count);
@@ -262,11 +266,13 @@ void Package::parse_code(const Chunk &c, LoadLimits limits) {
         if (entry.bytecode_offset < c.data_offset || entry.bytecode_offset - c.data_offset > c.size ||
             entry.bytecode_length > c.size - (entry.bytecode_offset - c.data_offset))
             throw Error(ErrorKind::malformed, "CODE bytecode leaves its chunk", entry.bytecode_offset);
-        if (entry.bytecode_length % 4 != 0 || entry.entry_offset % 4 != 0 || entry.entry_offset > entry.bytecode_length)
+        if (entry.bytecode_length % 4 != 0 || entry.entry_offset % 4 != 0 ||
+            entry.entry_offset > entry.bytecode_length)
             throw Error(ErrorKind::malformed, "CODE length/entry offset is not a valid word range",
                         absolute_pointer + 4);
         if (entry.bytecode_offset < records_start)
-            throw Error(ErrorKind::malformed, "CODE bytecode targets the pointer table", c.data_offset + field);
+            throw Error(ErrorKind::malformed, "CODE bytecode targets the pointer table",
+                        c.data_offset + field);
         code_.push_back(entry);
     }
 }
@@ -281,10 +287,9 @@ std::string_view Package::string_at(std::size_t index) const {
 std::string_view Package::string_pointer(std::uint32_t pointer) const {
     if (pointer == 0)
         return {};
-    const auto it = std::lower_bound(string_lookup_.begin(), string_lookup_.end(), pointer,
-                                     [&](std::uint32_t index, std::uint32_t key) {
-                                         return strings_[index].record_offset + 4 < key;
-                                     });
+    const auto it = std::lower_bound(
+        string_lookup_.begin(), string_lookup_.end(), pointer,
+        [&](std::uint32_t index, std::uint32_t key) { return strings_[index].record_offset + 4 < key; });
     if (it == string_lookup_.end() || strings_[*it].record_offset + 4 != pointer)
         throw Error(ErrorKind::malformed, "string reference does not target a STRG string", pointer);
     return string_at(*it);

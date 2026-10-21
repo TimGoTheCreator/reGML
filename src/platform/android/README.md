@@ -1,12 +1,19 @@
 # Android
 
-This is an early Android front end. The Activity and touch controls are Kotlin; the game VM, drawing, and audio stay in the existing C++ engine. The first build targets `arm64-v8a` and uses the software canvas.
+Early Android front end
+Activity and touch controls are Kotlin, VM, drawing and audio stay in the C++ engine
+First build targets `arm64-v8a` and uses the software canvas
 
-Open `src/platform/android` in Android Studio, install Android SDK 36, NDK 30.0.15729638, and CMake 3.22.1, then build and install the `app` configuration. CMake fetches pinned libpng, libogg, and libvorbis sources while configuring the native library.
+Open `src/platform/android` in Android Studio
+Install Android SDK 36, NDK 30.0.15729638 and CMake 3.22.1, then build and install the `app` configuration
+CMake fetches pinned libpng, libogg and libvorbis sources for the native library
 
-On launch, choose the folder containing `data.win` and the game's external audio files. Android copies that folder into the app's private storage. The on-screen controls and a connected keyboard or controller can provide movement and confirm/cancel input. Saves go into the app's private storage too.
+On launch, choose the folder with `data.win` and the game's external audio files
+Android copies that folder into app storage
+Use the on-screen controls, keyboard or controller for movement and confirm/cancel
+Saves go in app storage too
 
-The native library can also be cross-compiled directly with the NDK toolchain:
+Can cross-compile the native library directly with the NDK:
 
 ```sh
 cmake -S . -B build/android \

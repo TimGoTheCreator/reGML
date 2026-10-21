@@ -22,7 +22,8 @@ void check(bool result, std::string_view message) {
     if (!result)
         throw std::runtime_error(std::string(message));
 }
-void error_is(regml::ErrorKind kind, const std::function<void()> &action,
+void error_is(regml::ErrorKind kind,
+              const std::function<void()> &action,
               std::optional<std::size_t> offset = std::nullopt) {
     try {
         action();
@@ -91,9 +92,9 @@ Fixture fixture(std::uint8_t version = 16) {
         f.record = f.bytes.size();
         u32(f.bytes, 0);
         u32(f.bytes, static_cast<std::uint32_t>(demo.size()));
-        u32(f.bytes, 0x80000002); // locals=2, args=0, high-bit locals flag
-        const auto displacement =
-            static_cast<std::int32_t>(static_cast<std::int64_t>(f.blob) - static_cast<std::int64_t>(f.bytes.size()));
+        u32(f.bytes, 0x80000002); // 2 locals, no args, and the locals flag is in the high bit
+        const auto displacement = static_cast<std::int32_t>(static_cast<std::int64_t>(f.blob) -
+                                                            static_cast<std::int64_t>(f.bytes.size()));
         u32(f.bytes, std::bit_cast<std::uint32_t>(displacement));
         u32(f.bytes, 0);
     }
@@ -151,7 +152,8 @@ int main(int argc, char **argv) {
             }
             for (bool dodge : {true, false}) {
                 std::filesystem::create_directories(argv[4]);
-                regml::GameSession game(argv[2], 1, std::filesystem::path(argv[4]) / (dodge ? "dodge" : "hit"));
+                regml::GameSession game(argv[2], 1,
+                                        std::filesystem::path(argv[4]) / (dodge ? "dodge" : "hit"));
                 regml::KeyboardState held{};
                 bool launched = false, advanced = false;
                 std::size_t launch_frame = 0, max_attacking = 0;
@@ -191,8 +193,8 @@ int main(int argc, char **argv) {
                         launch_frame = frame;
                     }
                     if (conversation != last_conversation) {
-                        std::cout << (dodge ? "DODGE" : "HIT") << " frame " << frame << " conversation " << conversation
-                                  << " attacking pellets " << attacking << '\n';
+                        std::cout << (dodge ? "DODGE" : "HIT") << " frame " << frame << " conversation "
+                                  << conversation << " attacking pellets " << attacking << '\n';
                         last_conversation = conversation;
                     }
                     if (launched && (dodge ? conversation == 5 : conversation == 10)) {
@@ -215,7 +217,8 @@ int main(int argc, char **argv) {
                 for (const auto &state : game.instance_states())
                     if (state.object_name == "obj_floweybattle1") {
                         const auto conversation = regml::value_number(state.variables.at("conversation"));
-                        std::cout << (dodge ? "DODGE" : "HIT") << " follow-up conversation " << conversation << '\n';
+                        std::cout << (dodge ? "DODGE" : "HIT") << " follow-up conversation " << conversation
+                                  << '\n';
                         followup = dodge ? conversation == 7 : conversation == 12;
                     }
                 check(followup, "Flowey must start the follow-up dialogue after the attack");
@@ -264,7 +267,8 @@ int main(int argc, char **argv) {
                                 regml::value_number(state.variables.at("y")) != restored_y;
             }
             check(moved, "player movement must unlock after Toriel leaves");
-            check(rescue.room_name() == "room_ruins1", "player must be able to enter the Ruins after Toriel leaves");
+            check(rescue.room_name() == "room_ruins1",
+                  "player must be able to enter the Ruins after Toriel leaves");
             bool toriel_faced_path = false;
             regml::KeyboardState idle{};
             for (int frame = 0; frame < 180; ++frame) {
@@ -280,9 +284,11 @@ int main(int argc, char **argv) {
                             toriel_faced_path = true;
                     }
             }
-            check(toriel_faced_path, "Toriel must use her upward-facing sprite while walking up her Ruins path");
+            check(toriel_faced_path,
+                  "Toriel must use her upward-facing sprite while walking up her Ruins path");
             rescue.canvas().save_bmp(std::filesystem::path(argv[4]) / "toriel-return.bmp");
-            std::cout << "PASS Flowey five-pellet attack, dodge/hit progression, Toriel room restoration and movement "
+            std::cout << "PASS Flowey five-pellet attack, dodge/hit progression, Toriel room restoration and "
+                         "movement "
                          "into the Ruins\n";
             return 0;
         } catch (const std::exception &error) {
@@ -317,7 +323,8 @@ int main(int argc, char **argv) {
              double alpha = 1;
              for (int step = 0; step < 10; ++step)
                  alpha -= 0.1;
-             check(alpha != 0 && regml::compare_numbers(alpha, 0, 3), "fade remainder compares equal to zero");
+             check(alpha != 0 && regml::compare_numbers(alpha, 0, 3),
+                   "fade remainder compares equal to zero");
              check(!regml::compare_numbers(alpha, 0, 4), "inequality agrees with equality");
              check(!regml::compare_numbers(alpha, 0, 6), "near-zero is not greater than zero");
              check(regml::compare_numbers(alpha, 0, 2) && regml::compare_numbers(alpha, 0, 5),
@@ -355,7 +362,8 @@ int main(int argc, char **argv) {
              original = std::monostate{};
              auto &parent = std::get<regml::ArrayPtr>(moved);
              auto &child = std::get<regml::ArrayPtr>(parent->elements.at(32000));
-             check(regml::value_text(child->elements.at(0)) == "retained", "nested array survives owner release");
+             check(regml::value_text(child->elements.at(0)) == "retained",
+                   "nested array survives owner release");
              regml::ArrayPtr detached(new regml::ArrayValue(*parent));
              detached->elements[32000] = std::int32_t{9};
              check(regml::value_text(child->elements.at(0)) == "retained", "detached copy preserves source");
@@ -367,7 +375,8 @@ int main(int argc, char **argv) {
         {"package variable chains and corruption",
          [] {
              auto f = fixture();
-             const auto program = words({0x840f0007, 0x4522ffff, 0xa0000008, 0xc005ffff, 0xa0000001, 0x9d000000});
+             const auto program =
+                 words({0x840f0007, 0x4522ffff, 0xa0000008, 0xc005ffff, 0xa0000001, 0x9d000000});
              std::copy(program.begin(), program.end(), f.bytes.begin() + static_cast<std::ptrdiff_t>(f.blob));
              const auto name = regml::BinaryView(f.bytes).u32(f.record);
              const auto vari = chunk(f.bytes, "VARI", 32);
@@ -382,8 +391,10 @@ int main(int argc, char **argv) {
              auto linked = regml::link_legacy_package(regml::Package::from_bytes(f.bytes));
              check(linked.variables.size() == 1 && linked.variable_at.size() == 2, "package chain linkage");
              check(linked.variable_at.at(f.blob + 12) == 0, "second occurrence");
-             auto lazy_linked = regml::link_legacy_package(regml::Package::from_bytes(f.bytes), {}, false, false, true);
-             check(lazy_linked.programs[0].instructions.empty(), "lazy linker releases decoded code after validation");
+             auto lazy_linked =
+                 regml::link_legacy_package(regml::Package::from_bytes(f.bytes), {}, false, false, true);
+             check(lazy_linked.programs[0].instructions.empty(),
+                   "lazy linker releases decoded code after validation");
              check(lazy_linked.reference_symbols == std::vector<std::uint32_t>{0, 0} &&
                        lazy_linked.program_reference_ranges.size() == 1 &&
                        lazy_linked.program_reference_ranges[0].offset == 0 &&
@@ -395,7 +406,8 @@ int main(int argc, char **argv) {
                  check(lazy_program.instructions[i].symbol_id == linked.programs[0].instructions[i].symbol_id,
                        "lazy decoding restores resolved symbols");
              lazy_linked.release_programs();
-             check(lazy_linked.program(package, 0).instructions.size() == linked.programs[0].instructions.size(),
+             check(lazy_linked.program(package, 0).instructions.size() ==
+                       linked.programs[0].instructions.size(),
                    "lazy code reloads after room cache release");
              const auto runtime_linked =
                  regml::link_legacy_package(regml::Package::from_bytes(f.bytes), {}, false, false);
@@ -406,7 +418,8 @@ int main(int argc, char **argv) {
                            linked.programs[0].instructions[i].symbol_id,
                        "runtime retains resolved symbols");
                  const auto offset = linked.programs[0].instructions[i].offset;
-                 check(runtime_linked.programs[0].instruction_at(offset) == linked.programs[0].instruction_at(offset),
+                 check(runtime_linked.programs[0].instruction_at(offset) ==
+                           linked.programs[0].instruction_at(offset),
                        "compact program resolves instruction boundaries");
              }
              patch(f.bytes, f.blob + 8, 0xa0000000);
@@ -438,8 +451,10 @@ int main(int argc, char **argv) {
              finish(f.bytes);
              const auto linked = regml::link_legacy_package(regml::Package::from_bytes(f.bytes));
              check(linked.functions.size() == 1 && linked.function_at.at(f.blob) == 0, "function linking");
-             auto lazy_linked = regml::link_legacy_package(regml::Package::from_bytes(f.bytes), {}, false, false, true);
-             check(lazy_linked.programs[0].instructions.empty(), "lazy function linker releases decoded code");
+             auto lazy_linked =
+                 regml::link_legacy_package(regml::Package::from_bytes(f.bytes), {}, false, false, true);
+             check(lazy_linked.programs[0].instructions.empty(),
+                   "lazy function linker releases decoded code");
              check(lazy_linked.reference_symbols == std::vector<std::uint32_t>{0} &&
                        lazy_linked.program_reference_ranges[0].count == 1,
                    "lazy function linker stores its symbol in the compact table");
@@ -478,14 +493,16 @@ int main(int argc, char **argv) {
              const regml::BinaryView data(bytes, 100);
              check(data.u16(0) == 0x3412 && data.u32(0) == 0x78563412, "endianness");
              error_is(regml::ErrorKind::malformed, [&] { (void)data.slice(4, 4).u32(1); }, 105);
-             error_is(regml::ErrorKind::malformed, [&] { (void)data.u64(std::numeric_limits<std::size_t>::max()); });
+             error_is(regml::ErrorKind::malformed,
+                      [&] { (void)data.u64(std::numeric_limits<std::size_t>::max()); });
              check(data.slice(8, 0).text(0, 0).empty(), "empty end slice");
          }},
         {"v16 resource pointers and relative code address",
          [] {
              auto f = fixture();
              const auto package = regml::Package::from_bytes(std::move(f.bytes));
-             check(package.chunks().size() == 3 && package.strings().size() == 2 && package.code().size() == 1,
+             check(package.chunks().size() == 3 && package.strings().size() == 2 &&
+                       package.code().size() == 1,
                    "resource counts");
              check(package.string_at(0) == "reGML fixture" && package.code_name(0) == "gml_Script_test",
                    "string pointer convention");
@@ -605,13 +622,16 @@ int main(int argc, char **argv) {
              const auto f = fixture();
              regml::LoadLimits limits;
              limits.max_file_bytes = 8;
-             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::Package::from_bytes(f.bytes, limits); });
+             error_is(regml::ErrorKind::unsupported,
+                      [&] { (void)regml::Package::from_bytes(f.bytes, limits); });
              limits = {};
              limits.max_chunks = 1;
-             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::Package::from_bytes(f.bytes, limits); });
+             error_is(regml::ErrorKind::unsupported,
+                      [&] { (void)regml::Package::from_bytes(f.bytes, limits); });
              limits = {};
              limits.max_entries = 1;
-             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::Package::from_bytes(f.bytes, limits); });
+             error_is(regml::ErrorKind::unsupported,
+                      [&] { (void)regml::Package::from_bytes(f.bytes, limits); });
              auto corrupt = f;
              patch(corrupt.bytes, corrupt.strg, 100);
              error_is(regml::ErrorKind::malformed, [&] { (void)regml::Package::from_bytes(corrupt.bytes); });
@@ -624,19 +644,21 @@ int main(int argc, char **argv) {
              auto f = fixture();
              f.bytes[f.gen + 1] = 99;
              const auto newer = regml::Package::from_bytes(f.bytes);
-             check(!newer.general_info()->has_known_prefix && newer.strings().empty(), "unknown profile isolation");
+             check(!newer.general_info()->has_known_prefix && newer.strings().empty(),
+                   "unknown profile isolation");
          }},
         {"decoder variable widths and signed immediates",
          [] {
-             const auto bytes = words({0x840ffffe, 0xc0020000, 0x7fffffff, 0xc0000000, 0, 0x3ff00000, 0xc0030000,
-                                       0xffffffff, 0xffffffff, 0x9d000000});
+             const auto bytes = words({0x840ffffe, 0xc0020000, 0x7fffffff, 0xc0000000, 0, 0x3ff00000,
+                                       0xc0030000, 0xffffffff, 0xffffffff, 0x9d000000});
              const auto program = regml::decode(regml::BinaryView(bytes, 200), 16);
              check(program.instructions.size() == 5, "variable instruction widths");
              check(program.instructions[0].immediate_i32() == -2, "signed pushi");
              check(program.instructions[2].immediate_real() == 1.0, "double payload");
              check(program.instructions[3].immediate_i64() == -1, "int64 payload");
              check(program.instructions[4].offset == 36, "instruction boundary");
-             const auto sentinel = regml::decode(regml::BinaryView(words({0xc0060000, 0xffffffff, 0x9d000000})), 16);
+             const auto sentinel =
+                 regml::decode(regml::BinaryView(words({0xc0060000, 0xffffffff, 0x9d000000})), 16);
              check(sentinel.instructions[0].has_reference() &&
                        sentinel.instructions[0].reference_value() == 0xffffffffU,
                    "all-ones reference is still present");
@@ -653,10 +675,10 @@ int main(int argc, char **argv) {
              check(decoded.instructions[1].opcode() == regml::Opcode::extended &&
                        decoded.instructions[1].immediate_i32() == -5,
                    "v17 break sub-opcode and payload");
-             const auto float_program = regml::decode(
-                 regml::BinaryView(words({0xc0010000, 0x3fc00000, 0xc0010000, 0x3e800000, 0x0c110000,
-                                         0x9c010000})),
-                 17);
+             const auto float_program =
+                 regml::decode(regml::BinaryView(words(
+                                   {0xc0010000, 0x3fc00000, 0xc0010000, 0x3e800000, 0x0c110000, 0x9c010000})),
+                               17);
              const auto float_result = regml::execute_numeric(float_program);
              check(float_result.returned && std::get<double>(*float_result.returned) == 1.75,
                    "numeric VM executes bytecode 17 float32 arithmetic");
@@ -670,22 +692,30 @@ int main(int argc, char **argv) {
         {"truncated payload and unsupported opcode",
          [] {
              auto bytes = words({0xc0000000});
-             error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); });
+             error_is(regml::ErrorKind::malformed,
+                      [&] { (void)regml::decode(regml::BinaryView(bytes), 16); });
              bytes = words({0xfe000000});
-             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); }, 0);
-             error_is(regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 99); });
+             error_is(
+                 regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); },
+                 0);
+             error_is(regml::ErrorKind::unsupported,
+                      [&] { (void)regml::decode(regml::BinaryView(bytes), 99); });
              bytes = words({0x840f0001, 0x9c020000});
              error_is(
-                 regml::ErrorKind::unsupported, [&] { (void)regml::decode(regml::BinaryView(bytes), 16, {1}); }, 4);
+                 regml::ErrorKind::unsupported,
+                 [&] { (void)regml::decode(regml::BinaryView(bytes), 16, {1}); }, 4);
          }},
         {"branches validate ranges and immediate boundaries",
          [] {
              auto bytes = words({0xc0020000, 0, 0xb67fffff, 0x9d000000});
-             error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); }, 8);
+             error_is(
+                 regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); }, 8);
              bytes = words({0xb67fffff});
-             error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); }, 0);
+             error_is(
+                 regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); }, 0);
              bytes = words({0xb6000002});
-             error_is(regml::ErrorKind::malformed, [&] { (void)regml::decode(regml::BinaryView(bytes), 16); });
+             error_is(regml::ErrorKind::malformed,
+                      [&] { (void)regml::decode(regml::BinaryView(bytes), 16); });
              bytes = words({0xbbf00000});
              check(regml::decode(regml::BinaryView(bytes), 16).instructions[0].environment_exit(),
                    "popenv exit sentinel");
@@ -693,7 +723,8 @@ int main(int argc, char **argv) {
         {"numeric result and operand order",
          [] {
              auto result = run(regml::demo_bytecode());
-             check(integer_result(result) == 42 && result.instructions_executed == 6 && result.peak_stack_values == 2,
+             check(integer_result(result) == 42 && result.instructions_executed == 6 &&
+                       result.peak_stack_values == 2,
                    "demo result");
              check(integer_result(run(words({0x840f0002, 0x840f0007, 0x0d220000, 0x9c020000}))) == -5,
                    "subtraction order");
@@ -703,15 +734,16 @@ int main(int argc, char **argv) {
          }},
         {"backward loop and conditional branch",
          [] {
-             const auto result = run(words({0x840f0003, 0x86020000, 0x840f0000, 0x15220600, 0xb8000004, 0x840f0001,
-                                            0x0d220000, 0xb67ffffa, 0x9c020000}));
+             const auto result = run(words({0x840f0003, 0x86020000, 0x840f0000, 0x15220600, 0xb8000004,
+                                            0x840f0001, 0x0d220000, 0xb67ffffa, 0x9c020000}));
              check(integer_result(result) == 0 && result.instructions_executed == 27, "loop control flow");
          }},
         {"VM errors, unsupported behavior and execution limits",
          [] {
              error_is(regml::ErrorKind::vm, [&] { (void)run(words({0x9c020000})); }, 0);
-             error_is(regml::ErrorKind::unsupported,
-                      [&] { (void)run(words({0xc0020000, 0x7fffffff, 0x840f0001, 0x0c220000, 0x9c020000})); });
+             error_is(regml::ErrorKind::unsupported, [&] {
+                 (void)run(words({0xc0020000, 0x7fffffff, 0x840f0001, 0x0c220000, 0x9c020000}));
+             });
              error_is(regml::ErrorKind::unsupported, [&] { (void)run(words({0xc105fff9, 0})); });
              regml::VmOptions budget;
              budget.instruction_budget = 8;
@@ -737,7 +769,8 @@ int main(int argc, char **argv) {
              check(std::get<double>(*real.returned) == 7.0, "int32 to double");
              const auto boolean = run(words({0x840f0002, 0x840f0003, 0x15220100, 0x9c040000}));
              check(std::get<bool>(*boolean.returned), "less-than comparison");
-             check(integer_result(run(words({0x840f0001, 0x9e020000, 0x840f0009, 0x9c020000}))) == 9, "discard");
+             check(integer_result(run(words({0x840f0001, 0x9e020000, 0x840f0009, 0x9c020000}))) == 9,
+                   "discard");
              const auto taken = run(words({0x840f0001, 0xb7000002, 0x840f0009, 0x840f0004, 0x9c020000}));
              check(integer_result(taken) == 4, "branch true");
          }},
@@ -804,7 +837,8 @@ int main(int argc, char **argv) {
              check(first->references == 1 && destroyed == 0, "initial intrusive ownership");
              {
                  auto second = first;
-                 check(second->references == 2 && first == second, "copy increments one shared instance count");
+                 check(second->references == 2 && first == second,
+                       "copy increments one shared instance count");
                  auto moved = std::move(second);
                  check(!second && moved->references == 2, "move transfers an intrusive reference");
                  moved.reset();
@@ -821,7 +855,8 @@ int main(int argc, char **argv) {
              bindings.functions.emplace(8, "subtract");
              regml::ExecutionContext context;
              context.bindings = &bindings;
-             context.call_builtin = [](std::string_view name, std::span<const regml::Value> args) -> regml::Value {
+             context.call_builtin = [](std::string_view name,
+                                       std::span<const regml::Value> args) -> regml::Value {
                  check(name == "subtract" && args.size() == 2, "call binding/arity");
                  return std::get<std::int32_t>(args[0]) - std::get<std::int32_t>(args[1]);
              };
@@ -853,7 +888,8 @@ int main(int argc, char **argv) {
              canvas.clear(0);
              canvas.color(0xffffff);
              canvas.rectangle(1, 1, 3, 3, false);
-             check(canvas.pixel(1, 1) == 0xffffffff && canvas.pixel(3, 3) == 0xff000000, "half-open rectangle");
+             check(canvas.pixel(1, 1) == 0xffffffff && canvas.pixel(3, 3) == 0xff000000,
+                   "half-open rectangle");
              canvas.clear(0);
              canvas.rectangle(-100, -100, 100, 100, true);
              check(canvas.pixel(0, 0) == 0xff000000, "clipping does not invent outline edges");
@@ -928,7 +964,8 @@ int main(int argc, char **argv) {
                              for (int y = 0; y < 19; ++y)
                                  for (int x = 0; x < 24; ++x) {
                                      if (x < left || x >= right || y < top || y >= bottom ||
-                                         (outline && x != left && x != right - 1 && y != top && y != bottom - 1))
+                                         (outline && x != left && x != right - 1 && y != top &&
+                                          y != bottom - 1))
                                          continue;
                                      auto &pixel = reference.pixels()[static_cast<std::size_t>(y) * 24 + x];
                                      unsigned result = 0xff000000;
@@ -939,7 +976,8 @@ int main(int argc, char **argv) {
                                                    << shift;
                                      pixel = result;
                                  }
-                             check(fast.hash() == reference.hash(), "rectangle span changed coverage or blending");
+                             check(fast.hash() == reference.hash(),
+                                   "rectangle span changed coverage or blending");
                          }
          }},
         {"pixel spans preserve clipping and source-over compositing",
@@ -959,7 +997,8 @@ int main(int argc, char **argv) {
                              actual.rgba_span(x, 1, 6, pixel, tint, opacity);
                              for (int dx = x; dx < x + 6; ++dx)
                                  expected.rgba_pixel_tinted(dx, 1, pixel, tint, opacity);
-                             check(actual.hash() == expected.hash(), "span changed pixel compositing or clipping");
+                             check(actual.hash() == expected.hash(),
+                                   "span changed pixel compositing or clipping");
                          }
          }},
         {"sprite row blit matches per-pixel compositing",
@@ -976,8 +1015,8 @@ int main(int argc, char **argv) {
                  fast.blit_rgba(source, 4, 1, 0, 0, 1, 3, 3, tint, opacity);
                  for (int y = 0; y < 3; ++y)
                      for (int x = 0; x < 3; ++x)
-                         reference.rgba_pixel_tinted(x, y + 1, source[static_cast<std::size_t>(y) * 4 + x + 1], tint,
-                                                     opacity);
+                         reference.rgba_pixel_tinted(
+                             x, y + 1, source[static_cast<std::size_t>(y) * 4 + x + 1], tint, opacity);
                  check(fast.hash() == reference.hash(), "specialized blit must preserve pixel compositing");
              }
              const std::array<std::uint32_t, 6> opaque = {0xff123456, 0xffabcdef, 0xff000000,
@@ -988,7 +1027,8 @@ int main(int argc, char **argv) {
              fast.blit_rgba(opaque, 3, 0, 0, 0, 0, 3, 2, 0xffffff, 1, 2);
              for (int y = 0; y < 2; ++y)
                  for (int x = 0; x < 3; ++x)
-                     reference.rgba_pixel_tinted(x, y, opaque[static_cast<std::size_t>(y) * 3 + x], 0xffffff, 1);
+                     reference.rgba_pixel_tinted(x, y, opaque[static_cast<std::size_t>(y) * 3 + x], 0xffffff,
+                                                 1);
              check(fast.hash() == reference.hash(), "opaque row copy must match alpha compositing");
              const std::array<std::uint32_t, 8> binary = {0x00000000, 0xff102030, 0xff405060, 0x00000000,
                                                           0xff708090, 0x00000000, 0x00000000, 0xffa0b0c0};
@@ -998,7 +1038,8 @@ int main(int argc, char **argv) {
              binary_fast.blit_rgba(binary, 4, 0, 0, 0, 0, 4, 2, 0xffffff, 1, 1);
              for (int y = 0; y < 2; ++y)
                  for (int x = 0; x < 4; ++x)
-                     binary_reference.rgba_pixel_tinted(x, y, binary[static_cast<std::size_t>(y) * 4 + x], 0xffffff, 1);
+                     binary_reference.rgba_pixel_tinted(x, y, binary[static_cast<std::size_t>(y) * 4 + x],
+                                                        0xffffff, 1);
              check(binary_fast.hash() == binary_reference.hash(), "binary-alpha runs must match compositing");
          }},
         {"playable VM fixture controls, bounds and scoring",
@@ -1036,20 +1077,24 @@ int main(int argc, char **argv) {
              regml::Canvas screen(640, 480, true);
              regml::Canvas surface(8, 8);
              const int divisor = REGML_240P ? 2 : 1;
-             check(screen.width() == 640 / divisor && screen.height() == 480 / divisor, "main render dimensions");
-             check(screen.logical_width() == 640 && screen.logical_height() == 480, "logical screen dimensions");
+             check(screen.width() == 640 / divisor && screen.height() == 480 / divisor,
+                   "main render dimensions");
+             check(screen.logical_width() == 640 && screen.logical_height() == 480,
+                   "logical screen dimensions");
              check(surface.width() == 8 && surface.height() == 8, "surfaces retain requested resolution");
              screen.clear(0);
              screen.color(0xffffff);
              screen.rectangle(100, 100, 120, 120, false);
-             check(screen.pixel(100 / divisor, 100 / divisor) == 0xffffffff, "primitive coordinates scale once");
+             check(screen.pixel(100 / divisor, 100 / divisor) == 0xffffffff,
+                   "primitive coordinates scale once");
              check(screen.pixel(120 / divisor, 100 / divisor) == 0xff000000, "scaled rectangle far edge");
              surface.clear(0);
              surface.color(0xffffff);
              surface.rectangle(0, 0, 8, 8, false);
              screen.draw_surface(surface, 200, 200);
              check(screen.pixel(200 / divisor, 200 / divisor) == 0xffffffff, "surface placement scales once");
-             check(screen.pixel(208 / divisor, 200 / divisor) == 0xff000000, "surface draw retains logical size");
+             check(screen.pixel(208 / divisor, 200 / divisor) == 0xff000000,
+                   "surface draw retains logical size");
              surface.clear_transparent();
              for (int y = 0; y < 8; ++y)
                  surface.rgba_span(0, y, 8, 0x80ffffff, 0xffffff, 1);
@@ -1090,6 +1135,7 @@ int main(int argc, char **argv) {
             std::cerr << "FAIL " << name << ": " << error.what() << '\n';
         }
     }
-    std::cout << tests.size() - static_cast<std::size_t>(failed) << '/' << tests.size() << " test groups passed\n";
+    std::cout << tests.size() - static_cast<std::size_t>(failed) << '/' << tests.size()
+              << " test groups passed\n";
     return failed == 0 ? 0 : 1;
 }

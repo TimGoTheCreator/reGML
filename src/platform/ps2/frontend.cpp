@@ -9,9 +9,9 @@
 #include <cstring>
 #include <dmaKit.h>
 #include <gsKit.h>
+#include <iopcontrol.h>
 #include <libpad.h>
 #include <loadfile.h>
-#include <iopcontrol.h>
 #include <malloc.h>
 #include <sbv_patches.h>
 #include <sifrpc.h>

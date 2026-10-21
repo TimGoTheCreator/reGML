@@ -1,6 +1,6 @@
 #include "lookup.hpp"
-#include "play.hpp"
 #include "platform/ps2/frontend.hpp"
+#include "play.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -12,11 +12,11 @@ int main(int argc, char **argv) {
         if (argc > 1) {
             package = argv[1];
         } else {
-            // PCSX2 can expose the ELF's folder as host:, which saves us from pretending a USB stick exists.
+            // PCSX2 can use the ELF folder as host:, so we don't need to fake a USB path
             const std::filesystem::path host_package = "host:reGML/data.win";
             std::error_code error;
             package = std::filesystem::exists(host_package, error) && !error ? host_package
-                                                                              : "mass:/reGML/data.win";
+                                                                             : "mass:/reGML/data.win";
         }
         regml::PlayOptions options;
         options.save_directory = "mass:/reGML/saves";

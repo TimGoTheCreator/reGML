@@ -83,11 +83,14 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
             if (type == DataType::float32 && runtime_type(value) == DataType::real)
                 return;
             if (runtime_type(value) != type)
-                throw Error(ErrorKind::unsupported, "numeric VM requires explicit matching scalar types", absolute);
+                throw Error(ErrorKind::unsupported, "numeric VM requires explicit matching scalar types",
+                            absolute);
         };
         auto narrow = [&](std::int64_t value) -> std::int32_t {
-            if (value < std::numeric_limits<std::int32_t>::min() || value > std::numeric_limits<std::int32_t>::max())
-                throw Error(ErrorKind::unsupported, "integer overflow semantics are not implemented", absolute);
+            if (value < std::numeric_limits<std::int32_t>::min() ||
+                value > std::numeric_limits<std::int32_t>::max())
+                throw Error(ErrorKind::unsupported, "integer overflow semantics are not implemented",
+                            absolute);
             return static_cast<std::int32_t>(value);
         };
         auto truth = [&](const Value &value) -> bool {
@@ -95,7 +98,8 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                 return *integer != 0;
             if (const auto *boolean = std::get_if<bool>(&value))
                 return *boolean;
-            throw Error(ErrorKind::unsupported, "branch condition requires bool/int32 in the numeric VM", absolute);
+            throw Error(ErrorKind::unsupported, "branch condition requires bool/int32 in the numeric VM",
+                        absolute);
         };
         auto variable_store = [&](const VariableBinding &binding) -> VariableStore & {
             switch (binding.scope) {
@@ -168,7 +172,7 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                 throw Error(ErrorKind::vm, "not enough call arguments on the stack", absolute);
             std::vector<Value> arguments;
             arguments.reserve(count);
-            // Argument zero is at the top of the stack.
+            // argument zero sits at the top of the stack
             for (std::size_t i = 0; i < count; ++i)
                 arguments.push_back(pop());
             try {
@@ -196,7 +200,8 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
             else if (ins.type2() == DataType::boolean && std::holds_alternative<std::int32_t>(value))
                 push(std::get<std::int32_t>(value) != 0);
             else
-                throw Error(ErrorKind::unsupported, "conversion is not implemented by the numeric VM", absolute);
+                throw Error(ErrorKind::unsupported, "conversion is not implemented by the numeric VM",
+                            absolute);
             break;
         }
         case Opcode::add:
@@ -234,14 +239,15 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                     push(a * b);
                 else {
                     if (b == 0)
-                        throw Error(ErrorKind::unsupported, "division-by-zero compatibility is not implemented",
-                                    absolute);
+                        throw Error(ErrorKind::unsupported,
+                                    "division-by-zero compatibility is not implemented", absolute);
                     push(a / b);
                 }
                 break;
             }
             if (ins.type1 != ins.type2())
-                throw Error(ErrorKind::unsupported, "mixed arithmetic operand types are not implemented", absolute);
+                throw Error(ErrorKind::unsupported, "mixed arithmetic operand types are not implemented",
+                            absolute);
             check_type(right, ins.type1);
             check_type(left, ins.type2());
             if (ins.type1 == DataType::int32) {
@@ -256,13 +262,14 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                 else if (ins.opcode() == Opcode::mul)
                     push(narrow(a * b));
                 else
-                    throw Error(ErrorKind::unsupported, "integer-typed div result semantics are not implemented",
-                                absolute);
+                    throw Error(ErrorKind::unsupported,
+                                "integer-typed div result semantics are not implemented", absolute);
             } else if (ins.type1 == DataType::real || ins.type1 == DataType::float32) {
                 const auto a = std::get<double>(left);
                 const auto b = std::get<double>(right);
                 auto push_real = [&](double value) {
-                    push(ins.type1 == DataType::float32 ? static_cast<double>(static_cast<float>(value)) : value);
+                    push(ins.type1 == DataType::float32 ? static_cast<double>(static_cast<float>(value))
+                                                        : value);
                 };
                 if (ins.opcode() == Opcode::cmp)
                     push(compare(a, b, ins.comparison(), absolute));
@@ -274,8 +281,8 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                     push_real(a * b);
                 else {
                     if (b == 0)
-                        throw Error(ErrorKind::unsupported, "division-by-zero compatibility is not implemented",
-                                    absolute);
+                        throw Error(ErrorKind::unsupported,
+                                    "division-by-zero compatibility is not implemented", absolute);
                     push_real(a / b);
                 }
             } else
@@ -350,7 +357,8 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
             return result;
         default:
             throw Error(ErrorKind::unsupported,
-                        std::string(opcode_name(ins.opcode())) + " is decoded but not executable by the numeric VM",
+                        std::string(opcode_name(ins.opcode())) +
+                            " is decoded but not executable by the numeric VM",
                         absolute);
         }
         pc = next;
@@ -383,7 +391,8 @@ double value_number(const Value &value) {
     throw Error(ErrorKind::vm, "numeric argument requires a scalar number");
 }
 std::vector<std::uint8_t> demo_bytecode() {
-    constexpr std::uint32_t words[] = {0x840f0007, 0x840f0005, 0x0d220000, 0x840f0015, 0x08220000, 0x9c020000};
+    constexpr std::uint32_t words[] = {0x840f0007, 0x840f0005, 0x0d220000,
+                                       0x840f0015, 0x08220000, 0x9c020000};
     std::vector<std::uint8_t> bytes;
     for (auto word : words)
         for (unsigned shift = 0; shift < 32; shift += 8)

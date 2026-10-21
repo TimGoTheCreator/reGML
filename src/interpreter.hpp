@@ -15,7 +15,7 @@ struct PackageString {
     std::string_view value;
     bool operator==(const PackageString &) const = default;
 };
-// Not thread-safe. Arrays are owned by the VM thread.
+// not thread safe; the VM thread owns the arrays
 class ArrayPtr {
   public:
     ArrayPtr() = default;
@@ -84,8 +84,8 @@ struct VariableStoreHash {
 };
 class VariableStore : public std::unordered_map<std::string_view, Value, VariableStoreHash, std::equal_to<>> {
     using Base = std::unordered_map<std::string_view, Value, VariableStoreHash, std::equal_to<>>;
-    // Stores can be copied out of a session, so shared key backing stays valid
-    // until process exit.
+    // callers can copy stores out of a session, so keep the shared key strings
+    // around until the program exits
     static const std::string &intern(std::string_view key) {
         static std::unordered_set<std::string, VariableStoreHash, std::equal_to<>> keys;
         static std::mutex keys_mutex;
@@ -129,7 +129,7 @@ struct VariableBinding {
     VariableScope scope;
     std::string name;
 };
-// Binding offsets refer to instructions, not occurrence-chain words.
+// these offsets point to instructions, not words in the occurrence chain
 struct VmBindings {
     std::unordered_map<std::size_t, VariableBinding> variables;
     std::unordered_map<std::size_t, std::string> functions;

@@ -67,10 +67,13 @@ struct Instruction {
     [[nodiscard]] std::uint8_t comparison() const noexcept { return static_cast<std::uint8_t>(word >> 8); }
     [[nodiscard]] std::uint8_t extra() const noexcept { return static_cast<std::uint8_t>(word); }
     [[nodiscard]] bool has_reference() const noexcept { return (flags & 1U) != 0; }
-    [[nodiscard]] std::uint32_t reference_value() const noexcept { return static_cast<std::uint32_t>(immediate_bits); }
+    [[nodiscard]] std::uint32_t reference_value() const noexcept {
+        return static_cast<std::uint32_t>(immediate_bits);
+    }
     [[nodiscard]] bool has_branch_target() const noexcept {
-        return (opcode() == Opcode::branch || opcode() == Opcode::branch_true || opcode() == Opcode::branch_false ||
-                opcode() == Opcode::push_env || opcode() == Opcode::pop_env) &&
+        return (opcode() == Opcode::branch || opcode() == Opcode::branch_true ||
+                opcode() == Opcode::branch_false || opcode() == Opcode::push_env ||
+                opcode() == Opcode::pop_env) &&
                has_reference();
     }
     [[nodiscard]] std::uint32_t branch_target_value() const noexcept { return reference_value(); }
@@ -100,7 +103,9 @@ struct Instruction {
     [[nodiscard]] std::int32_t immediate_i32() const noexcept {
         return std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(immediate_bits));
     }
-    [[nodiscard]] std::int64_t immediate_i64() const noexcept { return std::bit_cast<std::int64_t>(immediate_bits); }
+    [[nodiscard]] std::int64_t immediate_i64() const noexcept {
+        return std::bit_cast<std::int64_t>(immediate_bits);
+    }
     [[nodiscard]] double immediate_real() const noexcept {
         return immediate_kind == ImmediateKind::real32
                    ? static_cast<double>(std::bit_cast<float>(static_cast<std::uint32_t>(immediate_bits)))
@@ -112,12 +117,13 @@ struct Program {
     std::size_t origin = 0, byte_length = 0;
     std::uint8_t bytecode_version = 0;
     std::vector<Instruction> instructions;
-    // Code is word aligned, so a flat lookup table beats one hash node per opcode.
+    // code lines up on word boundaries, so one flat table is simpler than a hash node per opcode
     std::vector<std::uint32_t> index_by_word;
     [[nodiscard]] std::optional<std::size_t> instruction_at(std::size_t offset) const noexcept {
         if (index_by_word.empty()) {
-            const auto it = std::lower_bound(instructions.begin(), instructions.end(), offset,
-                                             [](const Instruction &ins, std::size_t at) { return ins.offset < at; });
+            const auto it =
+                std::lower_bound(instructions.begin(), instructions.end(), offset,
+                                 [](const Instruction &ins, std::size_t at) { return ins.offset < at; });
             return it != instructions.end() && it->offset == offset
                        ? std::optional<std::size_t>(static_cast<std::size_t>(it - instructions.begin()))
                        : std::nullopt;
@@ -125,10 +131,11 @@ struct Program {
         if (offset % 4 != 0 || offset / 4 >= index_by_word.size())
             return std::nullopt;
         const auto index = index_by_word[offset / 4];
-        return index == std::numeric_limits<std::uint32_t>::max() ? std::nullopt : std::optional<std::size_t>(index);
+        return index == std::numeric_limits<std::uint32_t>::max() ? std::nullopt
+                                                                  : std::optional<std::size_t>(index);
     }
 };
-// Bytecode 17 is decoded for inspection; the game VM remains 1.x-only.
+// bcode 17 is decoded for inspections: the game (VM) remains 1.x (for now?)
 struct DecodeLimits {
     std::size_t max_instructions = 1'000'000;
     bool build_index = true;

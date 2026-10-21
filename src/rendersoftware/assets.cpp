@@ -8,7 +8,8 @@
 namespace regml {
 namespace {
 #if REGML_LOW_MEMORY
-std::vector<std::uint32_t> read_png_region(const Package &package, std::size_t offset, int x, int y, int w, int h) {
+std::vector<std::uint32_t>
+read_png_region(const Package &package, std::size_t offset, int x, int y, int w, int h) {
     struct Input {
         const Package *package;
         std::size_t position, end;
@@ -71,7 +72,7 @@ std::vector<std::uint32_t> read_png_region(const Package &package, std::size_t o
     png_read_update_info(png, info);
     row.resize(png_get_rowbytes(png, info));
     pixels.resize(static_cast<std::size_t>(w) * h);
-    // Decompress the atlas a row at a time; only the requested sprite survives.
+    // unpack the atlas a row at a time and keep only the sprite we need
     for (int pass = 0; pass < passes; ++pass)
         for (png_uint_32 iy = 0; iy < height; ++iy) {
             const bool selected = iy >= static_cast<unsigned>(y) && iy - y < static_cast<unsigned>(h);
@@ -79,7 +80,8 @@ std::vector<std::uint32_t> read_png_region(const Package &package, std::size_t o
             if (passes > 1) {
                 std::fill(row.begin(), row.end(), 0);
                 if (selected)
-                    std::copy_n(reinterpret_cast<const unsigned char *>(destination), static_cast<std::size_t>(w) * 4,
+                    std::copy_n(reinterpret_cast<const unsigned char *>(destination),
+                                static_cast<std::size_t>(w) * 4,
                                 row.data() + static_cast<std::size_t>(x) * 4);
             }
             png_read_row(png, row.data(), nullptr);
@@ -117,7 +119,8 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
                 size = table.size();
                 for (std::size_t i = 0; i < count; ++i) {
                     const auto at = view.u32(4 + i * 4);
-                    if (at < c.data_offset || at - c.data_offset > c.size || c.size - (at - c.data_offset) < 8)
+                    if (at < c.data_offset || at - c.data_offset > c.size ||
+                        c.size - (at - c.data_offset) < 8)
                         throw Error(ErrorKind::malformed, "texture record range", at);
                     size = std::max<std::size_t>(size, static_cast<std::size_t>(at - c.data_offset) + 8);
                 }
@@ -166,7 +169,8 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
     regions_.reserve(texture_pages.size());
     for (auto p : texture_pages) {
         const auto r = rec(p, *tp, 22);
-        Region region{r.u16(0), r.u16(2), r.u16(4), r.u16(6), r.u16(8), r.u16(10), r.u16(12), r.u16(14), r.i16(20)};
+        Region region{r.u16(0),  r.u16(2),  r.u16(4),  r.u16(6), r.u16(8),
+                      r.u16(10), r.u16(12), r.u16(14), r.i16(20)};
         if (region.page < 0 || static_cast<std::size_t>(region.page) >= pages_.size())
             throw Error(ErrorKind::malformed, "invalid texture page ID", p + 20);
         regions_.push_back({static_cast<std::uint32_t>(p), region});
@@ -266,10 +270,9 @@ std::uint32_t GameAssets::find_region_index(std::size_t pointer) const noexcept 
     if (pointer > std::numeric_limits<std::uint32_t>::max())
         return std::numeric_limits<std::uint32_t>::max();
     const auto key = static_cast<std::uint32_t>(pointer);
-    const auto found = std::lower_bound(regions_.begin(), regions_.end(), key,
-                                        [](const RegionEntry &entry, std::uint32_t value) {
-                                            return entry.pointer < value;
-                                        });
+    const auto found =
+        std::lower_bound(regions_.begin(), regions_.end(), key,
+                         [](const RegionEntry &entry, std::uint32_t value) { return entry.pointer < value; });
     if (found == regions_.end() || found->pointer != key ||
         static_cast<std::size_t>(found - regions_.begin()) >= std::numeric_limits<std::uint32_t>::max())
         return std::numeric_limits<std::uint32_t>::max();
@@ -286,7 +289,8 @@ const GameAssets::Sprite &GameAssets::sprite(int id) const {
 }
 bool GameAssets::mask_pixel(int id, double frame, int x, int y) const {
     const auto &s = sprite(id);
-    if (x < s.left || x > s.right || y < s.top || y > s.bottom || x < 0 || y < 0 || x >= s.width || y >= s.height)
+    if (x < s.left || x > s.right || y < s.top || y > s.bottom || x < 0 || y < 0 || x >= s.width ||
+        y >= s.height)
         return false;
     if (!s.precise || s.mask_count == 0)
         return true;
@@ -338,9 +342,11 @@ GameAssets::Page &GameAssets::load_page(int id) {
     std::size_t png_size = 8;
     bool found_end = false;
     const auto chunk_end = chunk->data_offset + chunk->size;
-    while (page.png <= chunk_end && png_size <= chunk_end - page.png && chunk_end - page.png - png_size >= 12) {
+    while (page.png <= chunk_end && png_size <= chunk_end - page.png &&
+           chunk_end - page.png - png_size >= 12) {
         const auto record = package_.read_bytes(page.png + png_size, 8);
-        const auto length = (static_cast<std::size_t>(record[0]) << 24) | (static_cast<std::size_t>(record[1]) << 16) |
+        const auto length = (static_cast<std::size_t>(record[0]) << 24) |
+                            (static_cast<std::size_t>(record[1]) << 16) |
                             (static_cast<std::size_t>(record[2]) << 8) | record[3];
         if (length > chunk_end - page.png - png_size - 12)
             throw Error(ErrorKind::malformed, "texture PNG chunk exceeds TXTR", page.png + png_size);
@@ -373,8 +379,8 @@ GameAssets::Page &GameAssets::load_page(int id) {
     const bool oversized_for_cache = page_cache_limit_ != 0 && decoded_size > page_cache_limit_;
     std::vector<std::uint32_t> pixels;
     if (oversized_for_cache) {
-        // Keep a page larger than the whole cache alive only for the draw that
-        // needs it. blit() releases this scratch allocation on every exit path.
+        // if a page is bigger than the whole cache, keep it around just for this draw
+        // blit() frees that scratch memory on every exit
         scratch_page_ = {};
         scratch_page_id_ = id;
         pixels.swap(scratch_page_.pixels);
@@ -402,9 +408,9 @@ GameAssets::Page &GameAssets::load_page(int id) {
                 }
             }
         } else {
-            // Keep only one oversized page hot. Undertale uses many 8-16 MiB
-            // pages, so throwing this away after every sprite would re-decode
-            // the same PNG thousands of times in a room.
+            // keep one oversized page ready. Undertale has lots of 8-16 MiB
+            // pages, and tossing it after each sprite would make us decode
+            // the same PNG over and over in one room
             for (auto &candidate : pages_) {
                 if (!candidate.pixels.empty()) {
                     page_cache_bytes_ -= candidate.pixels.capacity() * sizeof(std::uint32_t);
@@ -471,7 +477,8 @@ void GameAssets::draw_background(Canvas &canvas, int id, double x, double y) {
     const auto &r = *region;
     blit(canvas, r, x + r.tx, y + r.ty, 1, 1, 0, 0xffffff, 1);
 }
-void GameAssets::draw_background_stretched(Canvas &canvas, int id, double x, double y, double width, double height) {
+void GameAssets::draw_background_stretched(
+    Canvas &canvas, int id, double x, double y, double width, double height) {
     if (id < 0 || static_cast<std::size_t>(id) >= backgrounds_.size())
         throw Error(ErrorKind::vm, "background ID out of range");
     const auto ptr = backgrounds_[static_cast<std::size_t>(id)];
@@ -484,8 +491,18 @@ void GameAssets::draw_background_stretched(Canvas &canvas, int id, double x, dou
     if (r.tw > 0 && r.th > 0)
         blit(canvas, r, x, y, width / r.tw, height / r.th, 0, 0xffffff, 1);
 }
-void GameAssets::draw_background_part_ext(Canvas &canvas, int id, double left, double top, double width, double height,
-                                          double x, double y, double sx, double sy, unsigned color, double alpha) {
+void GameAssets::draw_background_part_ext(Canvas &canvas,
+                                          int id,
+                                          double left,
+                                          double top,
+                                          double width,
+                                          double height,
+                                          double x,
+                                          double y,
+                                          double sx,
+                                          double sy,
+                                          unsigned color,
+                                          double alpha) {
     if (id < 0 || static_cast<std::size_t>(id) >= backgrounds_.size())
         throw Error(ErrorKind::vm, "background ID out of range");
     const auto ptr = backgrounds_[static_cast<std::size_t>(id)];
@@ -514,8 +531,17 @@ void GameAssets::draw_background_part_ext(Canvas &canvas, int id, double left, d
     crop.alpha_mode = r.alpha_mode;
     blit(canvas, crop, x + ix * sx, y + iy * sy, sx, sy, 0, color, alpha);
 }
-void GameAssets::draw_tile(Canvas &canvas, int id, int source_x, int source_y, int width, int height, double x,
-                           double y, double sx, double sy, unsigned color) {
+void GameAssets::draw_tile(Canvas &canvas,
+                           int id,
+                           int source_x,
+                           int source_y,
+                           int width,
+                           int height,
+                           double x,
+                           double y,
+                           double sx,
+                           double sy,
+                           unsigned color) {
     if (id < 0 || static_cast<std::size_t>(id) >= backgrounds_.size())
         throw Error(ErrorKind::vm, "tile background ID out of range");
     const auto ptr = backgrounds_[static_cast<std::size_t>(id)];
@@ -526,7 +552,8 @@ void GameAssets::draw_tile(Canvas &canvas, int id, int source_x, int source_y, i
         return;
     const auto &r = *region;
     const int left = std::max(source_x, r.tx), top = std::max(source_y, r.ty),
-              right = std::min(source_x + width, r.tx + r.tw), bottom = std::min(source_y + height, r.ty + r.th);
+              right = std::min(source_x + width, r.tx + r.tw),
+              bottom = std::min(source_y + height, r.ty + r.th);
     if (right <= left || bottom <= top)
         return;
     Region cut{r.x + (left - r.tx), r.y + (top - r.ty), right - left, bottom - top, 0, 0,
@@ -547,7 +574,8 @@ void GameAssets::view(double x, double y, double sx, double sy, double px, doubl
 }
 void GameAssets::rectangle(Canvas &canvas, double x1, double y1, double x2, double y2, bool outline) const {
     canvas.rectangle((x1 - view_x_) * view_sx_ + port_x_, (y1 - view_y_) * view_sy_ + port_y_,
-                     (x2 + 1 - view_x_) * view_sx_ + port_x_, (y2 + 1 - view_y_) * view_sy_ + port_y_, outline);
+                     (x2 + 1 - view_x_) * view_sx_ + port_x_, (y2 + 1 - view_y_) * view_sy_ + port_y_,
+                     outline);
 }
 const GameAssets::Page &GameAssets::region_pixels(const Region &r, int &source_x, int &source_y) {
     source_x = r.x;
@@ -564,9 +592,10 @@ const GameAssets::Page &GameAssets::region_pixels(const Region &r, int &source_x
     }
 #if REGML_LOW_MEMORY
     while (region_cache_bytes_ + bytes > budget && !region_cache_.empty()) {
-        const auto oldest = std::min_element(
-            region_cache_.begin(), region_cache_.end(),
-            [](const auto &left, const auto &right) { return left.second.last_used < right.second.last_used; });
+        const auto oldest = std::min_element(region_cache_.begin(), region_cache_.end(),
+                                             [](const auto &left, const auto &right) {
+                                                 return left.second.last_used < right.second.last_used;
+                                             });
         region_cache_bytes_ -= oldest->second.pixels.capacity() * sizeof(std::uint32_t);
         region_cache_.erase(oldest);
     }
@@ -574,7 +603,8 @@ const GameAssets::Page &GameAssets::region_pixels(const Region &r, int &source_x
     cropped.width = r.w;
     cropped.height = r.h;
     cropped.last_used = ++page_cache_clock_;
-    cropped.pixels = read_png_region(package_, pages_.at(static_cast<std::size_t>(r.page)).png, r.x, r.y, r.w, r.h);
+    cropped.pixels =
+        read_png_region(package_, pages_.at(static_cast<std::size_t>(r.page)).png, r.x, r.y, r.w, r.h);
     source_x = source_y = 0;
     if (bytes <= budget) {
         auto [entry, inserted] = region_cache_.emplace(key, std::move(cropped));
@@ -596,13 +626,15 @@ const GameAssets::Page &GameAssets::region_pixels(const Region &r, int &source_x
             cached.last_used = ++page_cache_clock_;
             cached.pixels.resize(bytes / sizeof(std::uint32_t));
             for (int row = 0; row < r.h; ++row)
-                std::copy_n(source.pixels.begin() + static_cast<std::ptrdiff_t>(r.y + row) * source.width + r.x, r.w,
-                            cached.pixels.begin() + static_cast<std::ptrdiff_t>(row) * r.w);
+                std::copy_n(source.pixels.begin() + static_cast<std::ptrdiff_t>(r.y + row) * source.width +
+                                r.x,
+                            r.w, cached.pixels.begin() + static_cast<std::ptrdiff_t>(row) * r.w);
             const auto allocation_bytes = cached.pixels.capacity() * sizeof(std::uint32_t);
             while (region_cache_bytes_ + allocation_bytes > budget && !region_cache_.empty()) {
                 const auto oldest = std::min_element(
-                    region_cache_.begin(), region_cache_.end(),
-                    [](const auto &left, const auto &right) { return left.second.last_used < right.second.last_used; });
+                    region_cache_.begin(), region_cache_.end(), [](const auto &left, const auto &right) {
+                        return left.second.last_used < right.second.last_used;
+                    });
                 region_cache_bytes_ -= oldest->second.pixels.capacity() * sizeof(std::uint32_t);
                 region_cache_.erase(oldest);
             }
@@ -617,8 +649,15 @@ const GameAssets::Page &GameAssets::region_pixels(const Region &r, int &source_x
     return source;
 #endif
 }
-void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, double sx, double sy, double angle,
-                      unsigned color, double alpha) {
+void GameAssets::blit(Canvas &canvas,
+                      const Region &r,
+                      double x,
+                      double y,
+                      double sx,
+                      double sy,
+                      double angle,
+                      unsigned color,
+                      double alpha) {
     x = (x - view_x_) * view_sx_ + port_x_;
     y = (y - view_y_) * view_sy_ + port_y_;
     x *= canvas.render_scale();
@@ -645,7 +684,8 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
             const double xx[] = {x, x + w * cs, x + h * sn, x + w * cs + h * sn};
             const double yy[] = {y, y - w * sn, y + h * cs, y - w * sn + h * cs};
             if (*std::max_element(xx, xx + 4) <= 0 || *std::max_element(yy, yy + 4) <= 0 ||
-                *std::min_element(xx, xx + 4) >= canvas.width() || *std::min_element(yy, yy + 4) >= canvas.height())
+                *std::min_element(xx, xx + 4) >= canvas.width() ||
+                *std::min_element(yy, yy + 4) >= canvas.height())
                 return;
         }
         std::uint64_t key = 1469598103934665603ULL;
@@ -655,8 +695,8 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
         if (wii_gpu_cached_image(r.w, r.h, x, y, r.tw * sx, r.th * sy, angle, tint, alpha, key))
             return;
         const auto &page = region_pixels(r, source_x, source_y);
-        wii_gpu_image(page.pixels, page.width, source_x, source_y, r.w, r.h, x, y, r.tw * sx, r.th * sy, angle, tint,
-                      alpha, key);
+        wii_gpu_image(page.pixels, page.width, source_x, source_y, r.w, r.h, x, y, r.tw * sx, r.th * sy,
+                      angle, tint, alpha, key);
         return;
     }
 #endif
@@ -667,14 +707,14 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
         const double w = r.tw * sx, h = r.th * sy;
         const double xx[] = {x, x + w * cs, x + h * sn, x + w * cs + h * sn};
         const double yy[] = {y, y - w * sn, y + h * cs, y - w * sn + h * cs};
-        const int left =
-            static_cast<int>(std::clamp(std::floor(*std::min_element(xx, xx + 4)), 0.0, double(canvas.width())));
-        const int right =
-            static_cast<int>(std::clamp(std::ceil(*std::max_element(xx, xx + 4)), 0.0, double(canvas.width())));
-        const int top =
-            static_cast<int>(std::clamp(std::floor(*std::min_element(yy, yy + 4)), 0.0, double(canvas.height())));
-        const int bottom =
-            static_cast<int>(std::clamp(std::ceil(*std::max_element(yy, yy + 4)), 0.0, double(canvas.height())));
+        const int left = static_cast<int>(
+            std::clamp(std::floor(*std::min_element(xx, xx + 4)), 0.0, double(canvas.width())));
+        const int right = static_cast<int>(
+            std::clamp(std::ceil(*std::max_element(xx, xx + 4)), 0.0, double(canvas.width())));
+        const int top = static_cast<int>(
+            std::clamp(std::floor(*std::min_element(yy, yy + 4)), 0.0, double(canvas.height())));
+        const int bottom = static_cast<int>(
+            std::clamp(std::ceil(*std::max_element(yy, yy + 4)), 0.0, double(canvas.height())));
         for (int dy = top; dy < bottom; ++dy)
             for (int dx = left; dx < right; ++dx) {
                 const double px = dx + 0.5 - x, py = dy + 0.5 - y;
@@ -695,7 +735,7 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
                             continue;
                         const auto p =
                             page.pixels[static_cast<std::size_t>(source_y + uy) * page.width + source_x + ux];
-                        // Keep a real source color; prefer visible strokes over empty or dark samples.
+                        // use an actual source color; pick visible strokes over blank or dark pixels
                         const unsigned score = (p >> 24) * (1 + (p >> 16 & 255) + (p >> 8 & 255) + (p & 255));
                         if (score > best) {
                             best = score;
@@ -714,8 +754,9 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
         if (r.alpha_mode < 0) {
             r.alpha_mode = 2;
             for (int row = 0; row < r.h && r.alpha_mode != 0; ++row) {
-                const auto at = static_cast<std::size_t>(source_y + row) * static_cast<std::size_t>(page.width) +
-                                static_cast<std::size_t>(source_x);
+                const auto at =
+                    static_cast<std::size_t>(source_y + row) * static_cast<std::size_t>(page.width) +
+                    static_cast<std::size_t>(source_x);
                 for (int column = 0; column < r.w; ++column) {
                     const auto pixel_alpha = page.pixels[at + static_cast<std::size_t>(column)] >> 24;
                     if (pixel_alpha == 0)
@@ -740,13 +781,13 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
             return;
         const int crop_x = static_cast<int>(std::floor(dx + 0.5 - x));
         const int crop_y = static_cast<int>(std::floor(dy + 0.5 - y));
-        canvas.blit_rgba(page.pixels, page.width, source_x + crop_x, source_y + crop_y, dx, dy, width, height, tint,
-                         alpha, source_alpha_mode);
+        canvas.blit_rgba(page.pixels, page.width, source_x + crop_x, source_y + crop_y, dx, dy, width, height,
+                         tint, alpha, source_alpha_mode);
         return;
     }
     if (angle == 0) {
         const double w = r.tw * sx, h = r.th * sy;
-        // A reflected axis includes the origin edge and excludes the far edge.
+        // the flipped axis starts at the origin edge and stops before the far edge
         const double x_begin = sx > 0 ? std::ceil(x - 0.5) : std::floor(x + w - 0.5) + 1;
         const double x_end = sx > 0 ? std::ceil(x + w - 0.5) : std::floor(x - 0.5) + 1;
         const double y_begin = sy > 0 ? std::ceil(y - 0.5) : std::floor(y + h - 0.5) + 1;
@@ -794,8 +835,9 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
                     for (auto &run : scaled_runs_) {
                         const auto pixel = page.pixels[row + static_cast<std::size_t>(run.source_x)];
                         const unsigned a =
-                            alpha == 1 ? pixel >> 24
-                                       : static_cast<unsigned>(static_cast<double>(pixel >> 24) * opacity + 0.5);
+                            alpha == 1
+                                ? pixel >> 24
+                                : static_cast<unsigned>(static_cast<double>(pixel >> 24) * opacity + 0.5);
                         const unsigned red = ((pixel >> 16) & 255) * ((tint >> 16) & 255) / 255;
                         const unsigned green = ((pixel >> 8) & 255) * ((tint >> 8) & 255) / 255;
                         const unsigned blue = (pixel & 255) * (tint & 255) / 255;
@@ -810,8 +852,9 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
             for (int dx = left; dx < right; ++dx) {
                 const int ux = scaled_x_[static_cast<std::size_t>(dx - left)];
                 const auto pixel = page.pixels[row + static_cast<std::size_t>(ux)];
-                const auto destination_index = static_cast<std::size_t>(dy) * static_cast<std::size_t>(canvas.width()) +
-                                               static_cast<std::size_t>(dx);
+                const auto destination_index =
+                    static_cast<std::size_t>(dy) * static_cast<std::size_t>(canvas.width()) +
+                    static_cast<std::size_t>(dx);
                 if (source_alpha_mode == 2) {
                     destination[destination_index] = pixel;
                 } else if (source_alpha_mode == 1) {
@@ -826,10 +869,10 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
                         const auto inverse = 255 - source_alpha;
                         unsigned result = 0xff000000;
                         for (unsigned shift : {0U, 8U, 16U})
-                            result |=
-                                (((pixel >> shift & 255) * source_alpha + (previous >> shift & 255) * inverse + 127) /
-                                 255)
-                                << shift;
+                            result |= (((pixel >> shift & 255) * source_alpha +
+                                        (previous >> shift & 255) * inverse + 127) /
+                                       255)
+                                      << shift;
                         destination[destination_index] = result;
                     } else if (source_alpha != 0) {
                         canvas.rgba_pixel_tinted(dx, dy, pixel, tint, alpha);
@@ -862,14 +905,23 @@ void GameAssets::blit(Canvas &canvas, const Region &r, double x, double y, doubl
                 continue;
             const int ux = source_x + static_cast<int>(tx * r.w / r.tw),
                       uy = source_y + static_cast<int>(ty * r.h / r.th);
-            canvas.rgba_pixel_tinted(dx, dy,
-                                     page.pixels[static_cast<std::size_t>(uy) * static_cast<std::size_t>(page.width) +
-                                                 static_cast<std::size_t>(ux)],
-                                     tint, alpha);
+            canvas.rgba_pixel_tinted(
+                dx, dy,
+                page.pixels[static_cast<std::size_t>(uy) * static_cast<std::size_t>(page.width) +
+                            static_cast<std::size_t>(ux)],
+                tint, alpha);
         }
 }
-void GameAssets::draw_sprite(Canvas &canvas, int id, double frame, double x, double y, double sx, double sy,
-                             double angle, unsigned color, double alpha) {
+void GameAssets::draw_sprite(Canvas &canvas,
+                             int id,
+                             double frame,
+                             double x,
+                             double y,
+                             double sx,
+                             double sy,
+                             double angle,
+                             unsigned color,
+                             double alpha) {
     const auto &spr = sprite(id);
     if (spr.frames.empty())
         return;
@@ -886,11 +938,21 @@ void GameAssets::draw_sprite(Canvas &canvas, int id, double frame, double x, dou
         return;
     }
     const double rad = angle * 3.141592653589793 / 180;
-    blit(canvas, r, x + ox * std::cos(rad) + oy * std::sin(rad), y - ox * std::sin(rad) + oy * std::cos(rad), sx, sy,
-         angle, color, alpha);
+    blit(canvas, r, x + ox * std::cos(rad) + oy * std::sin(rad), y - ox * std::sin(rad) + oy * std::cos(rad),
+         sx, sy, angle, color, alpha);
 }
-void GameAssets::draw_sprite_part(Canvas &canvas, int id, double frame, double left, double top, double width,
-                                  double height, double x, double y, double sx, double sy, unsigned color,
+void GameAssets::draw_sprite_part(Canvas &canvas,
+                                  int id,
+                                  double frame,
+                                  double left,
+                                  double top,
+                                  double width,
+                                  double height,
+                                  double x,
+                                  double y,
+                                  double sx,
+                                  double sy,
+                                  unsigned color,
                                   double alpha) {
     const auto &spr = sprite(id);
     if (spr.frames.empty())
@@ -906,8 +968,10 @@ void GameAssets::draw_sprite_part(Canvas &canvas, int id, double frame, double l
     const auto &r = regions_[region_index].region;
     const double l = std::max({left, 0.0, static_cast<double>(r.tx)}),
                  t = std::max({top, 0.0, static_cast<double>(r.ty)});
-    const double rr = std::min({left + width, static_cast<double>(spr.width), static_cast<double>(r.tx + r.tw)}),
-                 bb = std::min({top + height, static_cast<double>(spr.height), static_cast<double>(r.ty + r.th)});
+    const double rr = std::min(
+                     {left + width, static_cast<double>(spr.width), static_cast<double>(r.tx + r.tw)}),
+                 bb = std::min(
+                     {top + height, static_cast<double>(spr.height), static_cast<double>(r.ty + r.th)});
     if (rr <= l || bb <= t)
         return;
     const int ix = static_cast<int>(std::floor(l)), iy = static_cast<int>(std::floor(t)),
@@ -922,7 +986,7 @@ void GameAssets::draw_sprite_part(Canvas &canvas, int id, double frame, double l
                 ib - iy,
                 r.page};
     crop.alpha_mode = r.alpha_mode;
-    // draw_sprite_part positions the cropped region by its own top-left; sprite origins do not apply.
+    // draw_sprite_part uses the cropped region's top-left, so the sprite origin doesn't matter
     blit(canvas, crop, x + (ix - left) * sx, y + (iy - top) * sy, sx, sy, 0, color, alpha);
 }
 double GameAssets::text_width(int font, std::string_view text) const {
@@ -941,11 +1005,22 @@ double GameAssets::text_width(int font, std::string_view text) const {
     return std::max(line, max);
 }
 double GameAssets::text_height(int font) const {
-    return font < 0 || static_cast<std::size_t>(font) >= fonts_.size() ? 8
-                                                                       : fonts_[static_cast<std::size_t>(font)].size;
+    return font < 0 || static_cast<std::size_t>(font) >= fonts_.size()
+               ? 8
+               : fonts_[static_cast<std::size_t>(font)].size;
 }
-void GameAssets::draw_text(Canvas &canvas, int font, double x, double y, std::string_view text, unsigned color,
-                           double alpha, int halign, int valign, double sx, double sy, double angle) {
+void GameAssets::draw_text(Canvas &canvas,
+                           int font,
+                           double x,
+                           double y,
+                           std::string_view text,
+                           unsigned color,
+                           double alpha,
+                           int halign,
+                           int valign,
+                           double sx,
+                           double sy,
+                           double angle) {
     if (font < 0 || static_cast<std::size_t>(font) >= fonts_.size()) {
         canvas.color(color);
         canvas.alpha(alpha);

@@ -25,14 +25,16 @@ struct MiniAudioOutput::Impl {
 
         auto result = ma_device_init(nullptr, &config, &device);
         if (result != MA_SUCCESS)
-            throw Error(ErrorKind::io, std::string("miniaudio device init: ") + ma_result_description(result));
+            throw Error(ErrorKind::io,
+                        std::string("miniaudio device init: ") + ma_result_description(result));
         initialized = true;
 
         result = ma_device_start(&device);
         if (result != MA_SUCCESS) {
             ma_device_uninit(&device);
             initialized = false;
-            throw Error(ErrorKind::io, std::string("miniaudio device start: ") + ma_result_description(result));
+            throw Error(ErrorKind::io,
+                        std::string("miniaudio device start: ") + ma_result_description(result));
         }
     }
 
@@ -43,12 +45,14 @@ struct MiniAudioOutput::Impl {
 
     static void data_callback(ma_device *device, void *output, const void *, ma_uint32 frame_count) noexcept {
         auto &self = *static_cast<Impl *>(device->pUserData);
-        auto samples = std::span<float>(static_cast<float *>(output), static_cast<std::size_t>(frame_count) * 2);
+        auto samples =
+            std::span<float>(static_cast<float *>(output), static_cast<std::size_t>(frame_count) * 2);
         self.session.mix_audio(samples, self.playback_rate.load(std::memory_order_relaxed));
     }
 };
 
-MiniAudioOutput::MiniAudioOutput(GameSession &session, double speed) : impl_(std::make_unique<Impl>(session, speed)) {}
+MiniAudioOutput::MiniAudioOutput(GameSession &session, double speed)
+    : impl_(std::make_unique<Impl>(session, speed)) {}
 MiniAudioOutput::~MiniAudioOutput() = default;
 
 void MiniAudioOutput::set_speed(double speed) noexcept {

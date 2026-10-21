@@ -1,14 +1,14 @@
 # reGML
 
-GameMaker VM runner in C++20
+A GameMaker VM Runner in C++
 
-Bytecode 15 and 16, no YYC support
+Supporting bytecode V15 and V16
 
-Tested with Undertale on Windows and with the Wii U build in Cemu 2.6
+Tested with UNDERTALE on Windows and with CEMU for Wii U!
 Linux builds are checked in CI
 
-Compatibility is incomplete, no full playthrough verified
-Wii U hardware is untested and particle effects are slow
+Compatibility is incomplete...
+PS2 Is radically slow, don't expect a heaven
 
 ## Build
 
@@ -20,7 +20,7 @@ Requires C++20, CMake 3.24+, libpng, zlib, libvorbisfile and SDL2
 .\tools\build.ps1 -Configuration Release -Test
 ```
 
-Dependencies default to the compiler's toolchain prefix
+The dependencies default to the compiler's tool chain prefix:
 Use `-DependencyPrefix <path>` for PNG, Vorbis and zlib, and `-SdlPrefix <path>` for SDL2
 Use `-NoVideo` for a headless build
 
@@ -32,18 +32,19 @@ cmake --build build --config Release
 ctest --test-dir build --output-on-failure -C Release
 ```
 
-For headless builds, add `-DREGML_SDL2=OFF` when configuring
+for headless builds, add `-DREGML_SDL2=OFF` when config'in
 
-The optional miniaudio output backend can be tried in a separate desktop build:
+aswell the optional miniaudio can be tried:
 
 ```sh
 cmake -S . -B build/miniaudio -DREGML_MINIAUDIO=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build/miniaudio --config Release
 ```
 
-It only replaces the output device. Decoding and mixing still use `audio/sdl`; the default SDL output is unchanged. Wii and Wii U builds do not support this option.
+(it only replaces the output device. decoding and mixing still uses audio/sdl. wii wii u and ps2 builds do not support this)
 
-OpenAL can also be selected for desktop audio output. Install OpenAL Soft, then configure with `-DREGML_OPENAL=ON`. It uses the same decoder and mixer as the default SDL output.
+OpenAL can also be selected for desktop audio output: Install OpenAl (soft), then config with `-DREGML_OPENAL=ON`. 
+the decode/mix story is same as SDL.
 
 ## Run
 
@@ -51,13 +52,13 @@ OpenAL can also be selected for desktop audio output. Install OpenAL Soft, then 
 .\build\direct\regml.exe run 'C:\path\to\data.win'
 ```
 
-Keep external audio files in the same directory as `data.win`
-Game files are not included
+Keep external files in the same folder as the  `data.win`
+(game files aren't included)
 
 The PowerShell build outputs `build/direct/regml.exe`
 CMake outputs `build/regml`, `build/regml.exe` or `build/Release/regml.exe`
 
-For 4x speed:
+For speed:
 
 ```powershell
 .\build\direct\regml.exe run 'C:\path\to\data.win' --speed 4x
@@ -69,8 +70,7 @@ Add `--debug-overlay` to show FPS, frame time, room, GML code and bytecode addre
 
 ## Wii U
 
-Install devkitPro and run these in its MSYS2 terminal
-Run the build commands from the repository root
+install devkitPro and run these commands in its msys2 terminal.
 
 ```sh
 pacman -Syu
@@ -86,17 +86,17 @@ Outputs: `build-wiiu/regml.rpx` and `build-wiiu/regml.wuhb`
 
 Put `data.win` and external audio files in `sd:/reGML/`
 
-- Aroma: copy `regml.wuhb` to `sd:/wiiu/apps/reGML/` and launch with Homebrew on Menu
-- Tiramisu: copy `regml.rpx` to `sd:/wiiu/apps/reGML/` and launch with the Homebrew Launcher
+- Aroma: copy `regml.wuhb` to `sd:/wiiu/apps/reGML/` & launch with Homebrew on Menu
+- Tiramisu: copy `regml.rpx` to `sd:/wiiu/apps/reGML/` & launch with the Homebrew Launcher
 
 Saves: `sd:/wiiu/apps/reGML/saves/`
 
 ### Cemu
 
-Tested with Cemu 2.6
+was tested with cemu v. 2.6
 
-1. Put `data.win` and external audio files in `sdcard/reGML/` inside the Cemu directory
-2. Configure a Wii U GamePad in Input settings
+1. Put the `data.win` and external files in `sdcard/reGML/` inside the Cemu dir
+2. Config a Wii U GamePad in Input settings
 3. Enable TV audio in General settings > Audio
 4. Open `build-wiiu/regml.wuhb` through File > Load
 
@@ -108,11 +108,12 @@ Tested with Cemu 2.6
 | X / Y | C |
 | Start | Enter |
 
-Trace logs and input scripts: [docs/wiiu.md](docs/wiiu.md)
+The Trace logs and input scripts: [docs/wiiu.md](docs/wiiu.md)
 
 ## Wii (experimental)
 
-The Wii build uses libogc for video, input, and audio, with direct GX rendering. The VM is shared with desktop and Wii U. SDL2 is not linked. Wii code is in `src/platform/wii/`.
+wii build uses libogc for video, input, & audio, with direct GX render. the vm is shared with desktop and Wii U. sdl2 isn't linked:
+wii code is in `src/platform/wii/`
 
 [GX renderer](docs/wii-gx.md) ? [Optional 240p builds](docs/240p.md)
 
@@ -126,11 +127,12 @@ pacman -S --needed cmake ninja wii-dev ppc-libpng ppc-libvorbis ppc-zlib
 cmake --build build/wii --config Release
 ```
 
-This produces `build/wii/regml.dol`. Copy it to `sd:/apps/reGML/boot.dol` and launch it from the Homebrew Channel. Put `data.win` and external audio files in `sd:/reGML/`.
+Outputs: `build/wii/regml.dol`
+Copy it to `sd:/apps/reGML/boot.dol` and launch it from the Homebrew Channel. Put `data.win` and external audio files in `sd:/reGML/`.
 
-For the debug HUD, put an empty `regml-debug.enabled` file beside `data.win`.
+For the debug HUD, put an empty `regml-debug.enabled` file beside `data.win`
 
-The DOL cross-builds; Wii hardware and Dolphin have not been tested. Rendering still uses the software framebuffer.
+wii hardware and Dolphin have not been tested. rendering still uses the software framebuffer.
 
 ## Tools
 

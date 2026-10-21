@@ -1,6 +1,6 @@
 #pragma once
-#include "package.hpp"
 #include "canvas.hpp"
+#include "package.hpp"
 #include <array>
 #include <bitset>
 #include <span>
@@ -30,16 +30,64 @@ class GameAssets {
     void prefetch(int id);
     void draw_background(Canvas &canvas, int id, double x, double y);
     void draw_background_stretched(Canvas &canvas, int id, double x, double y, double width, double height);
-    void draw_background_part_ext(Canvas &canvas, int id, double left, double top, double width, double height,
-                                  double x, double y, double sx, double sy, unsigned color, double alpha);
-    void draw_tile(Canvas &canvas, int id, int source_x, int source_y, int width, int height, double x, double y,
-                   double sx, double sy, unsigned color);
-    void draw_sprite(Canvas &canvas, int id, double frame, double x, double y, double sx = 1, double sy = 1,
-                     double angle = 0, unsigned color = 0xffffff, double alpha = 1);
-    void draw_sprite_part(Canvas &canvas, int id, double frame, double left, double top, double width, double height,
-                          double x, double y, double sx, double sy, unsigned color, double alpha);
-    void draw_text(Canvas &canvas, int font, double x, double y, std::string_view text, unsigned color, double alpha,
-                   int halign = 0, int valign = 0, double sx = 1, double sy = 1, double angle = 0);
+    void draw_background_part_ext(Canvas &canvas,
+                                  int id,
+                                  double left,
+                                  double top,
+                                  double width,
+                                  double height,
+                                  double x,
+                                  double y,
+                                  double sx,
+                                  double sy,
+                                  unsigned color,
+                                  double alpha);
+    void draw_tile(Canvas &canvas,
+                   int id,
+                   int source_x,
+                   int source_y,
+                   int width,
+                   int height,
+                   double x,
+                   double y,
+                   double sx,
+                   double sy,
+                   unsigned color);
+    void draw_sprite(Canvas &canvas,
+                     int id,
+                     double frame,
+                     double x,
+                     double y,
+                     double sx = 1,
+                     double sy = 1,
+                     double angle = 0,
+                     unsigned color = 0xffffff,
+                     double alpha = 1);
+    void draw_sprite_part(Canvas &canvas,
+                          int id,
+                          double frame,
+                          double left,
+                          double top,
+                          double width,
+                          double height,
+                          double x,
+                          double y,
+                          double sx,
+                          double sy,
+                          unsigned color,
+                          double alpha);
+    void draw_text(Canvas &canvas,
+                   int font,
+                   double x,
+                   double y,
+                   std::string_view text,
+                   unsigned color,
+                   double alpha,
+                   int halign = 0,
+                   int valign = 0,
+                   double sx = 1,
+                   double sy = 1,
+                   double angle = 0);
     double text_width(int font, std::string_view text) const;
     double text_height(int font) const;
     void view(double x, double y, double sx, double sy, double px, double py);
@@ -120,7 +168,14 @@ class GameAssets {
     [[nodiscard]] const Region *find_region(std::size_t pointer) const noexcept;
     Page &load_page(int id);
     void release_scratch_page() noexcept;
-    void blit(Canvas &canvas, const Region &r, double x, double y, double sx, double sy, double angle, unsigned color,
+    void blit(Canvas &canvas,
+              const Region &r,
+              double x,
+              double y,
+              double sx,
+              double sy,
+              double angle,
+              unsigned color,
               double alpha);
 };
 } // namespace regml

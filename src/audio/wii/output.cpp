@@ -127,7 +127,8 @@ struct WiiAudioOutput::Impl {
         for (std::size_t offset = 0; offset < buffer_count; ++offset) {
             const auto index = (next_play_buffer + offset) % buffer_count;
             auto expected = BufferState::ready;
-            if (states[index].compare_exchange_strong(expected, BufferState::playing, std::memory_order_acq_rel)) {
+            if (states[index].compare_exchange_strong(expected, BufferState::playing,
+                                                      std::memory_order_acq_rel)) {
                 next_play_buffer = (index + 1) % buffer_count;
                 return static_cast<int>(index);
             }
@@ -143,7 +144,8 @@ struct WiiAudioOutput::Impl {
         const int next = take_ready_buffer();
         if (next >= 0) {
             playing.store(next, std::memory_order_relaxed);
-            AUDIO_InitDMA(address(buffers[static_cast<std::size_t>(next)].samples.data()), static_cast<u32>(dma_bytes));
+            AUDIO_InitDMA(address(buffers[static_cast<std::size_t>(next)].samples.data()),
+                          static_cast<u32>(dma_bytes));
         } else {
             AUDIO_InitDMA(address(silence.data()), static_cast<u32>(dma_bytes));
         }
@@ -154,7 +156,8 @@ struct WiiAudioOutput::Impl {
         for (std::size_t offset = 0; offset < buffer_count; ++offset) {
             const auto index = (next_fill_buffer + offset) % buffer_count;
             auto expected = BufferState::free;
-            if (!states[index].compare_exchange_strong(expected, BufferState::filling, std::memory_order_acq_rel))
+            if (!states[index].compare_exchange_strong(expected, BufferState::filling,
+                                                       std::memory_order_acq_rel))
                 continue;
 
             session.mix_audio(mix_buffer, playback_rate.load(std::memory_order_relaxed));
@@ -172,7 +175,8 @@ struct WiiAudioOutput::Impl {
 
 std::atomic<WiiAudioOutput::Impl *> WiiAudioOutput::Impl::active{nullptr};
 
-WiiAudioOutput::WiiAudioOutput(GameSession &session, double speed) : impl_(std::make_unique<Impl>(session, speed)) {}
+WiiAudioOutput::WiiAudioOutput(GameSession &session, double speed)
+    : impl_(std::make_unique<Impl>(session, speed)) {}
 WiiAudioOutput::~WiiAudioOutput() = default;
 void WiiAudioOutput::set_speed(double speed) noexcept {
     impl_->playback_rate.store(static_cast<float>(speed), std::memory_order_relaxed);

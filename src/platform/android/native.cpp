@@ -2,8 +2,8 @@
 #include "game.hpp"
 #include "lookup.hpp"
 #include <jni.h>
-#include <mutex>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -34,9 +34,10 @@ void throw_java(JNIEnv *env, const char *message) {
 }
 } // namespace
 
-extern "C" JNIEXPORT jboolean JNICALL Java_org_regml_app_GameSurface_nativeCreate(JNIEnv *env, jobject,
-                                                                                   jstring package_path,
-                                                                                   jstring save_path) {
+extern "C" JNIEXPORT jboolean JNICALL Java_org_regml_app_GameSurface_nativeCreate(JNIEnv *env,
+                                                                                  jobject,
+                                                                                  jstring package_path,
+                                                                                  jstring save_path) {
     try {
         auto next = std::make_unique<Runtime>();
         next->game = std::make_unique<regml::GameSession>(from_java(env, package_path), std::nullopt,
@@ -50,8 +51,10 @@ extern "C" JNIEXPORT jboolean JNICALL Java_org_regml_app_GameSurface_nativeCreat
     }
 }
 
-extern "C" JNIEXPORT void JNICALL Java_org_regml_app_GameSurface_nativeFrame(JNIEnv *env, jobject,
-                                                                              jint input_mask, jintArray frame) {
+extern "C" JNIEXPORT void JNICALL Java_org_regml_app_GameSurface_nativeFrame(JNIEnv *env,
+                                                                             jobject,
+                                                                             jint input_mask,
+                                                                             jintArray frame) {
     if (!runtime)
         return;
     try {
@@ -102,8 +105,10 @@ extern "C" JNIEXPORT jint JNICALL Java_org_regml_app_GameSurface_nativeHeight(JN
     return runtime ? runtime->game->canvas().height() : 0;
 }
 
-extern "C" JNIEXPORT void JNICALL Java_org_regml_app_GameSurface_nativeTypedKey(JNIEnv *, jobject, jint key,
-                                                                                  jint character) {
+extern "C" JNIEXPORT void JNICALL Java_org_regml_app_GameSurface_nativeTypedKey(JNIEnv *,
+                                                                                jobject,
+                                                                                jint key,
+                                                                                jint character) {
     if (key < 0 || key >= 256 || character < 0 || character > 255)
         return;
     std::lock_guard lock(typed_key_mutex);

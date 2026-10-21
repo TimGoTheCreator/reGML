@@ -6,7 +6,7 @@
 #include <string_view>
 #include <vector>
 namespace regml {
-// CPU framebuffer; SDL only handles presentation.
+// the CPU draws into this buffer; SDL just puts it on screen
 class Canvas {
   public:
     Canvas(int width, int height, bool main_screen = false);
@@ -29,10 +29,24 @@ class Canvas {
     void circle(double x, double y, double radius, bool outline);
     void line(double x1, double y1, double x2, double y2, double width = 1);
     void triangle(double x1, double y1, double x2, double y2, double x3, double y3, bool outline);
-    void draw_surface(const Canvas &source, double x, double y, double sx = 1, double sy = 1, double angle = 0,
-                      std::uint32_t tint = 0xffffff, double opacity = 1);
-    void blit_rgba(std::span<const std::uint32_t> source, int source_width, int source_x, int source_y,
-                   int destination_x, int destination_y, int width, int height, unsigned tint, double opacity,
+    void draw_surface(const Canvas &source,
+                      double x,
+                      double y,
+                      double sx = 1,
+                      double sy = 1,
+                      double angle = 0,
+                      std::uint32_t tint = 0xffffff,
+                      double opacity = 1);
+    void blit_rgba(std::span<const std::uint32_t> source,
+                   int source_width,
+                   int source_x,
+                   int source_y,
+                   int destination_x,
+                   int destination_y,
+                   int width,
+                   int height,
+                   unsigned tint,
+                   double opacity,
                    std::int8_t source_alpha_mode = 0) noexcept;
     void text(double x, double y, std::string_view text);
     void debug_text_overlay(std::span<const std::string_view> lines);

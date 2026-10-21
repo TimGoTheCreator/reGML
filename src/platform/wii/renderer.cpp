@@ -114,9 +114,22 @@ REGML_ALWAYS_INLINE bool is_aligned_32(const void *ptr) noexcept {
     return (reinterpret_cast<std::uintptr_t>(ptr) & 31u) == 0u;
 }
 
-REGML_ALWAYS_INLINE u64 compute_tile_signature(u32 r0_0, u32 r0_1, u32 r0_2, u32 r0_3, u32 r1_0, u32 r1_1, u32 r1_2,
-                                               u32 r1_3, u32 r2_0, u32 r2_1, u32 r2_2, u32 r2_3, u32 r3_0, u32 r3_1,
-                                               u32 r3_2, u32 r3_3) noexcept {
+REGML_ALWAYS_INLINE u64 compute_tile_signature(u32 r0_0,
+                                               u32 r0_1,
+                                               u32 r0_2,
+                                               u32 r0_3,
+                                               u32 r1_0,
+                                               u32 r1_1,
+                                               u32 r1_2,
+                                               u32 r1_3,
+                                               u32 r2_0,
+                                               u32 r2_1,
+                                               u32 r2_2,
+                                               u32 r2_3,
+                                               u32 r3_0,
+                                               u32 r3_1,
+                                               u32 r3_2,
+                                               u32 r3_3) noexcept {
     u32 lo = r0_0;
     u32 hi = r0_1 ^ 0x9E3779B9u;
 
@@ -141,13 +154,28 @@ REGML_ALWAYS_INLINE u64 compute_tile_signature(u32 r0_0, u32 r0_1, u32 r0_2, u32
     return (static_cast<u64>(hi) << 32) | static_cast<u64>(lo);
 }
 
-REGML_ALWAYS_INLINE bool tile_matches(const u32 *dst, u32 r0_0, u32 r0_1, u32 r0_2, u32 r0_3, u32 r1_0, u32 r1_1,
-                                      u32 r1_2, u32 r1_3, u32 r2_0, u32 r2_1, u32 r2_2, u32 r2_3, u32 r3_0, u32 r3_1,
-                                      u32 r3_2, u32 r3_3) noexcept {
-    const u32 expected[16] = {pack_ar(r0_0, r0_1), pack_ar(r0_2, r0_3), pack_ar(r1_0, r1_1), pack_ar(r1_2, r1_3),
-                              pack_ar(r2_0, r2_1), pack_ar(r2_2, r2_3), pack_ar(r3_0, r3_1), pack_ar(r3_2, r3_3),
-                              pack_gb(r0_0, r0_1), pack_gb(r0_2, r0_3), pack_gb(r1_0, r1_1), pack_gb(r1_2, r1_3),
-                              pack_gb(r2_0, r2_1), pack_gb(r2_2, r2_3), pack_gb(r3_0, r3_1), pack_gb(r3_2, r3_3)};
+REGML_ALWAYS_INLINE bool tile_matches(const u32 *dst,
+                                      u32 r0_0,
+                                      u32 r0_1,
+                                      u32 r0_2,
+                                      u32 r0_3,
+                                      u32 r1_0,
+                                      u32 r1_1,
+                                      u32 r1_2,
+                                      u32 r1_3,
+                                      u32 r2_0,
+                                      u32 r2_1,
+                                      u32 r2_2,
+                                      u32 r2_3,
+                                      u32 r3_0,
+                                      u32 r3_1,
+                                      u32 r3_2,
+                                      u32 r3_3) noexcept {
+    const u32 expected[16] = {
+        pack_ar(r0_0, r0_1), pack_ar(r0_2, r0_3), pack_ar(r1_0, r1_1), pack_ar(r1_2, r1_3),
+        pack_ar(r2_0, r2_1), pack_ar(r2_2, r2_3), pack_ar(r3_0, r3_1), pack_ar(r3_2, r3_3),
+        pack_gb(r0_0, r0_1), pack_gb(r0_2, r0_3), pack_gb(r1_0, r1_1), pack_gb(r1_2, r1_3),
+        pack_gb(r2_0, r2_1), pack_gb(r2_2, r2_3), pack_gb(r3_0, r3_1), pack_gb(r3_2, r3_3)};
     return std::memcmp(dst, expected, sizeof(expected)) == 0;
 }
 
@@ -219,10 +247,25 @@ struct AllocationRollbackGuard {
     }
 };
 
-REGML_ALWAYS_INLINE bool swizzle_single_tile(u32 *REGML_RESTRICT dst, u64 *REGML_RESTRICT sig_slot, bool sig_valid,
-                                             u32 r0_0, u32 r0_1, u32 r0_2, u32 r0_3, u32 r1_0, u32 r1_1, u32 r1_2,
-                                             u32 r1_3, u32 r2_0, u32 r2_1, u32 r2_2, u32 r2_3, u32 r3_0, u32 r3_1,
-                                             u32 r3_2, u32 r3_3) noexcept {
+REGML_ALWAYS_INLINE bool swizzle_single_tile(u32 *REGML_RESTRICT dst,
+                                             u64 *REGML_RESTRICT sig_slot,
+                                             bool sig_valid,
+                                             u32 r0_0,
+                                             u32 r0_1,
+                                             u32 r0_2,
+                                             u32 r0_3,
+                                             u32 r1_0,
+                                             u32 r1_1,
+                                             u32 r1_2,
+                                             u32 r1_3,
+                                             u32 r2_0,
+                                             u32 r2_1,
+                                             u32 r2_2,
+                                             u32 r2_3,
+                                             u32 r3_0,
+                                             u32 r3_1,
+                                             u32 r3_2,
+                                             u32 r3_3) noexcept {
 
     const u32 uniform_diff = ((r0_0 ^ r0_1) | (r0_0 ^ r0_2) | (r0_0 ^ r0_3)) |
                              ((r0_0 ^ r1_0) | (r0_0 ^ r1_1) | (r0_0 ^ r1_2) | (r0_0 ^ r1_3)) |
@@ -277,11 +320,11 @@ REGML_ALWAYS_INLINE bool swizzle_single_tile(u32 *REGML_RESTRICT dst, u64 *REGML
     }
 
     if (sig_slot) {
-        const u64 sig = compute_tile_signature(r0_0, r0_1, r0_2, r0_3, r1_0, r1_1, r1_2, r1_3, r2_0, r2_1, r2_2, r2_3,
-                                               r3_0, r3_1, r3_2, r3_3);
+        const u64 sig = compute_tile_signature(r0_0, r0_1, r0_2, r0_3, r1_0, r1_1, r1_2, r1_3, r2_0, r2_1,
+                                               r2_2, r2_3, r3_0, r3_1, r3_2, r3_3);
         if (sig_valid && *sig_slot == sig &&
-            tile_matches(dst, r0_0, r0_1, r0_2, r0_3, r1_0, r1_1, r1_2, r1_3, r2_0, r2_1, r2_2, r2_3, r3_0, r3_1, r3_2,
-                         r3_3)) {
+            tile_matches(dst, r0_0, r0_1, r0_2, r0_3, r1_0, r1_1, r1_2, r1_3, r2_0, r2_1, r2_2, r2_3, r3_0,
+                         r3_1, r3_2, r3_3)) {
             return false;
         }
         *sig_slot = sig;
@@ -322,8 +365,10 @@ REGML_ALWAYS_INLINE void flush_changed_tiles(u32 *base, const bool *changed, std
     }
 }
 
-// Convert 640x480 RGBA pixels to GX tiled RGBA8.
-REGML_HOT void swizzle_canvas_640x480(const u32 *REGML_RESTRICT src, u32 *REGML_RESTRICT dst, u64 *REGML_RESTRICT sigs,
+// turn 640x480 RGBA pixels into GX tiled RGBA8
+REGML_HOT void swizzle_canvas_640x480(const u32 *REGML_RESTRICT src,
+                                      u32 *REGML_RESTRICT dst,
+                                      u64 *REGML_RESTRICT sigs,
                                       bool sig_valid) noexcept {
 
     std::size_t tile_idx = 0;
@@ -354,20 +399,21 @@ REGML_HOT void swizzle_canvas_640x480(const u32 *REGML_RESTRICT src, u32 *REGML_
             ppc_dcbt(r3 + 24);
 
             const bool changed[4] = {
-                swizzle_single_tile(dst, sigs ? (sigs + tile_idx) : nullptr, sig_valid, r0[0], r0[1], r0[2], r0[3],
-                                    r1[0], r1[1], r1[2], r1[3], r2[0], r2[1], r2[2], r2[3], r3[0], r3[1], r3[2], r3[3]),
+                swizzle_single_tile(dst, sigs ? (sigs + tile_idx) : nullptr, sig_valid, r0[0], r0[1], r0[2],
+                                    r0[3], r1[0], r1[1], r1[2], r1[3], r2[0], r2[1], r2[2], r2[3], r3[0],
+                                    r3[1], r3[2], r3[3]),
 
-                swizzle_single_tile(dst + 16, sigs ? (sigs + tile_idx + 1) : nullptr, sig_valid, r0[4], r0[5], r0[6],
-                                    r0[7], r1[4], r1[5], r1[6], r1[7], r2[4], r2[5], r2[6], r2[7], r3[4], r3[5], r3[6],
-                                    r3[7]),
+                swizzle_single_tile(dst + 16, sigs ? (sigs + tile_idx + 1) : nullptr, sig_valid, r0[4], r0[5],
+                                    r0[6], r0[7], r1[4], r1[5], r1[6], r1[7], r2[4], r2[5], r2[6], r2[7],
+                                    r3[4], r3[5], r3[6], r3[7]),
 
-                swizzle_single_tile(dst + 32, sigs ? (sigs + tile_idx + 2) : nullptr, sig_valid, r0[8], r0[9], r0[10],
-                                    r0[11], r1[8], r1[9], r1[10], r1[11], r2[8], r2[9], r2[10], r2[11], r3[8], r3[9],
-                                    r3[10], r3[11]),
+                swizzle_single_tile(dst + 32, sigs ? (sigs + tile_idx + 2) : nullptr, sig_valid, r0[8], r0[9],
+                                    r0[10], r0[11], r1[8], r1[9], r1[10], r1[11], r2[8], r2[9], r2[10],
+                                    r2[11], r3[8], r3[9], r3[10], r3[11]),
 
-                swizzle_single_tile(dst + 48, sigs ? (sigs + tile_idx + 3) : nullptr, sig_valid, r0[12], r0[13], r0[14],
-                                    r0[15], r1[12], r1[13], r1[14], r1[15], r2[12], r2[13], r2[14], r2[15], r3[12],
-                                    r3[13], r3[14], r3[15])};
+                swizzle_single_tile(dst + 48, sigs ? (sigs + tile_idx + 3) : nullptr, sig_valid, r0[12],
+                                    r0[13], r0[14], r0[15], r1[12], r1[13], r1[14], r1[15], r2[12], r2[13],
+                                    r2[14], r2[15], r3[12], r3[13], r3[14], r3[15])};
             flush_changed_tiles(dst, changed, 4);
 
             r0 += 16;
@@ -380,8 +426,10 @@ REGML_HOT void swizzle_canvas_640x480(const u32 *REGML_RESTRICT src, u32 *REGML_
     }
 }
 
-// Expand 320x240 pixels while converting them to GX tiled RGBA8.
-REGML_HOT void swizzle_canvas_320x240(const u32 *REGML_RESTRICT src, u32 *REGML_RESTRICT dst, u64 *REGML_RESTRICT sigs,
+// scale 320x240 pixels up while converting them to GX tiled RGBA8
+REGML_HOT void swizzle_canvas_320x240(const u32 *REGML_RESTRICT src,
+                                      u32 *REGML_RESTRICT dst,
+                                      u64 *REGML_RESTRICT sigs,
                                       bool sig_valid) noexcept {
 
     constexpr int kSrcWidth = 320;
@@ -403,8 +451,9 @@ REGML_HOT void swizzle_canvas_320x240(const u32 *REGML_RESTRICT src, u32 *REGML_
             const u32 p10 = sr1[0];
             const u32 p11 = sr1[1];
 
-            const bool changed = swizzle_single_tile(dst, sigs ? (sigs + tile_idx) : nullptr, sig_valid, p00, p00, p01,
-                                                     p01, p00, p00, p01, p01, p10, p10, p11, p11, p10, p10, p11, p11);
+            const bool changed =
+                swizzle_single_tile(dst, sigs ? (sigs + tile_idx) : nullptr, sig_valid, p00, p00, p01, p01,
+                                    p00, p00, p01, p01, p10, p10, p11, p11, p10, p10, p11, p11);
             if (changed) {
                 if (dirty_tile_count == 0)
                     dirty_start = dst;
@@ -424,9 +473,12 @@ REGML_HOT void swizzle_canvas_320x240(const u32 *REGML_RESTRICT src, u32 *REGML_
         DCFlushRange(dirty_start, dirty_tile_count * kTileBytes);
 }
 
-// Scale the source canvas to 640x480.
-REGML_COLD void swizzle_canvas_safe_fallback(const u32 *REGML_RESTRICT src, std::size_t src_count, int src_width,
-                                             int src_height, u32 *REGML_RESTRICT dst,
+// scale the source canvas to 640x480
+REGML_COLD void swizzle_canvas_safe_fallback(const u32 *REGML_RESTRICT src,
+                                             std::size_t src_count,
+                                             int src_width,
+                                             int src_height,
+                                             u32 *REGML_RESTRICT dst,
                                              u64 *REGML_RESTRICT sigs) noexcept {
 
     if (sigs) {
@@ -446,8 +498,8 @@ REGML_COLD void swizzle_canvas_safe_fallback(const u32 *REGML_RESTRICT src, std:
         for (int tile_x = 0; tile_x < kWidth; tile_x += 4) {
             u32 p[4][4];
             for (int y = 0; y < 4; ++y) {
-                const std::size_t row_base =
-                    static_cast<std::size_t>((tile_y + y) * src_height / kHeight) * static_cast<std::size_t>(src_width);
+                const std::size_t row_base = static_cast<std::size_t>((tile_y + y) * src_height / kHeight) *
+                                             static_cast<std::size_t>(src_width);
                 for (int x = 0; x < 4; ++x) {
                     const int src_x = (tile_x + x) * src_width / kWidth;
                     const std::size_t idx = row_base + static_cast<std::size_t>(src_x);
@@ -504,14 +556,16 @@ void compile_fullscreen_quad_display_list() noexcept {
 
 void configure_gx_pipeline(GXRModeObj *vmode) noexcept {
     GX_SetCopyClear({0, 0, 0, 0xff}, 0x00ffffff);
-    GX_SetViewport(0.0f, 0.0f, static_cast<f32>(vmode->fbWidth), static_cast<f32>(vmode->efbHeight), 0.0f, 1.0f);
+    GX_SetViewport(0.0f, 0.0f, static_cast<f32>(vmode->fbWidth), static_cast<f32>(vmode->efbHeight), 0.0f,
+                   1.0f);
     const f32 yscale = GX_GetYScaleFactor(vmode->efbHeight, vmode->xfbHeight);
     const u32 xfb_height = GX_SetDispCopyYScale(yscale);
     GX_SetScissor(0, 0, vmode->fbWidth, vmode->efbHeight);
     GX_SetDispCopySrc(0, 0, vmode->fbWidth, vmode->efbHeight);
     GX_SetDispCopyDst(vmode->fbWidth, xfb_height);
     GX_SetCopyFilter(vmode->aa, vmode->sample_pattern, GX_TRUE, vmode->vfilter);
-    GX_SetFieldMode(vmode->field_rendering, (vmode->viHeight == 2 * vmode->xfbHeight) ? GX_ENABLE : GX_DISABLE);
+    GX_SetFieldMode(vmode->field_rendering,
+                    (vmode->viHeight == 2 * vmode->xfbHeight) ? GX_ENABLE : GX_DISABLE);
     GX_SetPixelFmt(vmode->aa ? GX_PF_RGB565_Z16 : GX_PF_RGB8_Z24, GX_ZC_LINEAR);
 
     GX_SetCullMode(GX_CULL_NONE);
@@ -646,8 +700,8 @@ REGML_HOT void WiiRenderer::present(const Canvas &canvas) {
         GX_CopyTex(texture_pixels_, GX_FALSE);
         GX_PixModeSync();
         configure_gx_pipeline(g_hw.video_mode);
-        GX_InitTexObj(&g_hw.tex_obj, texture_pixels_, render_width, render_height, GX_TF_RGBA8, GX_CLAMP, GX_CLAMP,
-                      GX_FALSE);
+        GX_InitTexObj(&g_hw.tex_obj, texture_pixels_, render_width, render_height, GX_TF_RGBA8, GX_CLAMP,
+                      GX_CLAMP, GX_FALSE);
         GX_InitTexObjLOD(&g_hw.tex_obj, GX_NEAR, GX_NEAR, 0, 0, 0, GX_FALSE, GX_FALSE, GX_ANISO_1);
         GX_InvalidateTexAll();
         GX_LoadTexObj(&g_hw.tex_obj, GX_TEXMAP0);
@@ -686,16 +740,17 @@ REGML_HOT void WiiRenderer::present(const Canvas &canvas) {
                      source_count >= kPixelCount && is_aligned_32(dst_ptr))) {
         swizzle_canvas_640x480(src_ptr, dst_ptr, target_sigs, sig_valid);
         g_hw.signature_valid = target_sigs != nullptr;
-    } else if (src_ptr != nullptr && canvas.width() == 320 && canvas.height() == 240 && source_count >= (320u * 240u) &&
-               is_aligned_32(dst_ptr)) {
+    } else if (src_ptr != nullptr && canvas.width() == 320 && canvas.height() == 240 &&
+               source_count >= (320u * 240u) && is_aligned_32(dst_ptr)) {
         swizzle_canvas_320x240(src_ptr, dst_ptr, target_sigs, sig_valid);
         g_hw.signature_valid = target_sigs != nullptr;
     } else if (is_aligned_32(dst_ptr)) {
-        swizzle_canvas_safe_fallback(src_ptr, source_count, canvas.width(), canvas.height(), dst_ptr, target_sigs);
+        swizzle_canvas_safe_fallback(src_ptr, source_count, canvas.width(), canvas.height(), dst_ptr,
+                                     target_sigs);
         DCFlushRange(target_tex_mem, texture_bytes_);
         g_hw.signature_valid = false;
     } else {
-        // Handle an unexpected unaligned texture buffer.
+        // handle the odd case where the texture buffer isn't aligned
         for (int tile_y = 0; tile_y < kHeight; tile_y += 4) {
             for (int tile_x = 0; tile_x < kWidth; tile_x += 4) {
                 u8 *ar = reinterpret_cast<u8 *>(dst_ptr);
@@ -706,7 +761,8 @@ REGML_HOT void WiiRenderer::present(const Canvas &canvas) {
                     for (int x = 0; x < 4; ++x) {
                         const std::size_t idx = row + static_cast<std::size_t>(x);
                         const u32 pixel = (src_ptr && idx < source_count) ? src_ptr[idx] : 0u;
-                        const std::size_t out_idx = static_cast<std::size_t>(y) * 8 + static_cast<std::size_t>(x) * 2;
+                        const std::size_t out_idx =
+                            static_cast<std::size_t>(y) * 8 + static_cast<std::size_t>(x) * 2;
                         ar[out_idx] = static_cast<u8>(pixel >> 24);
                         ar[out_idx + 1] = static_cast<u8>(pixel >> 16);
                         gb[out_idx] = static_cast<u8>(pixel >> 8);
@@ -720,14 +776,14 @@ REGML_HOT void WiiRenderer::present(const Canvas &canvas) {
         g_hw.signature_valid = false;
     }
 
-    // Make CPU writes visible to GX.
+    // flush CPU writes so GX can see them
     ppc_sync();
     ppc_eieio();
 
     GX_LoadTexObj(&g_hw.tex_obj, GX_TEXMAP0);
     GX_InvalidateTexAll();
 
-    // Draw the fullscreen quad.
+    // draw the fullscreen quad
     if (REGML_LIKELY(g_hw.quad_disp_list_size > 0)) {
         GX_CallDispList(g_hw.quad_disp_list, g_hw.quad_disp_list_size);
     } else {
@@ -751,7 +807,7 @@ REGML_HOT void WiiRenderer::present(const Canvas &canvas) {
     VIDEO_SetNextFramebuffer(framebuffers_[fb_slot]);
     VIDEO_Flush();
 
-    // Wait for the next retrace if rendering missed it.
+    // wait for the next retrace if we missed this one
     const u32 current_retrace = g_hw.retrace_counter;
     if (current_retrace == g_hw.last_presented_retrace) {
         VIDEO_WaitVSync();
@@ -780,7 +836,7 @@ REGML_HOT bool WiiInput::poll() {
         wii_down_all |= WPAD_ButtonsDown(chan);
         pad_held_all |= PAD_ButtonsHeld(chan);
 
-        // GameCube stick deadzone.
+        // deadzone for the GameCube stick
         const s8 gc_x = PAD_StickX(chan);
         const s8 gc_y = PAD_StickY(chan);
         stick_left = stick_left || (gc_x < -36);
@@ -788,23 +844,23 @@ REGML_HOT bool WiiInput::poll() {
         stick_up = stick_up || (gc_y > 36);
         stick_down = stick_down || (gc_y < -36);
 
-        // Read analog input from attached extensions.
+        // read analog input from the attached extensions
         const WPADData *wdata = WPAD_Data(chan);
         if (wdata) {
             if (wdata->exp.type == WPAD_EXP_NUNCHUK) {
-                const int nx =
-                    static_cast<int>(wdata->exp.nunchuk.js.pos.x) - static_cast<int>(wdata->exp.nunchuk.js.center.x);
-                const int ny =
-                    static_cast<int>(wdata->exp.nunchuk.js.pos.y) - static_cast<int>(wdata->exp.nunchuk.js.center.y);
+                const int nx = static_cast<int>(wdata->exp.nunchuk.js.pos.x) -
+                               static_cast<int>(wdata->exp.nunchuk.js.center.x);
+                const int ny = static_cast<int>(wdata->exp.nunchuk.js.pos.y) -
+                               static_cast<int>(wdata->exp.nunchuk.js.center.y);
                 stick_left = stick_left || (nx < -36);
                 stick_right = stick_right || (nx > 36);
                 stick_up = stick_up || (ny > 36);
                 stick_down = stick_down || (ny < -36);
             } else if (wdata->exp.type == WPAD_EXP_CLASSIC) {
-                const int cx =
-                    static_cast<int>(wdata->exp.classic.ljs.pos.x) - static_cast<int>(wdata->exp.classic.ljs.center.x);
-                const int cy =
-                    static_cast<int>(wdata->exp.classic.ljs.pos.y) - static_cast<int>(wdata->exp.classic.ljs.center.y);
+                const int cx = static_cast<int>(wdata->exp.classic.ljs.pos.x) -
+                               static_cast<int>(wdata->exp.classic.ljs.center.x);
+                const int cy = static_cast<int>(wdata->exp.classic.ljs.pos.y) -
+                               static_cast<int>(wdata->exp.classic.ljs.center.y);
                 stick_left = stick_left || (cx < -12);
                 stick_right = stick_right || (cx > 12);
                 stick_up = stick_up || (cy > 12);
@@ -829,11 +885,13 @@ REGML_HOT bool WiiInput::poll() {
         ((wii_held_all & (WPAD_BUTTON_A | WPAD_CLASSIC_BUTTON_A | WPAD_NUNCHUK_BUTTON_Z)) != 0u) ||
         ((pad_held_all & PAD_BUTTON_A) != 0u);
 
-    const bool next_cancel = ((wii_held_all & (WPAD_BUTTON_B | WPAD_CLASSIC_BUTTON_B | WPAD_NUNCHUK_BUTTON_C)) != 0u) ||
-                             ((pad_held_all & PAD_BUTTON_B) != 0u);
+    const bool next_cancel =
+        ((wii_held_all & (WPAD_BUTTON_B | WPAD_CLASSIC_BUTTON_B | WPAD_NUNCHUK_BUTTON_C)) != 0u) ||
+        ((pad_held_all & PAD_BUTTON_B) != 0u);
 
     const bool next_menu =
-        ((wii_held_all & (WPAD_BUTTON_1 | WPAD_BUTTON_2 | WPAD_CLASSIC_BUTTON_X | WPAD_CLASSIC_BUTTON_Y)) != 0u) ||
+        ((wii_held_all & (WPAD_BUTTON_1 | WPAD_BUTTON_2 | WPAD_CLASSIC_BUTTON_X | WPAD_CLASSIC_BUTTON_Y)) !=
+         0u) ||
         ((pad_held_all & (PAD_BUTTON_X | PAD_BUTTON_Y)) != 0u);
 
     const bool next_start = ((wii_held_all & (WPAD_BUTTON_PLUS | WPAD_CLASSIC_BUTTON_PLUS)) != 0u) ||
