@@ -16,7 +16,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake pkg-config libpng-dev libvorbis-dev libsdl2-dev
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libpng-dev libvorbis-dev libsdl2-dev
       - name: Configure and build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON
@@ -27,11 +28,11 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p demo
-          ./build/regml run include/data.win --headless --frames 90 --screenshot demo/arcade.bmp
+          ./build/regml run include/data.win --headless --frames 90 --screenshot demo/game.bmp
       - uses: actions/upload-artifact@v4
         with:
-          name: demo-linux
-          path: demo/arcade.bmp
+          name: game-linux
+          path: demo/game.bmp
           if-no-files-found: warn
 
   windows:
@@ -59,11 +60,11 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force demo | Out-Null
-          .\build\Release\regml.exe run include/data.win --headless --frames 90 --screenshot demo/arcade.bmp
+          .\build\Release\regml.exe run include/data.win --headless --frames 90 --screenshot demo/game.bmp
       - uses: actions/upload-artifact@v4
         with:
-          name: demo-windows
-          path: demo/arcade.bmp
+          name: game-windows
+          path: demo/game.bmp
           if-no-files-found: warn
 
   macos:
@@ -83,11 +84,11 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p demo
-          ./build/regml run include/data.win --headless --frames 90 --screenshot demo/arcade.bmp
+          ./build/regml run include/data.win --headless --frames 90 --screenshot demo/game.bmp
       - uses: actions/upload-artifact@v4
         with:
-          name: demo-macos
-          path: demo/arcade.bmp
+          name: game-macos
+          path: demo/game.bmp
           if-no-files-found: warn
 
   freebsd:
@@ -99,17 +100,17 @@ jobs:
         uses: vmactions/freebsd-vm@v1
         with:
           release: "14.3"
+          prepare: pkg install -y cmake ninja pkgconf png libvorbis sdl2
           run: |
-            pkg install -y cmake ninja pkgconf png libvorbis sdl2
             cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON
             cmake --build build --parallel
             env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software ctest --test-dir build --output-on-failure
             mkdir -p demo
-            ./build/regml run include/data.win --headless --frames 90 --screenshot demo/arcade.bmp || echo "Package screenshot attempt failed"
+            ./build/regml run include/data.win --headless --frames 90 --screenshot demo/game.bmp || echo "Package screenshot attempt failed"
       - uses: actions/upload-artifact@v4
         with:
-          name: demo-freebsd
-          path: demo/arcade.bmp
+          name: game-freebsd
+          path: demo/game.bmp
           if-no-files-found: warn
 
   wii:
