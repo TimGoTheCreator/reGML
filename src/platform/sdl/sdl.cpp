@@ -13,6 +13,7 @@
 #if REGML_PS2
 #include "platform/ps2/frontend.hpp"
 #endif
+#include "error.hpp"
 #include "game.hpp"
 #include "lookup.hpp"
 #include <algorithm>

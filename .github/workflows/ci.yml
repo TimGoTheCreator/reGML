@@ -99,8 +99,8 @@ jobs:
         uses: vmactions/freebsd-vm@v1
         with:
           release: "14.3"
-          prepare: pkg install -y cmake ninja pkgconf png libvorbis sdl2
           run: |
+            pkg install -y cmake ninja pkgconf png libvorbis sdl2
             cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON
             cmake --build build --parallel
             env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software ctest --test-dir build --output-on-failure
@@ -119,7 +119,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Wii libraries
-        run: dkp-pacman -Syu --noconfirm --needed cmake ninja wii-dev ppc-libpng ppc-libvorbis ppc-zlib
+        run: dkp-pacman -S --noconfirm --needed cmake ninja wii-dev ppc-libpng ppc-libvorbis ppc-zlib
       - name: Build DOL
         run: |
           /opt/devkitpro/portlibs/wii/bin/powerpc-eabi-cmake -G Ninja -S . -B build/wii \
@@ -133,7 +133,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Wii U libraries
-        run: dkp-pacman -Syu --noconfirm --needed cmake ninja wiiu-dev wiiu-sdl2 ppc-libpng ppc-libvorbis
+        run: dkp-pacman -S --noconfirm --needed cmake ninja wiiu-dev wiiu-sdl2 ppc-libpng ppc-libvorbis
       - name: Build RPX
         run: |
           /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake -G Ninja -S . -B build/wiiu \
@@ -146,6 +146,8 @@ jobs:
     container: ghcr.io/ps2dev/ps2dev:latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install CMake
+        run: apk add --no-cache cmake
       - name: Build ELF
         run: |
           export PATH="$PS2DEV/bin:$PS2DEV/ee/bin:$PS2DEV/iop/bin:$PS2DEV/dvp/bin:$PS2SDK/bin:$PATH"

@@ -1,9 +1,15 @@
 #pragma once
 #include "input.hpp"
+#include "interpreter.hpp"
+#include "rendersoftware/canvas.hpp"
+#include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 namespace regml {
 class GameSession {
   public:
