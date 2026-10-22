@@ -14,16 +14,6 @@ PS2 Is radically slow, don't expect a heaven
 
 Requires C++20, CMake 3.24+, libpng, zlib, libvorbisfile and SDL2
 
-### Windows
-
-```powershell
-.\tools\build.ps1 -Configuration Release -Test
-```
-
-The dependencies default to the compiler's tool chain prefix:
-Use `-DependencyPrefix <path>` for PNG, Vorbis and zlib, and `-SdlPrefix <path>` for SDL2
-Use `-NoVideo` for a headless build
-
 ### CMake
 
 ```sh
