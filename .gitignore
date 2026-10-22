@@ -37,7 +37,6 @@ compile_commands.json
 /game-assets/
 /saves/
 /test-data/private/
-*.win
 *.unx
 *.droid
 *.ios
@@ -58,6 +57,7 @@ compile_commands.json
 *.wav
 *.mp3
 *.flac
+
 
 .vs/
 .idea/

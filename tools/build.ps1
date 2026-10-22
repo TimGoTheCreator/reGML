@@ -79,24 +79,5 @@ if ($Test) {
     if ($LASTEXITCODE -ne 0) { throw 'CLI linked disassembly failed' }
     & $appExe 'unknown-command'
     if ($LASTEXITCODE -ne 2) { throw 'CLI usage exit code is incorrect' }
-    $playOutput = & $appExe 'play-demo' '--headless' '--frames' '40' '--autoplay' '--screenshot' (Join-Path $outputDir 'arcade.bmp')
-    if ($LASTEXITCODE -ne 0 -or ($playOutput -join "`n") -notmatch 'Player: 480, 380') { throw 'Headless gameplay check failed' }
-    $playOutput | Write-Output
-    if (-not $NoVideo) {
-        $previousVideoDriver = $env:SDL_VIDEODRIVER
-        $previousRenderDriver = $env:SDL_RENDER_DRIVER
-        try {
-            $env:SDL_VIDEODRIVER = 'dummy'
-            $env:SDL_RENDER_DRIVER = 'software'
-            $windowOutput = & $appExe 'play-demo' '--hidden' '--frames' '40' '--autoplay'
-            if ($LASTEXITCODE -ne 0) { throw 'SDL presentation check failed' }
-            $headlessHash = $playOutput | Where-Object { $_ -like 'Frame hash:*' }
-            $windowHash = $windowOutput | Where-Object { $_ -like 'Frame hash:*' }
-            if (-not $headlessHash -or $headlessHash -ne $windowHash) { throw 'SDL/headless framebuffer parity failed' }
-        } finally {
-            $env:SDL_VIDEODRIVER = $previousVideoDriver
-            $env:SDL_RENDER_DRIVER = $previousRenderDriver
-        }
-    }
-    Write-Output 'Core tests, CLI checks and gameplay checks passed.'
+    Write-Output 'Core tests and CLI checks passed.'
 }

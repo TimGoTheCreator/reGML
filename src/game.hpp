@@ -1,5 +1,5 @@
 #pragma once
-#include "demo/demo.hpp"
+#include "input.hpp"
 #include <memory>
 #include <optional>
 #include <span>

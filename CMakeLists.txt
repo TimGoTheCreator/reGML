@@ -13,6 +13,7 @@ option(REGML_240P "Render the main screen at half resolution (320x240 for 640x48
 option(REGML_LOW_MEMORY "Use lazy bytecode and smaller caches for low-memory targets" OFF)
 
 option(REGML_SDL2 "Enable SDL2 windowed frontend" ON)
+option(REGML_WEB "Build the Emscripten web runner" OFF)
 option(REGML_ANDROID "Build the Android JNI library" OFF)
 option(REGML_MINIAUDIO "Use the experimental miniaudio output backend on desktop" OFF)
 option(REGML_OPENAL "Use OpenAL for desktop audio output" OFF)
@@ -26,6 +27,16 @@ endif()
 
 if(ANDROID)
     set(REGML_ANDROID ON)
+endif()
+
+if(EMSCRIPTEN)
+    set(REGML_WEB ON CACHE BOOL "Build the Emscripten web runner" FORCE)
+endif()
+if(REGML_WEB AND NOT EMSCRIPTEN)
+    message(FATAL_ERROR "REGML_WEB requires the Emscripten toolchain (emcmake)")
+endif()
+if(REGML_WEB AND (REGML_ANDROID OR REGML_WIIU OR REGML_WII OR PS2))
+    message(FATAL_ERROR "REGML_WEB cannot be combined with another platform target")
 endif()
 
 if(REGML_MINIAUDIO AND (REGML_WIIU OR REGML_WII))
@@ -103,6 +114,8 @@ elseif(PS2)
     find_library(REGML_PS2_GSKIT NAMES gskit HINTS "$ENV{GSKIT}/lib" REQUIRED)
     find_library(REGML_PS2_DMAKIT NAMES dmakit HINTS "$ENV{GSKIT}/lib" REQUIRED)
     find_library(REGML_PS2_PAD NAMES pad HINTS "$ENV{PS2SDK}/ee/lib" REQUIRED)
+elseif(REGML_WEB)
+    # Emscripten provides SDL2, zlib, libpng, and Vorbis as ports.
 else()
     find_package(PNG REQUIRED)
     find_package(ZLIB REQUIRED)
@@ -116,7 +129,7 @@ else()
     )
 endif()
 
-if(REGML_SDL2 AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_ANDROID AND NOT PS2)
+if(REGML_SDL2 AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_ANDROID AND NOT PS2 AND NOT REGML_WEB)
     find_package(SDL2 REQUIRED)
 endif()
 
@@ -129,8 +142,7 @@ file(GLOB REGML_ENGINE_SOURCES
     "src/rendersoftware/*.cpp"
 )
 file(GLOB REGML_AUDIO_SOURCES CONFIGURE_DEPENDS "src/audio/sdl/*.cpp")
-file(GLOB REGML_DEMO_SOURCES CONFIGURE_DEPENDS "src/demo/*.cpp")
-list(APPEND REGML_ENGINE_SOURCES ${REGML_AUDIO_SOURCES} ${REGML_DEMO_SOURCES})
+list(APPEND REGML_ENGINE_SOURCES ${REGML_AUDIO_SOURCES})
 if(REGML_ANDROID)
     list(FILTER REGML_ENGINE_SOURCES EXCLUDE REGEX "/platform/sdl/sdl\\.cpp$")
     list(APPEND REGML_ENGINE_SOURCES
@@ -204,6 +216,9 @@ endif()
 
 if(REGML_ANDROID)
     target_link_libraries(${REGML_TARGET} PUBLIC png_static vorbisfile)
+elseif(REGML_WEB)
+    target_compile_options(${REGML_TARGET} PUBLIC -sUSE_SDL=2 -sUSE_ZLIB=1 -sUSE_LIBPNG=1 -sUSE_VORBIS=1)
+    target_link_options(${REGML_TARGET} PUBLIC -sUSE_SDL=2 -sUSE_ZLIB=1 -sUSE_LIBPNG=1 -sUSE_VORBIS=1)
 elseif(REGML_WIIU OR REGML_WII)
     target_link_libraries(${REGML_TARGET} PUBLIC
         PkgConfig::REGML_PNG
@@ -240,6 +255,8 @@ elseif(REGML_ANDROID)
     target_compile_definitions(${REGML_TARGET} PUBLIC REGML_WITH_SDL2=0)
 elseif(REGML_WII)
     target_compile_definitions(${REGML_TARGET} PUBLIC REGML_WITH_SDL2=0)
+elseif(REGML_WEB)
+    target_compile_definitions(${REGML_TARGET} PUBLIC REGML_WITH_SDL2=1 REGML_WEB=1)
 elseif(REGML_SDL2)
     target_compile_definitions(${REGML_TARGET} PUBLIC REGML_WITH_SDL2=1)
     if(REGML_WIIU)
@@ -268,6 +285,18 @@ else()
 endif()
 if(NOT REGML_ANDROID)
     target_link_libraries(regml PRIVATE regml_engine)
+endif()
+if(REGML_WEB)
+    set_target_properties(regml PROPERTIES OUTPUT_NAME index SUFFIX ".html")
+    target_link_options(regml PRIVATE
+        "--shell-file=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/web/shell.html"
+        "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/web/runner.js"
+        -sASYNCIFY=1
+        -sALLOW_MEMORY_GROWTH=1
+        -sNO_EXIT_RUNTIME=1
+        -sFORCE_FILESYSTEM=1
+        "-sEXPORTED_RUNTIME_METHODS=['callMain','FS','IDBFS']"
+    )
 endif()
 if(PS2)
     find_program(REGML_PS2_BIN2C bin2c HINTS "$ENV{PS2SDK}/bin" REQUIRED)
@@ -318,7 +347,7 @@ if(PS2)
 endif()
 
 include(CTest)
-if(BUILD_TESTING AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_ANDROID AND NOT PS2)
+if(BUILD_TESTING AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_ANDROID AND NOT PS2 AND NOT REGML_WEB)
     add_executable(regml_tests tests/core_tests.cpp)
     target_link_libraries(regml_tests PRIVATE regml_engine)
     add_executable(regml_audio_test tests/audio_integration.cpp)
@@ -345,12 +374,4 @@ if(BUILD_TESTING AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_ANDROID AND 
     set_tests_properties(cli_inspect cli_disasm PROPERTIES FIXTURES_REQUIRED synthetic_package)
     set_tests_properties(cli_inspect PROPERTIES PASS_REGULAR_EXPRESSION "gml_Script_test")
     set_tests_properties(cli_disasm PROPERTIES PASS_REGULAR_EXPRESSION "ret.i")
-    add_test(NAME cli_play_headless COMMAND regml play-demo --headless --frames 40 --autoplay)
-    set_tests_properties(cli_play_headless PROPERTIES PASS_REGULAR_EXPRESSION "Player: 480, 380")
-    if(REGML_SDL2)
-        add_test(NAME cli_video COMMAND regml play-demo --hidden --frames 2)
-        set_tests_properties(cli_video PROPERTIES
-            ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_RENDER_DRIVER=software"
-            PASS_REGULAR_EXPRESSION "Frames: 2")
-    endif()
 endif()

@@ -42,7 +42,6 @@ void help() {
                  "  regml disasm <data.win> <code-index> [--linked]\n"
                  "  regml audit <data.win>\n"
                  "  regml vm-demo [--trace]\n"
-                 "  regml play-demo [--frames N] [--headless | --hidden] [--autoplay]\n"
                  "  regml run <data.win> [--frames N] [--headless | --hidden]\n"
                  "                  [--screenshot output.bmp] [--input-script file]\n"
                  "                  [--seed N] [--save-dir directory] [--speed Nx] [--speed-control]\n"
@@ -247,18 +246,16 @@ int command(int argc, char **argv) {
                   << "\nPeak stack: " << result.peak_stack_values << '\n';
         return 0;
     }
-    if (name == "play-demo" || name == "run") {
-        if (name == "run" && argc < 3)
+    if (name == "run") {
+        if (argc < 3)
             throw regml::Error(regml::ErrorKind::usage, "run requires a data.win path");
         regml::PlayOptions options;
-        for (int i = name == "run" ? 3 : 2; i < argc; ++i) {
+        for (int i = 3; i < argc; ++i) {
             const std::string_view flag = argv[i];
             if (flag == "--headless")
                 options.headless = true;
             else if (flag == "--hidden")
                 options.hidden = true;
-            else if (flag == "--autoplay")
-                options.autoplay = true;
             else if (flag == "--speed-control")
                 options.speed_controls = true;
             else if (flag == "--debug-overlay")
@@ -296,14 +293,10 @@ int command(int argc, char **argv) {
             throw regml::Error(regml::ErrorKind::usage, "--speed-control requires a visible game window");
         if (options.debug_overlay && (options.headless || options.hidden))
             throw regml::Error(regml::ErrorKind::usage, "--debug-overlay requires a visible game window");
-        const auto report = name == "run" ? regml::play_game(argv[2], options) : regml::play_demo(options);
-        std::cout << (name == "run" ? "reGML package execution" : "reGML VM Arcade")
+        const auto report = regml::play_game(argv[2], options);
+        std::cout << "reGML package execution"
                   << "\nFrames: " << report.frames << "\nVM instructions: " << report.instructions;
-        if (name == "play-demo")
-            std::cout << "\nPlayer: " << report.x << ", " << report.y << "\nScore: " << report.score
-                      << "\nLives: " << report.lives;
-        if (name == "run")
-            std::cout << "\nRoom: " << report.room;
+        std::cout << "\nRoom: " << report.room;
         std::cout << "\nFrame hash: " << std::hex << report.frame_hash << std::dec << '\n';
         if (!options.screenshot.empty())
             std::cout << "Screenshot: " << options.screenshot.string() << '\n';

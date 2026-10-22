@@ -1,6 +1,6 @@
 #pragma once
 
-#include "demo/demo.hpp"
+#include "input.hpp"
 #include "rendersoftware/canvas.hpp"
 #if REGML_PS2
 #include <gsKit.h>
@@ -18,11 +18,6 @@ class Ps2Frontend {
     Ps2Frontend &operator=(const Ps2Frontend &) = delete;
 
     bool poll(double *speed_multiplier = nullptr);
-    template <class Session> void tick(Session &session, bool autoplay) {
-        const auto pressed = take_pressed();
-        session.tick(autoplay ? demo_autoplay(session.frames()) : held_,
-                     autoplay ? KeyboardState{} : pressed);
-    }
     void tick_game(GameSession &session, const KeyboardState *replay);
     void present(const Canvas &canvas);
 

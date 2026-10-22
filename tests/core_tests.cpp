@@ -1,4 +1,3 @@
-#include "demo/demo.hpp"
 #include "game.hpp"
 #include "instance_ptr.hpp"
 #include "interpreter.hpp"
@@ -1042,36 +1041,6 @@ int main(int argc, char **argv) {
                                                         0xffffff, 1);
              check(binary_fast.hash() == binary_reference.hash(), "binary-alpha runs must match compositing");
          }},
-        {"playable VM fixture controls, bounds and scoring",
-         [] {
-             regml::DemoSession demo;
-             regml::KeyboardState held{};
-             const auto initial_hash = demo.canvas().hash();
-             held[39] = true;
-             demo.tick(held);
-             demo.draw();
-             check(regml::value_number(demo.state().at("x")) == 324, "right input changes VM variable");
-             held[32] = true;
-             demo.tick(held);
-             check(regml::value_number(demo.state().at("x")) == 326, "slow input");
-             held = {};
-             held[37] = true;
-             for (int i = 0; i < 100; ++i)
-                 demo.tick(held);
-             check(regml::value_number(demo.state().at("x")) == 48, "left arena bound");
-             demo.draw();
-             check(demo.canvas().hash() != initial_hash && demo.vm_instructions() > 1000, "VM draw output");
-             regml::DemoSession collect;
-             held = {};
-             held[65] = true;
-             for (int i = 0; i < 50; ++i)
-                 collect.tick(held);
-             held = {};
-             held[87] = true;
-             for (int i = 0; i < 50; ++i)
-                 collect.tick(held);
-             check(regml::value_number(collect.state().at("score")) >= 1, "bytecode pickup and score");
-         }},
         {"main screen render scale preserves logical coordinates",
          [] {
              regml::Canvas screen(640, 480, true);
@@ -1102,29 +1071,7 @@ int main(int argc, char **argv) {
              check(screen.pixel(240 / divisor, 200 / divisor) == 0xff808080,
                    "downscaled surfaces sample once instead of blending overlapping source pixels");
          }},
-        {"fixture collision, game over and pressed-edge restart", [] {
-             regml::DemoSession demo;
-             regml::KeyboardState held{};
-             held[38] = true;
-             for (int i = 0; i < 32; ++i)
-                 demo.tick(held);
-             held = {};
-             for (int i = 0; i < 700; ++i)
-                 demo.tick(held);
-             check(regml::value_number(demo.state().at("lives")) == 0 &&
-                       regml::value_number(demo.state().at("game_over")) == 1,
-                   "collision and game-over progression");
-             regml::KeyboardState pressed{};
-             pressed[82] = true;
-             demo.tick(held, pressed);
-             check(regml::value_number(demo.state().at("lives")) == 3 &&
-                       regml::value_number(demo.state().at("y")) == 380,
-                   "short key tap restarts");
-             held[82] = true;
-             demo.tick(held);
-             demo.tick(held);
-             check(regml::value_number(demo.state().at("timer")) == 1, "held restart does not repeat");
-         }}};
+    };
     int failed = 0;
     for (const auto &[name, test] : tests) {
         try {

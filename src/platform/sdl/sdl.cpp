@@ -28,6 +28,9 @@
 #if REGML_WITH_SDL2
 #include <SDL2/SDL.h>
 #endif
+#if REGML_WEB
+#include <emscripten.h>
+#endif
 namespace regml {
 namespace {
 class FrameProfileLog {
@@ -233,11 +236,6 @@ class VideoWindow {
         }
         return true;
     }
-    template <class Session> void tick(Session &session, bool autoplay) {
-        session.tick(autoplay ? demo_autoplay(session.frames()) : held_,
-                     autoplay ? KeyboardState{} : pressed_);
-        pressed_.fill(false);
-    }
     void present(const Canvas &canvas) {
         sdl_ok(SDL_UpdateTexture(texture_.get(), nullptr, canvas.pixels().data(),
                                  canvas.width() * static_cast<int>(sizeof(std::uint32_t))),
@@ -303,11 +301,6 @@ class VideoWindow {
     bool poll(double *speed_multiplier = nullptr) {
         (void)speed_multiplier;
         return input_.poll();
-    }
-    template <class Session> void tick(Session &session, bool autoplay) {
-        const auto pressed = input_.take_pressed();
-        session.tick(autoplay ? demo_autoplay(session.frames()) : input_.held(),
-                     autoplay ? KeyboardState{} : pressed);
     }
     void tick_game(GameSession &session, const KeyboardState *replay) {
         session.canvas().gpu_target(true);
@@ -422,67 +415,6 @@ void draw_debug_overlay(GameSession &session, double frame_ms) {
     session.canvas().debug_text_overlay(lines);
 }
 } // namespace
-PlayReport play_demo(const PlayOptions &options) {
-    if (!std::isfinite(options.speed_multiplier) || options.speed_multiplier < 0.01 ||
-        options.speed_multiplier > 1000.0)
-        throw Error(ErrorKind::usage, "speed multiplier must be between 0.01 and 1000");
-    if ((options.headless || options.hidden) && options.frame_limit == 0)
-        throw Error(ErrorKind::usage, "--headless/--hidden requires a positive --frames limit");
-    if (options.frame_limit > 1'000'000)
-        throw Error(ErrorKind::usage, "frame limit must not exceed 1000000");
-    DemoSession session;
-    if (options.headless) {
-        for (std::size_t i = 0; i < options.frame_limit; ++i) {
-            session.tick(options.autoplay ? demo_autoplay(i) : KeyboardState{});
-            session.draw();
-        }
-    } else {
-#if REGML_WITH_SDL2 || REGML_WII || REGML_PS2
-        VideoWindow window(options.hidden);
-        using Clock = std::chrono::steady_clock;
-        const double step = 1.0 / (60.0 * options.speed_multiplier);
-        auto previous = Clock::now();
-        double accumulated = step;
-        bool running = true;
-        window.present(session.canvas());
-        while (running && (options.frame_limit == 0 || session.frames() < options.frame_limit)) {
-            running = window.poll();
-            if (!running)
-                break;
-            const auto now = Clock::now();
-            accumulated += std::min(std::chrono::duration<double>(now - previous).count(), 0.25);
-            previous = now;
-            // don't try to catch up forever after a stall; keep input edges for each step
-            std::size_t steps = 0;
-            while (accumulated >= step && steps < 5 &&
-                   (options.frame_limit == 0 || session.frames() < options.frame_limit)) {
-                window.tick(session, options.autoplay);
-                session.draw();
-                accumulated -= step;
-                ++steps;
-            }
-            if (steps != 0)
-                window.present(session.canvas());
-            if (steps == 5)
-                accumulated = std::min(accumulated, step);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-#else
-        throw Error(ErrorKind::unsupported,
-                    "this build has no SDL2 window backend; rebuild with SDL2 or use --headless --frames N");
-#endif
-    }
-    if (!options.screenshot.empty())
-        session.canvas().save_bmp(options.screenshot);
-    return {session.frames(),
-            session.vm_instructions(),
-            value_number(session.state().at("x")),
-            value_number(session.state().at("y")),
-            value_number(session.state().at("score")),
-            value_number(session.state().at("lives")),
-            session.canvas().hash(),
-            {}};
-}
 PlayReport play_game(const std::filesystem::path &package, const PlayOptions &options) {
     FrameProfileLog profile(options.profile_log);
     std::ofstream trace;
@@ -551,10 +483,7 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             using Clock = std::chrono::steady_clock;
             const auto start = profile.enabled() ? Clock::now() : Clock::time_point{};
             const auto instructions_begin = session.instructions();
-            session.tick(!replay.empty()    ? input()
-                         : options.autoplay ? demo_autoplay(i)
-                                            : KeyboardState{},
-                         {});
+            session.tick(!replay.empty() ? input() : KeyboardState{}, {});
             const auto tick_end = profile.enabled() ? Clock::now() : Clock::time_point{};
             silent_audio.resize(static_cast<std::size_t>(96000 / session.speed()));
             session.mix_audio(silent_audio);
@@ -624,7 +553,14 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             if (!options.hidden) {
                 // skip missed frames instead of racing through the backlog
                 next = std::max(next, std::chrono::steady_clock::now());
+#if REGML_WEB
+                const auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    next - std::chrono::steady_clock::now());
+                if (wait.count() > 0)
+                    emscripten_sleep(static_cast<unsigned>(wait.count()));
+#else
                 std::this_thread::sleep_until(next);
+#endif
             }
 #endif
             if (profile.enabled()) {
