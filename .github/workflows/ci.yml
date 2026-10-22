@@ -119,12 +119,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Wii libraries
-        run: dkp-pacman -S --noconfirm --needed cmake ninja wii-dev ppc-libpng ppc-libvorbis ppc-zlib
+        run: dkp-pacman -S --noconfirm --needed wii-dev ppc-libpng ppc-libvorbis ppc-zlib
       - name: Build DOL
         run: |
-          /opt/devkitpro/portlibs/wii/bin/powerpc-eabi-cmake -G Ninja -S . -B build/wii \
+          /opt/devkitpro/portlibs/wii/bin/powerpc-eabi-cmake -S . -B build/wii \
             -DCMAKE_BUILD_TYPE=Release -DREGML_WII=ON -DBUILD_TESTING=OFF
-          cmake --build build/wii --parallel
+          make -C build/wii -j"$(nproc)"
 
   wii-u:
     name: Wii U
@@ -133,12 +133,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Wii U libraries
-        run: dkp-pacman -S --noconfirm --needed cmake ninja wiiu-dev wiiu-sdl2 ppc-libpng ppc-libvorbis
+        run: dkp-pacman -S --noconfirm --needed wiiu-dev wiiu-sdl2 ppc-libpng ppc-libvorbis
       - name: Build RPX
         run: |
-          /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake -G Ninja -S . -B build/wiiu \
+          /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake -S . -B build/wiiu \
             -DCMAKE_BUILD_TYPE=Release -DREGML_WIIU=ON -DBUILD_TESTING=OFF
-          cmake --build build/wiiu --parallel
+          make -C build/wiiu -j"$(nproc)"
 
   ps2:
     name: PlayStation 2
@@ -147,7 +147,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install CMake
-        run: apk add --no-cache cmake
+        run: apk add --no-cache build-base cmake
       - name: Build ELF
         run: |
           export PATH="$PS2DEV/bin:$PS2DEV/ee/bin:$PS2DEV/iop/bin:$PS2DEV/dvp/bin:$PS2SDK/bin:$PATH"
