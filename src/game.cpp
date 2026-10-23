@@ -11,6 +11,7 @@
 #include "platform/wii/host.hpp"
 #endif
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -105,12 +106,7 @@ std::string save_profile(const Package &package, const std::filesystem::path &pa
     return safe.empty() ? "game" : safe;
 }
 Package load_game_package(const std::filesystem::path &path) {
-    auto package = Package::load(path);
-    if (package.general_info() && package.general_info()->bytecode_version == 17)
-        throw Error(
-            ErrorKind::unsupported,
-            "bytecode 17 can be decoded and linked, but GameMaker 2 runtime support is not implemented");
-    return package;
+    return Package::load(path);
 }
 struct Object {
     using EventKey = std::pair<int, int>;
@@ -145,7 +141,8 @@ int find_event_owner(const Object &object, Object::EventKey key) {
 }
 struct Placement {
     int object = -1, id = 0, create = -1, precreate = -1;
-    double x = 0, y = 0, sx = 1, sy = 1;
+    double x = 0, y = 0, sx = 1, sy = 1, image_speed = 1, image_index = 0, rotation = 0;
+    unsigned color = 0xffffffff;
 };
 struct Background {
     int id = -1, x = 0, y = 0;
@@ -194,6 +191,29 @@ struct GameSession::Impl {
     LinkedPackage linked;
     GameAssets assets;
     GameAudio audio;
+    struct ShaderResource {
+        std::string_view name;
+        std::array<std::string_view, 6> sources{};
+    };
+    struct ShaderUniform {
+        int shader = -1;
+        std::string name;
+        bool sampler = false;
+        std::vector<double> values;
+    };
+    std::vector<ShaderResource> shaders;
+    std::unordered_map<std::string, int> shader_uniform_ids;
+    std::unordered_map<int, ShaderUniform> shader_uniforms;
+    int next_shader_uniform = 1;
+    std::map<std::pair<int, int>, int> sprite_texture_ids;
+    std::unordered_map<int, std::pair<int, int>> sprite_textures;
+    std::unordered_map<int, int> shader_texture_stages;
+    int next_sprite_texture = 1;
+    int active_shader = -1;
+    int shoujo_shader = -1, shoujo_time_uniform = -1, shoujo_width_uniform = -1;
+    std::array<int, 3> shoujo_sampler_uniforms{-1, -1, -1};
+    std::array<bool, 3> shoujo_texture_failed{};
+    std::atomic<double> audio_master_gain{1.0};
     Canvas canvas{640, 480, true};
     std::vector<Path> paths;
     std::vector<Object> objects;
@@ -203,6 +223,7 @@ struct GameSession::Impl {
     std::unordered_map<std::uint64_t, CollisionRoute> collision_routes;
     std::vector<Room> rooms;
     std::vector<int> order, scripts;
+    std::unordered_map<std::string_view, int, VariableStoreHash, std::equal_to<>> code_ids;
     std::unordered_map<std::string, int, VariableStoreHash, std::equal_to<>> script_names;
     std::vector<InstancePtr> instances;
     std::vector<InstancePtr> tick_instances;
@@ -219,12 +240,18 @@ struct GameSession::Impl {
     };
     std::unordered_map<int, SavedRoom> saved_rooms;
     VariableStore globals, engine;
+    std::unordered_map<int, VariableStore> static_variables;
     KeyboardState held{}, pressed{}, previous_held{}, released{};
     // ds maps can have any game data as keys, so they need their own storage
     // instead of sharing the bytecode name pool
     using DynamicMap = std::unordered_map<std::string, Value, VariableStoreHash, std::equal_to<>>;
     std::unordered_map<int, DynamicMap> maps;
     std::unordered_map<int, std::vector<Value>> lists;
+    struct PriorityItem {
+        Value value;
+        double priority = 0;
+    };
+    std::unordered_map<int, std::vector<PriorityItem>> priorities;
     std::unordered_map<int, GameBuffer> buffers;
     std::unordered_map<int, Canvas> surfaces;
     int next_surface = 1, surface_target = 0;
@@ -278,6 +305,11 @@ struct GameSession::Impl {
           assets(load_stage("graphics metadata", [&] { return GameAssets(package); })),
           audio(load_stage("audio metadata", [&] { return GameAudio(package, path.parent_path()); })),
           game_dir(path.parent_path()), fixed_seed(seed) {
+        for (std::size_t i = 0; i < package.code().size(); ++i) {
+            const auto name = package.code_name(i);
+            if (!name.empty())
+                code_ids.try_emplace(name, static_cast<int>(i));
+        }
         if (seed)
             random.seed(*seed);
         if (!save_directory.empty())
@@ -286,9 +318,15 @@ struct GameSession::Impl {
             save_dir /= save_profile(package, path);
         load_stage("world metadata", [&] {
             load_world();
+            load_shaders();
             std::unordered_map<std::string, std::vector<std::uint8_t>>{}.swap(load_chunks);
             return true;
         });
+        ArrayPtr object_depths(new ArrayValue);
+        object_depths->row_lengths[0] = static_cast<std::int32_t>(objects.size());
+        for (std::size_t i = 0; i < objects.size(); ++i)
+            object_depths->elements[static_cast<int>(i)] = objects[i].depth;
+        globals["__objectID2Depth"] = object_depths;
         // instructions already have the IDs they need, so we can drop these lookup maps now
         std::unordered_map<std::size_t, std::size_t>{}.swap(linked.variable_at);
         std::unordered_map<std::size_t, std::size_t>{}.swap(linked.function_at);
@@ -314,6 +352,188 @@ struct GameSession::Impl {
             enter(order.at(0));
             return true;
         });
+    }
+    void load_shaders() {
+        const auto *chunk = package.find_chunk("SHDR");
+        if (!chunk)
+            return;
+        const auto entries = list(chunk->data_offset, *chunk);
+        shaders.reserve(entries.size());
+        for (const auto offset : entries) {
+            const auto shader_record = record(offset, *chunk, 32);
+            ShaderResource shader;
+            const auto name_pointer = shader_record.u32(0);
+            if (name_pointer)
+                shader.name = package.string_pointer(name_pointer);
+            for (std::size_t source = 0; source < shader.sources.size(); ++source) {
+                const auto source_pointer = shader_record.u32(8 + source * 4);
+                if (source_pointer)
+                    shader.sources[source] = package.string_pointer(source_pointer);
+            }
+            if (shader.name == "shd_shoujo")
+                shoujo_shader = static_cast<int>(shaders.size());
+            shaders.push_back(std::move(shader));
+        }
+        if (shoujo_shader >= 0) {
+            shoujo_time_uniform = shader_uniform_handle(shoujo_shader, "time", false);
+            shoujo_width_uniform = shader_uniform_handle(shoujo_shader, "appSurfWidth", false);
+            shoujo_sampler_uniforms = {shader_uniform_handle(shoujo_shader, "texGradient", true),
+                                       shader_uniform_handle(shoujo_shader, "texBubble", true),
+                                       shader_uniform_handle(shoujo_shader, "texStars", true)};
+        }
+    }
+    bool shader_source_has(int shader, std::string_view identifier) const {
+        if (shader < 0 || static_cast<std::size_t>(shader) >= shaders.size() || identifier.empty())
+            return false;
+        const auto identifier_char = [](unsigned char ch) { return std::isalnum(ch) || ch == '_'; };
+        for (const auto source : shaders[static_cast<std::size_t>(shader)].sources) {
+            std::size_t offset = 0;
+            while ((offset = source.find(identifier, offset)) != std::string::npos) {
+                const bool left_boundary = offset == 0 || !identifier_char(source[offset - 1]);
+                const auto end = offset + identifier.size();
+                const bool right_boundary = end == source.size() || !identifier_char(source[end]);
+                if (left_boundary && right_boundary)
+                    return true;
+                offset = end;
+            }
+        }
+        return false;
+    }
+    int shader_uniform_handle(int shader, std::string_view name, bool sampler) {
+        if (!shader_source_has(shader, name))
+            return -1;
+        std::string key = std::to_string(shader) + (sampler ? ":s:" : ":u:") + std::string(name);
+        if (const auto found = shader_uniform_ids.find(key); found != shader_uniform_ids.end())
+            return found->second;
+        const int handle = next_shader_uniform++;
+        shader_uniform_ids.emplace(std::move(key), handle);
+        shader_uniforms.emplace(handle, ShaderUniform{shader, std::string(name), sampler, {}});
+        return handle;
+    }
+    double shader_uniform_value(int handle, double fallback) const {
+        const auto found = shader_uniforms.find(handle);
+        return found == shader_uniforms.end() || found->second.values.empty() ? fallback
+                                                                                : found->second.values.front();
+    }
+    int sprite_texture_handle(int sprite, double frame) {
+        if (!assets.sprite_exists(sprite) || !std::isfinite(frame))
+            return -1;
+        const auto count = assets.sprite(sprite).frames.size();
+        if (count == 0)
+            return -1;
+        const double floored = std::floor(frame);
+        auto index = static_cast<long long>(std::fmod(floored, static_cast<double>(count)));
+        if (index < 0)
+            index += static_cast<long long>(count);
+        const auto key = std::pair{sprite, static_cast<int>(index)};
+        if (const auto found = sprite_texture_ids.find(key); found != sprite_texture_ids.end())
+            return found->second;
+        const int handle = next_sprite_texture++;
+        sprite_texture_ids.emplace(key, handle);
+        sprite_textures.emplace(handle, key);
+        return handle;
+    }
+    std::uint32_t sample_shader_stage(int sampler, double u, double v) {
+        const auto slot = std::find(shoujo_sampler_uniforms.begin(), shoujo_sampler_uniforms.end(), sampler);
+        if (slot == shoujo_sampler_uniforms.end())
+            return 0;
+        const auto slot_index = static_cast<std::size_t>(slot - shoujo_sampler_uniforms.begin());
+        if (shoujo_texture_failed[slot_index])
+            return 0;
+        const auto stage = shader_texture_stages.find(sampler);
+        if (stage == shader_texture_stages.end())
+            return 0;
+        const auto texture = sprite_textures.find(stage->second);
+        if (texture == sprite_textures.end())
+            return 0;
+        try {
+            return assets.sample_sprite(texture->second.first, texture->second.second, u, v);
+        } catch (...) {
+            shoujo_texture_failed[slot_index] = true;
+            return 0;
+        }
+    }
+    std::uint32_t shade_pixel(int x, int y, std::uint32_t rgba) {
+        if (active_shader != shoujo_shader || (rgba >> 24) == 0)
+            return rgba;
+        const double width = shader_uniform_value(shoujo_width_uniform, canvas.logical_width());
+        const double time = shader_uniform_value(shoujo_time_uniform, 0);
+        if (!std::isfinite(width) || width <= 0 || !std::isfinite(time))
+            return rgba;
+        const auto fract = [](double value) { return value - std::floor(value); };
+        const double frag_x = static_cast<double>(x), frag_y = static_cast<double>(y);
+        const double gradient_x = fract(frag_x / width + time);
+        auto gradient = sample_shader_stage(shoujo_sampler_uniforms[0], gradient_x, 0);
+        const auto next_gradient = sample_shader_stage(shoujo_sampler_uniforms[0], gradient_x + 0.5 / 128.0, 0);
+        const double mix_amount = fract(frag_x / (width / 128.0));
+        std::array<double, 3> color{};
+        for (std::size_t channel = 0; channel < color.size(); ++channel) {
+            const unsigned shift = static_cast<unsigned>((2 - channel) * 8);
+            color[channel] = ((gradient >> shift) & 255) * (1 - mix_amount) +
+                             ((next_gradient >> shift) & 255) * mix_amount;
+            color[channel] += std::abs(-1.0 + fract(frag_x / width) * 2.0) * 127.5;
+        }
+        const double bubble_x = fract(frag_x / width * 4.0 + time * 1.25);
+        const double bubble_y = fract(frag_y / width * 4.0 + time * 1.20);
+        const auto bubble = sample_shader_stage(shoujo_sampler_uniforms[1], bubble_x, bubble_y);
+        const double bubble2_x = fract(frag_x / width * 4.0 + time * 2.65);
+        const double bubble2_y = fract(frag_y / width * 4.0 + time * 2.60);
+        const auto bubble2 = sample_shader_stage(shoujo_sampler_uniforms[1], bubble2_x, bubble2_y);
+        const double stars_x = fract(frag_x / width * 4.0 + time * 1.95);
+        const double stars_y = fract(frag_y / width * 4.0 + time * 1.90);
+        const auto stars = sample_shader_stage(shoujo_sampler_uniforms[2], stars_x, stars_y);
+        for (std::size_t channel = 0; channel < color.size(); ++channel) {
+            const unsigned shift = static_cast<unsigned>((2 - channel) * 8);
+            color[channel] += ((bubble >> shift) & 255) + ((bubble2 >> shift) & 255) * 0.15 +
+                              ((stars >> shift) & 255);
+        }
+        std::uint32_t result = rgba & 0xff000000;
+        for (std::size_t channel = 0; channel < color.size(); ++channel) {
+            const unsigned shift = static_cast<unsigned>((2 - channel) * 8);
+            result |= static_cast<std::uint32_t>(std::clamp(std::lround(color[channel]), 0L, 255L)) << shift;
+        }
+        return result;
+    }
+    static std::uint32_t pixel_shader(void *context, int x, int y, std::uint32_t rgba) noexcept {
+        auto &session = *static_cast<Impl *>(context);
+        try {
+            return session.shade_pixel(x, y, rgba);
+        } catch (...) {
+            return rgba;
+        }
+    }
+    bool shader_is_supported(int shader) const noexcept { return shader == shoujo_shader && shader >= 0; }
+    void configure_shader(Canvas &target) noexcept {
+        if (shader_is_supported(active_shader) && !target.gpu_target())
+            target.pixel_shader(&Impl::pixel_shader, this);
+        else
+            target.pixel_shader(nullptr);
+    }
+    void set_shader_uniform_values(std::span<const Value> args) {
+        if (args.size() < 2)
+            return;
+        const auto handle = number(args[0]);
+        const auto found = shader_uniforms.find(handle);
+        if (found == shader_uniforms.end() || found->second.sampler)
+            return;
+        auto &values = found->second.values;
+        values.clear();
+        if (const auto *array = std::get_if<ArrayPtr>(&args[1]); array && *array) {
+            const int offset = args.size() > 2 ? std::max(number(args[2]), 0) : 0;
+            const auto row_length = (*array)->row_lengths.find(0);
+            const int length = row_length == (*array)->row_lengths.end()
+                                   ? 0
+                                   : std::max(row_length->second - offset, 0);
+            values.reserve(static_cast<std::size_t>(length));
+            for (int i = 0; i < length; ++i) {
+                const auto item = (*array)->elements.find(offset + i);
+                values.push_back(item == (*array)->elements.end() ? 0 : value_number(item->second));
+            }
+            return;
+        }
+        values.reserve(args.size() - 1);
+        for (std::size_t i = 1; i < args.size(); ++i)
+            values.push_back(value_number(args[i]));
     }
     std::vector<std::size_t> list(std::size_t at, const Chunk &c) const {
         if (at < c.data_offset || at > c.data_offset + c.size || c.data_offset + c.size - at < 4)
@@ -345,9 +565,13 @@ struct GameSession::Impl {
             throw Error(ErrorKind::malformed, "resource record outside chunk", at);
         return BinaryView(load_chunk(c), c.data_offset).slice(at - c.data_offset, length);
     }
-    void code_valid(int id) const {
-        if (id < -1 || (id >= 0 && static_cast<std::size_t>(id) >= linked.programs.size()))
-            throw Error(ErrorKind::malformed, "invalid resource code ID");
+    void code_valid(int id, std::size_t offset) const {
+        const auto code_count = linked.shared_code ? linked.code_to_program.size() : linked.programs.size();
+        if (id < -1 || (id >= 0 && static_cast<std::size_t>(id) >= code_count))
+            throw Error(ErrorKind::malformed,
+                        "invalid resource code ID " + std::to_string(id) + " (entry count " +
+                            std::to_string(code_count) + ")",
+                        offset);
     }
     void load_world() {
         const auto *sc = package.find_chunk("SCPT");
@@ -356,11 +580,14 @@ struct GameSession::Impl {
         const auto *ge = package.find_chunk("GEN8");
         if (!sc || !ob || !ro || !ge)
             throw Error(ErrorKind::unsupported, "game requires SCPT/OBJT/ROOM/GEN8 resources");
+        const std::size_t object_field_shift = package.find_chunk("FEAT") ? 4 : 0;
         for (auto p : list(sc->data_offset, *sc)) {
             const auto r = record(p, *sc, 8);
             const auto name = std::string(package.string_pointer(r.u32(0)));
-            const auto id = r.i32(4);
-            code_valid(id);
+            auto id = r.i32(4);
+            if (linked.shared_code && id < -1)
+                id = static_cast<std::int32_t>(static_cast<std::uint32_t>(id) & 0x7fffffffU);
+            code_valid(id, p + 4);
             scripts.push_back(id);
             script_names.emplace(name, id);
         }
@@ -437,20 +664,20 @@ struct GameSession::Impl {
                 paths.push_back(std::move(path));
             }
         for (auto p : list(ob->data_offset, *ob)) {
-            auto r = record(p, *ob, 80);
+            auto r = record(p, *ob, 80 + object_field_shift);
             Object o;
             o.name = package.string_pointer(r.u32(0));
             o.sprite = r.i32(4);
             o.visible = r.u32(8) != 0;
-            o.depth = r.i32(16);
-            o.persistent = r.u32(20) != 0;
-            o.parent = r.i32(24);
-            o.mask = r.i32(28);
-            o.solid = r.u32(12) != 0;
-            const auto vertices = r.u32(64);
+            o.solid = r.u32(12 + object_field_shift) != 0;
+            o.depth = r.i32(16 + object_field_shift);
+            o.persistent = r.u32(20 + object_field_shift) != 0;
+            o.parent = r.i32(24 + object_field_shift);
+            o.mask = r.i32(28 + object_field_shift);
+            const auto vertices = r.u32(64 + object_field_shift);
             if (vertices > 4096)
-                throw Error(ErrorKind::unsupported, "physics vertices exceed limit", p + 64);
-            const auto groups = list(p + 80 + static_cast<std::size_t>(vertices) * 8, *ob);
+                throw Error(ErrorKind::unsupported, "physics vertices exceed limit", p + 64 + object_field_shift);
+            const auto groups = list(p + 80 + object_field_shift + static_cast<std::size_t>(vertices) * 8, *ob);
             for (std::size_t type = 0; type < groups.size(); ++type)
                 for (auto e : list(groups[type], *ob)) {
                     const auto er = record(e, *ob, 8);
@@ -458,7 +685,7 @@ struct GameSession::Impl {
                     for (auto a : list(e + 4, *ob)) {
                         const auto ar = record(a, *ob, 56);
                         const auto code = ar.i32(32);
-                        code_valid(code);
+                        code_valid(code, a + 32);
                         if (code >= 0) {
                             const Object::EventKey key{static_cast<int>(type), subtype};
                             const auto found = std::find_if(
@@ -511,9 +738,12 @@ struct GameSession::Impl {
             room.width = r.i32(8);
             room.height = r.i32(12);
             room.speed = r.i32(16);
+            const bool modern_room = (r.u32(36) & (0x20000U | 0x40000U)) != 0;
+            if (modern_room && room.speed == 0)
+                room.speed = 60;
             room.color = r.u32(24);
             room.create = r.i32(32);
-            code_valid(room.create);
+            code_valid(room.create, p + 32);
             room.persistent = r.u32(20) != 0;
             room.source_offset = p;
             if (room.speed < 1 || room.speed > 1000 || room.width < 1 || room.height < 1)
@@ -555,20 +785,27 @@ struct GameSession::Impl {
                 room.views[std::string(fields[f]) + "[" + std::to_string(v) + "]"] = vr.i32(f * 4);
         }
         for (auto q : list(r.u32(48), *ro)) {
-            const auto ir = record(q, *ro, 40);
+            const auto ir = record(q, *ro, linked.shared_code ? 48 : 40);
             Placement placement;
             placement.x = ir.i32(0);
             placement.y = ir.i32(4);
             placement.object = ir.i32(8);
             placement.id = ir.i32(12);
             placement.create = ir.i32(16);
-            placement.precreate = ir.i32(36);
             placement.sx = std::bit_cast<float>(ir.u32(20));
             placement.sy = std::bit_cast<float>(ir.u32(24));
+            if (linked.shared_code) {
+                placement.image_speed = std::bit_cast<float>(ir.u32(28));
+                placement.image_index = ir.i32(32);
+                placement.color = ir.u32(36);
+                placement.rotation = std::bit_cast<float>(ir.u32(40));
+                placement.precreate = ir.i32(44);
+            } else
+                placement.precreate = ir.i32(36);
             if (placement.object < 0 || static_cast<std::size_t>(placement.object) >= objects.size())
                 throw Error(ErrorKind::malformed, "invalid placed object", q + 8);
-            code_valid(placement.create);
-            code_valid(placement.precreate);
+            code_valid(placement.create, q + 16);
+            code_valid(placement.precreate, q + 36);
             room.instances.push_back(placement);
         }
         for (auto q : list(r.u32(40), *ro)) {
@@ -611,13 +848,13 @@ struct GameSession::Impl {
                       {"persistent", std::int32_t{obj.persistent}},
                       {"solid", std::int32_t{obj.solid}},
                       {"depth", std::int32_t{obj.depth}},
-                      {"image_index", 0.0},
-                      {"image_speed", 1.0},
+                      {"image_index", p.image_index},
+                      {"image_speed", p.image_speed},
                       {"image_xscale", p.sx},
                       {"image_yscale", p.sy},
-                      {"image_angle", 0.0},
-                      {"image_alpha", 1.0},
-                      {"image_blend", std::int32_t{0xffffff}},
+                      {"image_angle", p.rotation},
+                      {"image_alpha", static_cast<double>((p.color >> 24) & 0xff) / 255.0},
+                      {"image_blend", static_cast<std::int32_t>(p.color & 0xffffffU)},
                       {"hspeed", 0.0},
                       {"vspeed", 0.0},
                       {"speed", 0.0},
@@ -915,7 +1152,11 @@ struct GameSession::Impl {
         std::cout << "Entered room " << id << ": " << room.name << " (" << instances.size() << " instances)"
                   << std::endl;
     }
-    Value execute(int code, InstancePtr self, std::span<const Value> arguments, InstancePtr other = {}) {
+    Value execute(int code,
+                  InstancePtr self,
+                  std::span<const Value> arguments,
+                  InstancePtr other = {},
+                  StructPtr struct_self = {}) {
         if (code < 0)
             return std::monostate{};
 #if REGML_WII
@@ -953,8 +1194,11 @@ struct GameSession::Impl {
                 scratch.environment_count = 0;
             }
         } scratch_guard{scratch};
-        std::size_t pc = 0;
-        std::size_t instruction_index = 0;
+        std::size_t pc = package.code().at(static_cast<std::size_t>(code)).entry_offset;
+        const auto entry_instruction = program.instruction_at(pc);
+        if (!entry_instruction)
+            throw Error(ErrorKind::vm, "code entry is not an instruction boundary", program.origin + pc);
+        std::size_t instruction_index = *entry_instruction;
         auto &environments = scratch.environments;
         auto &environment_count = scratch.environment_count;
         auto pop = [&]() {
@@ -990,7 +1234,8 @@ struct GameSession::Impl {
                     const auto kind = (ins.reference_value() >> 24) & 0xf8;
                     int scope = std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
                     int array_index = -1;
-                    if (kind == 0) {
+                    StructPtr explicit_struct;
+                    if (kind == 0 || kind == 0x10 || kind == 0x90) {
                         array_index = number(pop());
                         if (array_index < 0 || array_index >= 32000 * 32000)
                             throw Error(ErrorKind::vm, "array index out of range");
@@ -1002,9 +1247,19 @@ struct GameSession::Impl {
                     else if (kind != 0xa0)
                         throw Error(ErrorKind::unsupported,
                                     "unsupported variable reference kind " + std::to_string(kind));
-                    if (scope == -9)
-                        scope = number(pop());
-                    if (!writing && name.starts_with("bbox_")) {
+                    if (scope == -9) {
+                        const auto receiver = pop();
+                        if (const auto *object = std::get_if<StructPtr>(&receiver))
+                            explicit_struct = *object;
+                        else if (const auto *callable = std::get_if<CallablePtr>(&receiver); callable && *callable) {
+                            if (!(*callable)->properties)
+                                (*callable)->properties = std::make_shared<StructValue>();
+                            explicit_struct = (*callable)->properties;
+                        } else {
+                            scope = number(receiver);
+                        }
+                    }
+                    if (!explicit_struct && !struct_self && !writing && name.starts_with("bbox_")) {
                         const auto *found = first_target(scope, self, other);
                         if (!found)
                             throw Error(ErrorKind::vm, "bounding box instance missing");
@@ -1018,7 +1273,7 @@ struct GameSession::Impl {
                         if (name == "bbox_bottom")
                             return std::ceil(b.bottom) - 1;
                     }
-                    if (!writing &&
+                    if (!explicit_struct && !struct_self && !writing &&
                         (name == "sprite_width" || name == "sprite_height" || name == "sprite_xoffset" ||
                          name == "sprite_yoffset" || name == "image_number")) {
                         const auto *found = first_target(scope, self, other);
@@ -1042,14 +1297,22 @@ struct GameSession::Impl {
                     }
                     VariableStore *store = nullptr;
                     bool multi_target = false;
-                    if (scope == -5)
+                    const bool struct_store = explicit_struct || (struct_self && scope == -1);
+                    const bool static_store = scope == -16;
+                    if (explicit_struct)
+                        store = &explicit_struct->variables;
+                    else if (struct_self && scope == -1)
+                        store = &struct_self->variables;
+                    else if (scope == -5)
                         store = &globals;
+                    else if (static_store)
+                        store = &static_variables[current_code];
                     else if (scope == -7 || name.starts_with("argument"))
                         store = &locals;
                     else if (engine.contains(name) || (kind == 0xa0 && ins.opcode() == Opcode::push_builtin &&
-                                                       !self->vars.contains(name)))
+                                                       (!self || !self->vars.contains(name))))
                         store = &engine;
-                    else if (scope == -1 && self)
+                    else if ((scope == -1 || scope == -6) && self)
                         store = &self->vars;
                     else if (scope == -2 && other && other->alive)
                         store = &other->vars;
@@ -1059,24 +1322,39 @@ struct GameSession::Impl {
                             auto *found = first_target(scope, self, other);
                             if (!found)
                                 throw Error(ErrorKind::vm,
-                                            "variable instance not found: " + std::string(name));
+                                            "variable instance not found: " + std::string(name) + " scope=" +
+                                                std::to_string(scope) + " word=" + std::to_string(ins.word) +
+                                                " ref=" + std::to_string(ins.reference_value()));
                             store = &found->vars;
                         }
                     }
                     auto access = [&](VariableStore *store) -> Value {
+                        if (!writing && name == "undefined")
+                            return std::monostate{};
                         if (!writing && store == &locals && name == "argument_count" &&
                             !locals.contains(name))
                             return static_cast<std::int32_t>(arguments.size());
-                        if (array_index >= 0 && !store->contains(name)) {
+                        if (!writing && store == &locals && !locals.contains(name) &&
+                            name.starts_with("argument") &&
+                            name.size() > 8 &&
+                            std::all_of(name.begin() + 8, name.end(), [](unsigned char ch) {
+                                return std::isdigit(ch) != 0;
+                            }))
+                            return std::monostate{};
+                        if (store == &locals && name.starts_with("argument[") && store->contains(name)) {
+                            if (writing)
+                                (*store)[name] = value;
+                            return store->at(name);
+                        }
+                        if (array_index >= 0) {
                             auto base = store->find(symbol.name);
                             if (base == store->end()) {
-                                if (!writing)
-                                    throw Error(ErrorKind::vm,
-                                                "array variable is uninitialized: " + symbol.name);
+                                if (!writing && kind != 0x90)
+                                        return std::monostate{};
                                 base = store->emplace(symbol.name, ArrayPtr(new ArrayValue)).first;
                             }
                             auto *array = std::get_if<ArrayPtr>(&base->second);
-                            if (writing && (!array || !*array)) {
+                            if ((writing || kind == 0x90) && (!array || !*array)) {
                                 base->second = ArrayPtr(new ArrayValue);
                                 array = std::get_if<ArrayPtr>(&base->second);
                             }
@@ -1084,6 +1362,19 @@ struct GameSession::Impl {
                                 throw Error(ErrorKind::vm,
                                             "indexed variable is not an array: " + symbol.name);
                             const int row = array_index / 32000, col = array_index % 32000;
+                            if (kind == 0x90) {
+                                if (array->use_count() > 1)
+                                    *array = ArrayPtr(new ArrayValue(**array));
+                                auto element = (*array)->elements.find(array_index);
+                                if (element == (*array)->elements.end() ||
+                                    !std::holds_alternative<ArrayPtr>(element->second) ||
+                                    !std::get<ArrayPtr>(element->second)) {
+                                    (*array)->elements[array_index] = ArrayPtr(new ArrayValue);
+                                    auto &length = (*array)->row_lengths[row];
+                                    length = std::max(length, col + 1);
+                                }
+                                return (*array)->elements.at(array_index);
+                            }
                             if (writing) {
                                 if (array->use_count() > 1)
                                     *array = ArrayPtr(new ArrayValue(**array));
@@ -1096,8 +1387,7 @@ struct GameSession::Impl {
                             }
                             const auto length = (*array)->row_lengths.find(row);
                             if (length == (*array)->row_lengths.end() || col >= length->second)
-                                throw Error(ErrorKind::vm,
-                                            "array read exceeds allocated row: " + symbol.name);
+                                return std::monostate{};
                             const auto element = (*array)->elements.find(array_index);
                             return element == (*array)->elements.end() ? Value{std::int32_t{0}}
                                                                        : element->second;
@@ -1106,7 +1396,8 @@ struct GameSession::Impl {
                             (*store)[name] = value;
                             if (store == &engine && name == "room")
                                 pending_room = number(value);
-                            if (store != &engine && store != &globals && store != &locals) {
+                            if (!struct_store && !static_store && store != &engine && store != &globals &&
+                                store != &locals) {
                                 if (name == "speed" || name == "direction") {
                                     const double rad = value_number(store->at("direction")) *
                                                        3.141592653589793 / 180,
@@ -1128,6 +1419,9 @@ struct GameSession::Impl {
                         if (name == "instance_count")
                             return static_cast<std::int32_t>(instances.size());
                         const auto it = store->find(name);
+                        if (it == store->end() &&
+                            (name.starts_with("u_") || name.starts_with("tex_")))
+                            return std::int32_t{-1};
                         if (it == store->end())
                             throw Error(ErrorKind::vm, "uninitialized variable: " + std::string(name));
                         return it->second;
@@ -1141,7 +1435,7 @@ struct GameSession::Impl {
                             }
                         }
                         if (!found)
-                            throw Error(ErrorKind::vm, "variable instance not found: " + std::string(name));
+                            return value;
                         return value;
                     }
                     return access(store);
@@ -1156,6 +1450,9 @@ struct GameSession::Impl {
                         push(variable(false));
                     else if (ins.type1 == DataType::string)
                         push(PackageString{package.string_at(ins.reference_value())});
+                    else if (ins.immediate_kind == Instruction::ImmediateKind::int32 &&
+                             ins.symbol_id != Instruction::no_symbol)
+                        push(FunctionReference{ins.symbol_id});
                     else if (ins.immediate_kind == Instruction::ImmediateKind::int32)
                         push(ins.immediate_i32());
                     else if (ins.immediate_kind == Instruction::ImmediateKind::real64)
@@ -1185,10 +1482,21 @@ struct GameSession::Impl {
                         } else if (kind == 0x80) {
                             address[0] = pop();
                             address_count = 1;
+                            if (number(address[0]) == -9) {
+                                address[1] = pop();
+                                address_count = 2;
+                            }
                         }
                         auto v = pop();
-                        for (std::size_t i = 0; i < address_count; ++i)
-                            push(std::move(address[i]));
+                        if (kind == 0x80) {
+                            if (address_count == 2)
+                                push(std::move(address[1]));
+                            if (address_count > 0)
+                                push(std::move(address[0]));
+                        } else {
+                            for (std::size_t i = 0; i < address_count; ++i)
+                                push(std::move(address[i]));
+                        }
                         variable(true, v);
                     }
                     break;
@@ -1200,7 +1508,7 @@ struct GameSession::Impl {
                     else if (ins.type2() == DataType::real)
                         push(value_number(v));
                     else if (ins.type2() == DataType::boolean)
-                        push(value_number(v) > 0.5);
+                        push(!std::holds_alternative<std::monostate>(v) && value_number(v) > 0.5);
                     else
                         push(v);
                     break;
@@ -1230,6 +1538,19 @@ struct GameSession::Impl {
                 case Opcode::shl:
                 case Opcode::shr: {
                     const auto right = pop(), left = pop();
+                    if (ins.opcode() == Opcode::cmp &&
+                        (std::holds_alternative<std::monostate>(left) ||
+                         std::holds_alternative<std::monostate>(right))) {
+                        const bool equal = std::holds_alternative<std::monostate>(left) &&
+                                           std::holds_alternative<std::monostate>(right);
+                        if (ins.comparison() == 3)
+                            push(equal);
+                        else if (ins.comparison() == 4)
+                            push(!equal);
+                        else
+                            push(false);
+                        break;
+                    }
                     if (value_is_string(left) && value_is_string(right)) {
                         const auto a = value_string_view(left);
                         const auto b = value_string_view(right);
@@ -1322,7 +1643,36 @@ struct GameSession::Impl {
                     args.reserve(count);
                     for (std::size_t i = 0; i < count; ++i)
                         args.push_back(pop());
-                    auto result = call(name, args, self, other);
+                    auto result = call(name, args, self, other, struct_self);
+                    args.clear();
+                    push(std::move(result));
+                    break;
+                }
+                case Opcode::call_v: {
+                    const auto count = static_cast<std::size_t>(ins.word & 0xff);
+                    if (stack.size() < count + 2)
+                        throw Error(ErrorKind::vm, "CALLV argument stack underflow", program.origin + pc);
+                    const auto function = pop();
+                    const auto receiver = pop();
+                    auto &args = scratch.arguments;
+                    args.clear();
+                    args.reserve(count);
+                    for (std::size_t i = 0; i < count; ++i)
+                        args.push_back(pop());
+                    Value result;
+                    if (const auto *callable = std::get_if<CallablePtr>(&function)) {
+                        if (!*callable || !(*callable)->invoke)
+                            throw Error(ErrorKind::vm, "CALLV received an empty callable", program.origin + pc);
+                        result = (*callable)->invoke(args);
+                    } else if (const auto *reference = std::get_if<FunctionReference>(&function)) {
+                        if (const auto *object = std::get_if<StructPtr>(&receiver))
+                            result = invoke_function(reference->symbol_id, args, {}, other, *object);
+                        else
+                            result = invoke_function(reference->symbol_id, args,
+                                                     instance_for_value(receiver, self, other), other);
+                    } else {
+                        throw Error(ErrorKind::unsupported, "CALLV requires a function value", program.origin + pc);
+                    }
                     args.clear();
                     push(std::move(result));
                     break;
@@ -1342,7 +1692,8 @@ struct GameSession::Impl {
                     break;
                 }
                 case Opcode::push_env: {
-                    const auto target = number(pop());
+                    const int scope = number(pop());
+                    const int target = scope == -9 ? number(pop()) : scope;
                     if (environment_count == environments.size())
                         environments.emplace_back();
                     auto &environment = environments[environment_count];
@@ -1399,11 +1750,57 @@ struct GameSession::Impl {
                 }
                 case Opcode::extended: {
                     const auto sub = std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
-                    if (sub != -1)
+                    if (sub == -11) {
+                        if (ins.immediate_kind != Instruction::ImmediateKind::int32)
+                            throw Error(ErrorKind::malformed, "pushref has no 32-bit reference");
+                        if (ins.symbol_id != Instruction::no_symbol)
+                            push(FunctionReference{ins.symbol_id});
+                        else
+                            push(ins.immediate_i32());
+                    } else if (sub == -1) {
+                        if (stack.empty() || number(stack.back()) < 0 || number(stack.back()) >= 32000)
+                            throw Error(ErrorKind::vm, "legacy two-dimensional array index out of range");
+                    } else if (sub == -2 || sub == -4) {
+                        const auto index = number(pop());
+                        const auto array_value = pop();
+                        const auto *array = std::get_if<ArrayPtr>(&array_value);
+                        if (index < 0 || index >= 32000 * 32000)
+                            throw Error(ErrorKind::vm, "invalid multi-dimensional array access");
+                        if (!array || !*array) {
+                            if (sub == -2) {
+                                push(std::monostate{});
+                                break;
+                            }
+                            throw Error(ErrorKind::vm, "invalid multi-dimensional array access");
+                        }
+                        auto found = (*array)->elements.find(index);
+                        if (sub == -2) {
+                            push(found == (*array)->elements.end() ? Value{std::monostate{}} : found->second);
+                        } else {
+                            if (found == (*array)->elements.end() ||
+                                !std::holds_alternative<ArrayPtr>(found->second) ||
+                                !std::get<ArrayPtr>(found->second)) {
+                                (*array)->elements[index] = ArrayPtr(new ArrayValue);
+                                auto &length = (*array)->row_lengths[index / 32000];
+                                length = std::max(length, index % 32000 + 1);
+                            }
+                            push((*array)->elements.at(index));
+                        }
+                    } else if (sub == -3) {
+                        const auto index = number(pop());
+                        const auto array_value = pop();
+                        const auto value = pop();
+                        const auto *array = std::get_if<ArrayPtr>(&array_value);
+                        if (!array || !*array || index < 0 || index >= 32000 * 32000)
+                            throw Error(ErrorKind::vm, "invalid multi-dimensional array assignment");
+                        (*array)->elements[index] = value;
+                        auto &length = (*array)->row_lengths[index / 32000];
+                        length = std::max(length, index % 32000 + 1);
+                    } else if (sub == -5) {
+                        (void)pop();
+                    } else
                         throw Error(ErrorKind::unsupported,
                                     "native extended opcode pending: " + std::to_string(sub));
-                    if (stack.empty() || number(stack.back()) < 0 || number(stack.back()) >= 32000)
-                        throw Error(ErrorKind::vm, "legacy two-dimensional array index out of range");
                     break;
                 }
                 default:
@@ -1430,6 +1827,11 @@ struct GameSession::Impl {
             throw Error(ErrorKind::io,
                         "out of memory in " + std::string(package.code_name(static_cast<std::size_t>(code))),
                         program.origin + pc);
+        } catch (const std::out_of_range &e) {
+            throw Error(ErrorKind::vm,
+                        std::string("host lookup failed: ") + e.what() + " in " +
+                            std::string(package.code_name(static_cast<std::size_t>(code))),
+                        program.origin + pc);
         }
         return std::monostate{};
     }
@@ -1445,7 +1847,34 @@ struct GameSession::Impl {
             return false;
         return std::filesystem::is_directory(save_dir, error) && !error;
     }
-    Value call(std::string_view name, std::span<const Value> args, InstancePtr self, InstancePtr other) {
+    InstancePtr instance_for_value(const Value &value, InstancePtr self, InstancePtr other) {
+        const auto id = static_cast<int>(value_number(value));
+        if (id == -1)
+            return self;
+        if (id == -2)
+            return other;
+        for (const auto &instance : instances)
+            if (instance->alive && instance->id == id)
+                return instance;
+        return {};
+    }
+    Value invoke_function(std::uint32_t symbol_id,
+                          std::span<const Value> args,
+                          InstancePtr self,
+                          InstancePtr other,
+                          StructPtr struct_self = {}) {
+        if (symbol_id >= linked.functions.size())
+            throw Error(ErrorKind::vm, "function reference is out of range");
+        const auto &name = linked.functions[symbol_id].name;
+        if (const auto found = code_ids.find(name); found != code_ids.end())
+            return execute(found->second, self, args, other, std::move(struct_self));
+        return call(name, args, self, other, std::move(struct_self));
+    }
+    Value call(std::string_view name,
+               std::span<const Value> args,
+               InstancePtr self,
+               InstancePtr other,
+               StructPtr struct_self = {}) {
         auto n = [&](std::size_t i) {
             if (i >= args.size())
                 throw Error(ErrorKind::vm, "missing built-in argument");
@@ -1464,13 +1893,79 @@ struct GameSession::Impl {
                 self->vars["direction"] = std::fmod(std::atan2(-v, h) * 180 / 3.141592653589793 + 360, 360);
         };
         Canvas &canvas = surface_target == 0 ? this->canvas : surfaces.at(surface_target);
-        if (const auto it = script_names.find(name); it != script_names.end())
-            return execute(it->second, self, args, other);
+        configure_shader(canvas);
+        if (name == "@@This@@") {
+            if (struct_self)
+                return struct_self;
+            return self ? Value{static_cast<std::int32_t>(self->id)} : Value{std::int32_t{-1}};
+        }
+        if (name == "@@NullObject@@")
+            return std::monostate{};
+        if (name == "@@NewGMLArray@@") {
+            if (args.size() > 32000)
+                throw Error(ErrorKind::vm, "array literal exceeds the one-dimensional array limit");
+            ArrayPtr array(new ArrayValue);
+            for (std::size_t i = 0; i < args.size(); ++i)
+                array->elements[static_cast<std::int32_t>(i)] = args[i];
+            array->row_lengths[0] = static_cast<std::int32_t>(args.size());
+            return array;
+        }
+        if (name == "method") {
+            if (args.size() < 2)
+                throw Error(ErrorKind::vm, "method requires a receiver and function");
+            std::uint32_t symbol_id = Instruction::no_symbol;
+            CallablePtr existing_callable;
+            if (const auto *function = std::get_if<FunctionReference>(&args[1]))
+                symbol_id = function->symbol_id;
+            else if (const auto *function = std::get_if<CallablePtr>(&args[1]); function && *function) {
+                existing_callable = *function;
+                symbol_id = existing_callable->symbol_id;
+            }
+            if (symbol_id == Instruction::no_symbol &&
+                (!existing_callable || !existing_callable->invoke))
+                throw Error(ErrorKind::unsupported, "method requires a function or callable value");
+            InstancePtr target;
+            StructPtr target_struct;
+            if (const auto *value = std::get_if<StructPtr>(&args[0]))
+                target_struct = *value;
+            else if (!std::holds_alternative<std::monostate>(args[0]))
+                target = instance_for_value(args[0], self, other);
+            auto callable = std::make_shared<CallableValue>();
+            callable->symbol_id = symbol_id;
+            callable->bound_struct = target_struct;
+            if (symbol_id != Instruction::no_symbol)
+                callable->invoke =
+                    [this, symbol_id, target, target_struct, other](std::span<const Value> call_args) {
+                        return invoke_function(symbol_id, call_args, target, other, target_struct);
+                    };
+            else
+                callable->invoke = [existing_callable](std::span<const Value> call_args) {
+                    return existing_callable->invoke(call_args);
+                };
+            return callable;
+        }
+        if (name == "@@NewGMLObject@@") {
+            if (args.empty())
+                throw Error(ErrorKind::vm, "@@NewGMLObject@@ requires a constructor");
+            std::uint32_t symbol_id = Instruction::no_symbol;
+            if (const auto *reference = std::get_if<FunctionReference>(&args[0]))
+                symbol_id = reference->symbol_id;
+            else if (const auto *callable = std::get_if<CallablePtr>(&args[0]); callable && *callable)
+                symbol_id = (*callable)->symbol_id;
+            if (symbol_id == Instruction::no_symbol)
+                throw Error(ErrorKind::unsupported, "@@NewGMLObject@@ requires a constructor function");
+            auto object = std::make_shared<StructValue>();
+            invoke_function(symbol_id, args.subspan(1), {}, other, object);
+            return object;
+        }
+        if (const auto it = script_names.find(name); it != script_names.end()) {
+            return execute(it->second, self, args, other, struct_self);
+        }
         if (name == "script_execute") {
             const auto id = static_cast<std::size_t>(n(0));
             if (id >= scripts.size())
                 throw Error(ErrorKind::vm, "script ID out of range");
-            return execute(scripts[id], self, args.subspan(1), other);
+            return execute(scripts[id], self, args.subspan(1), other, struct_self);
         }
         if (name == "os_get_language")
             return std::string("en");
@@ -1480,6 +1975,8 @@ struct GameSession::Impl {
         }
         if (name == "os_get_region")
             return std::string("US");
+        if (name == "parameter_count")
+            return std::int32_t{0};
         if (name == "string")
             return text(0);
         if (name == "real") {
@@ -1504,6 +2001,43 @@ struct GameSession::Impl {
             return value_is_string(args[0]);
         if (name == "is_array")
             return std::holds_alternative<ArrayPtr>(args[0]);
+        if (name == "is_struct")
+            return std::holds_alternative<StructPtr>(args[0]);
+        if (name == "array_length" || name == "array_length_1d") {
+            const auto *array = std::get_if<ArrayPtr>(&args[0]);
+            if (!array || !*array)
+                return std::int32_t{0};
+            if (const auto found = (*array)->row_lengths.find(0); found != (*array)->row_lengths.end())
+                return found->second;
+            std::int32_t length = 0;
+            for (const auto &[index, value] : (*array)->elements) {
+                (void)value;
+                if (index >= 0 && index < 32000)
+                    length = std::max(length, index + 1);
+            }
+            return length;
+        }
+        if (name == "array_push") {
+            if (args.size() < 2)
+                throw Error(ErrorKind::vm, "array_push requires an array and at least one value");
+            auto *array = std::get_if<ArrayPtr>(&args[0]);
+            if (!array || !*array)
+                throw Error(ErrorKind::vm, "array_push requires an array");
+            auto &elements = (*array)->elements;
+            auto &length = (*array)->row_lengths[0];
+            if (length == 0) {
+                for (const auto &[index, value] : elements) {
+                    (void)value;
+                    if (index >= 0 && index < 32000)
+                        length = std::max(length, index + 1);
+                }
+            }
+            if (args.size() - 1 > static_cast<std::size_t>(32000 - length))
+                throw Error(ErrorKind::vm, "array_push exceeds the one-dimensional array limit");
+            for (std::size_t i = 1; i < args.size(); ++i)
+                elements[length++] = args[i];
+            return std::monostate{};
+        }
         if (name == "is_real")
             return !value_is_string(args[0]) && !std::holds_alternative<std::monostate>(args[0]);
         if (name == "string_upper" || name == "string_lower") {
@@ -1511,6 +2045,11 @@ struct GameSession::Impl {
             for (auto &c : str)
                 c = static_cast<char>(name == "string_upper" ? std::toupper(static_cast<unsigned char>(c))
                                                              : std::tolower(static_cast<unsigned char>(c)));
+            return str;
+        }
+        if (name == "string_hash_to_newline") {
+            auto str = text(0);
+            std::replace(str.begin(), str.end(), '#', '\n');
             return str;
         }
         if (name == "string_copy") {
@@ -1584,11 +2123,55 @@ struct GameSession::Impl {
             const auto found = targets(static_cast<int>(n(0)), self, other);
             return !found.empty() && found[0]->vars.contains(text(1));
         }
+        if (name == "variable_instance_set") {
+            const auto found = first_target(static_cast<int>(n(0)), self, other);
+            if (found)
+                found->vars[text(1)] = args[2];
+            return std::monostate{};
+        }
         if (name == "variable_global_get")
             return globals.at(text(0));
         if (name == "variable_global_set") {
             globals[text(0)] = args[1];
             return std::monostate{};
+        }
+        if (name == "ds_priority_create" || name == "ds_priority_create_managed") {
+            const int id = next_ds++;
+            priorities[id] = {};
+            return std::int32_t{id};
+        }
+        if (name == "ds_priority_add") {
+            priorities.at(static_cast<int>(n(0))).push_back({args[1], n(2)});
+            return std::monostate{};
+        }
+        if (name == "ds_priority_clear") {
+            priorities.at(static_cast<int>(n(0))).clear();
+            return std::monostate{};
+        }
+        if (name == "ds_priority_destroy") {
+            priorities.erase(static_cast<int>(n(0)));
+            return std::monostate{};
+        }
+        if (name == "ds_priority_copy") {
+            priorities.at(static_cast<int>(n(0))) = priorities.at(static_cast<int>(n(1)));
+            return std::monostate{};
+        }
+        if (name == "ds_priority_empty")
+            return priorities.at(static_cast<int>(n(0))).empty();
+        if (name == "ds_priority_delete_min" || name == "ds_priority_delete_max") {
+            auto &queue = priorities.at(static_cast<int>(n(0)));
+            if (queue.empty())
+                return std::int32_t{0};
+            const auto found = name == "ds_priority_delete_min"
+                                   ? std::min_element(queue.begin(), queue.end(), [](const auto &a, const auto &b) {
+                                         return a.priority < b.priority;
+                                     })
+                                   : std::max_element(queue.begin(), queue.end(), [](const auto &a, const auto &b) {
+                                         return a.priority < b.priority;
+                                     });
+            Value value = found->value;
+            queue.erase(found);
+            return value;
         }
         if (name == "ds_map_create") {
             const int id = next_ds++;
@@ -2103,6 +2686,25 @@ struct GameSession::Impl {
                     static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
             return std::monostate{};
         }
+        if (name == "audio_set_master_gain") {
+            const auto listener = static_cast<int>(n(0));
+            const auto gain = n(1);
+            if (listener == 0) {
+                if (!std::isfinite(gain))
+                    throw Error(ErrorKind::vm, "master audio gain must be finite");
+                audio_master_gain.store(std::clamp(gain, 0.0, 1.0), std::memory_order_relaxed);
+            }
+            return std::monostate{};
+        }
+        if (name == "audio_master_gain") {
+            const auto gain = n(0);
+            if (!std::isfinite(gain))
+                throw Error(ErrorKind::vm, "master audio gain must be finite");
+            audio_master_gain.store(std::clamp(gain, 0.0, 1.0), std::memory_order_relaxed);
+            return std::monostate{};
+        }
+        if (name == "audio_group_is_loaded")
+            return true;
         if (name == "audio_channel_num") {
             audio.channel_limit(static_cast<int>(n(0)));
             return std::monostate{};
@@ -2153,6 +2755,12 @@ struct GameSession::Impl {
             assets.prefetch(static_cast<int>(n(0)));
             return std::int32_t{0};
         }
+        if (name == "texturegroup_get_textures")
+            return ArrayPtr(new ArrayValue);
+        if (name == "sprite_get_texture")
+            return std::int32_t{sprite_texture_handle(static_cast<int>(n(0)), n(1))};
+        if (name == "layer_get_all")
+            return ArrayPtr(new ArrayValue);
         if (name == "sprite_get_number")
             return static_cast<double>(assets.sprite(static_cast<int>(n(0))).frames.size());
         if (name == "sprite_exists")
@@ -2189,6 +2797,11 @@ struct GameSession::Impl {
         }
         if (name == "draw_get_alpha")
             return draw_alpha;
+        if (name == "font_add_sprite_ext")
+            return static_cast<std::int32_t>(assets.add_sprite_font(static_cast<int>(n(0)),
+                                                                    text(1),
+                                                                    n(2) != 0,
+                                                                    static_cast<int>(n(3))));
         if (name == "draw_set_font") {
             draw_font = static_cast<int>(n(0));
             return std::monostate{};
@@ -2197,6 +2810,14 @@ struct GameSession::Impl {
             halign = static_cast<int>(n(0));
             return std::monostate{};
         }
+        if (name == "camera_get_view_x")
+            return engine.at("view_xview[0]");
+        if (name == "camera_get_view_y")
+            return engine.at("view_yview[0]");
+        if (name == "camera_get_view_width")
+            return engine.at("view_wview[0]");
+        if (name == "camera_get_view_height")
+            return engine.at("view_hview[0]");
         if (name == "draw_set_valign") {
             valign = static_cast<int>(n(0));
             return std::monostate{};
@@ -2378,6 +2999,27 @@ struct GameSession::Impl {
         if (name == "draw_background_part_ext") {
             assets.draw_background_part_ext(canvas, static_cast<int>(n(0)), n(1), n(2), n(3), n(4), n(5),
                                             n(6), n(7), n(8), static_cast<unsigned>(n(9)), n(10));
+            return std::monostate{};
+        }
+        if (name == "draw_sprite_tiled_ext") {
+            const int sprite = static_cast<int>(n(0));
+            const auto &info = assets.sprite(sprite);
+            const double frame_index = n(1), x = n(2), y = n(3), sx = n(4), sy = n(5);
+            const double tile_width = info.width * std::abs(sx);
+            const double tile_height = info.height * std::abs(sy);
+            if (!std::isfinite(tile_width + tile_height + x + y) || tile_width <= 0 || tile_height <= 0)
+                return std::monostate{};
+            const double width = canvas.logical_width(), height = canvas.logical_height();
+            const double start_x = x + std::floor(-x / tile_width) * tile_width;
+            const double start_y = y + std::floor(-y / tile_height) * tile_height;
+            const double columns = std::ceil((width - start_x) / tile_width);
+            const double rows = std::ceil((height - start_y) / tile_height);
+            if (columns > 0 && rows > 0 && columns * rows > 1'000'000)
+                throw Error(ErrorKind::vm, "tiled sprite draw limit exceeded");
+            for (double tile_y = start_y; tile_y < height; tile_y += tile_height)
+                for (double tile_x = start_x; tile_x < width; tile_x += tile_width)
+                    assets.draw_sprite(canvas, sprite, frame_index, tile_x, tile_y, sx, sy, 0,
+                                       static_cast<unsigned>(n(6)), n(7));
             return std::monostate{};
         }
         if (name == "draw_sprite") {
@@ -2793,6 +3435,25 @@ struct GameSession::Impl {
             event(i, 0, 0);
             return std::int32_t{i->id};
         }
+        if (name == "instance_create_depth") {
+            Placement p;
+            p.x = n(0);
+            p.y = n(1);
+            const auto depth = n(2);
+            p.object = static_cast<int>(n(3));
+            p.id = next_id++;
+            const auto i = make(p);
+            i->vars["depth"] = depth;
+            if (args.size() > 4) {
+                if (const auto *initial = std::get_if<StructPtr>(&args[4]); initial && *initial)
+                    for (const auto &[name, value] : (*initial)->variables)
+                        i->vars[std::string(name)] = value;
+                else if (!std::holds_alternative<std::monostate>(args[4]))
+                    throw Error(ErrorKind::vm, "instance_create_depth initial values must be a struct");
+            }
+            event(i, 0, 0);
+            return std::int32_t{i->id};
+        }
         if (name == "instance_change") {
             const int object = static_cast<int>(n(0));
             const bool perform = n(1) != 0;
@@ -2950,8 +3611,9 @@ struct GameSession::Impl {
             return false;
         if (name == "joystick_exists")
             return false;
-        if (name == "gamepad_button_check" || name == "joystick_check_button" || name == "joystick_buttons" ||
-            name == "joystick_has_pov")
+        if (name == "gamepad_button_check" || name == "gamepad_button_check_pressed" ||
+            name == "gamepad_button_check_released" || name == "joystick_check_button" ||
+            name == "joystick_buttons" || name == "joystick_has_pov")
             return false;
         if (name == "joystick_pov" || name == "joystick_direction" || name == "gamepad_axis_value" ||
             name == "joystick_xpos" || name == "joystick_ypos")
@@ -2970,8 +3632,12 @@ struct GameSession::Impl {
             return std::nearbyint(n(0));
         if (name == "sin")
             return std::sin(n(0));
+        if (name == "dsin")
+            return std::sin(n(0) * 3.141592653589793 / 180.0);
         if (name == "cos")
             return std::cos(n(0));
+        if (name == "dcos")
+            return std::cos(n(0) * 3.141592653589793 / 180.0);
         if (name == "sqrt")
             return std::sqrt(n(0));
         if (name == "min" || name == "max") {
@@ -2982,6 +3648,8 @@ struct GameSession::Impl {
         }
         if (name == "clamp")
             return std::clamp(n(0), n(1), n(2));
+        if (name == "lerp")
+            return n(0) + (n(1) - n(0)) * n(2);
         if (name == "random")
             return std::generate_canonical<double, 53>(random) * n(0);
         if (name == "irandom")
@@ -2995,6 +3663,10 @@ struct GameSession::Impl {
             engine["window_caption"] = text(0);
             return std::monostate{};
         }
+        if (name == "display_get_width" || name == "display_get_gui_width")
+            return static_cast<double>(canvas.logical_width());
+        if (name == "display_get_height" || name == "display_get_gui_height")
+            return static_cast<double>(canvas.logical_height());
         if (name == "window_get_width")
             return static_cast<double>(canvas.logical_width());
         if (name == "window_get_height")
@@ -3005,6 +3677,13 @@ struct GameSession::Impl {
             return engine.contains("window_y") ? engine.at("window_y") : Value{0.0};
         if (name == "window_get_fullscreen")
             return engine.contains("window_fullscreen") && value_number(engine.at("window_fullscreen")) != 0;
+        if (name == "window_enable_borderless_fullscreen") {
+            engine["window_borderless_fullscreen"] = n(0) != 0;
+            return std::monostate{};
+        }
+        if (name == "window_get_borderless_fullscreen")
+            return engine.contains("window_borderless_fullscreen") &&
+                   value_number(engine.at("window_borderless_fullscreen")) != 0;
         if (name == "window_set_position") {
             engine["window_x"] = n(0);
             engine["window_y"] = n(1);
@@ -3025,6 +3704,49 @@ struct GameSession::Impl {
             return std::int32_t{next_async_request++};
         if (name == "extension_stubfunc_real")
             return 0.0;
+        if (name == "shader_replace_simple_init_raw")
+            return shoujo_shader >= 0 && !this->canvas.gpu_target();
+        if (name == "shader_replace_simple_raw")
+            return args.empty() ? Value{std::int32_t{-1}} : args[0];
+        if (name == "shader_replace_simple_sync") {
+            active_shader = args.empty() ? -1 : number(args[0]);
+            configure_shader(canvas);
+            return std::monostate{};
+        }
+        if (name == "shaders_are_supported")
+            return shoujo_shader >= 0 && !this->canvas.gpu_target();
+        if (name == "shader_is_compiled")
+            return shader_is_supported(static_cast<int>(n(0)));
+        if (name == "shader_get_uniform" || name == "shader_get_sampler_index")
+            return std::int32_t{shader_uniform_handle(static_cast<int>(n(0)), text(1),
+                                                     name == "shader_get_sampler_index")};
+        if (name == "shader_set") {
+            active_shader = static_cast<int>(n(0));
+            shoujo_texture_failed.fill(false);
+            configure_shader(canvas);
+            return std::monostate{};
+        }
+        if (name == "shader_reset") {
+            active_shader = -1;
+            configure_shader(canvas);
+            return std::monostate{};
+        }
+        if (name.starts_with("shader_set_uniform_")) {
+            set_shader_uniform_values(args);
+            return std::monostate{};
+        }
+        if (name == "texture_set_stage") {
+            if (args.size() >= 2) {
+                const int sampler = static_cast<int>(n(0)), texture = static_cast<int>(n(1));
+                const auto uniform = shader_uniforms.find(sampler);
+                if (uniform != shader_uniforms.end() && uniform->second.sampler && texture >= 0 &&
+                    sprite_textures.contains(texture))
+                    shader_texture_stages[sampler] = texture;
+                else
+                    shader_texture_stages.erase(sampler);
+            }
+            return std::monostate{};
+        }
         if (name == "texture_set_interpolation" || name == "application_surface_enable" ||
             name == "application_surface_draw_enable")
             return std::monostate{};
@@ -3362,6 +4084,11 @@ struct GameSession::Impl {
             for (const auto &b : room.backgrounds)
                 if (b.foreground)
                     assets.draw_background(canvas, b.id, b.x, b.y);
+            assets.view(0, 0, 1, 1, 0, 0);
+            allocation_stage = "GUI draw events";
+            for (const auto &i : snapshot)
+                if (i->alive && !i->deactivated && number(i->vars.at("visible")))
+                    event(i, 8, 64);
             std::erase_if(instances, [](const auto &i) { return !i->alive; });
             ++frame;
             engine["current_time"] = static_cast<double>(frame) * 1000.0 / value_number(engine["room_speed"]);
@@ -3422,6 +4149,10 @@ std::size_t GameSession::vm_address() const {
 }
 void GameSession::mix_audio(std::span<float> output, double playback_rate) noexcept {
     impl_->audio.mix(output, playback_rate);
+    const auto master_gain = static_cast<float>(impl_->audio_master_gain.load(std::memory_order_relaxed));
+    if (master_gain != 1.0f)
+        for (auto &sample : output)
+            sample *= master_gain;
 }
 double GameSession::speed() const {
     return value_number(impl_->engine.at("room_speed"));

@@ -169,6 +169,8 @@ void Canvas::rgba_pixel(int x, int y, std::uint32_t rgba, std::uint32_t bgr, dou
 void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, double opacity) noexcept {
     if (x < 0 || y < 0 || x >= width_ || y >= height_)
         return;
+    if (!gpu_ && pixel_shader_)
+        rgba = pixel_shader_(pixel_shader_context_, x, y, rgba);
 #if REGML_WII
     if (gpu_) {
         const unsigned a = static_cast<unsigned>((rgba >> 24) * std::clamp(opacity, 0.0, 1.0) + 0.5);
@@ -663,28 +665,109 @@ void Canvas::triangle(double x1, double y1, double x2, double y2, double x3, dou
         }
 }
 void Canvas::text(double x, double y, std::string_view value) {
+    text(x, y, value, 1, 1, 0, 0, 0);
+}
+void Canvas::text(double x,
+                  double y,
+                  std::string_view value,
+                  double sx,
+                  double sy,
+                  double angle,
+                  int halign,
+                  int valign) {
     finite(x);
     finite(y);
+    finite(sx);
+    finite(sy);
+    finite(angle);
     if (std::abs(x) > 1e9 || std::abs(y) > 1e9 || value.size() > 4096)
         throw Error(ErrorKind::unsupported, "text exceeds fixture drawing limits");
-    const auto start = x;
+    if (sx == 0 || sy == 0)
+        return;
+
+    const auto newline = [](char c) { return c == '\n' || c == '#'; };
+    std::size_t lines = 1, line_length = 0, longest_line = 0;
     for (char c : value) {
-        if (c == '\n') {
-            x = start;
-            y += 9 * font_scale_;
+        if (newline(c)) {
+            longest_line = std::max(longest_line, line_length);
+            line_length = 0;
+            ++lines;
+            continue;
+        }
+        ++line_length;
+    }
+    longest_line = std::max(longest_line, line_length);
+    const double width = static_cast<double>(longest_line) * 6 * font_scale_;
+    const double height = (8 + static_cast<double>(lines - 1) * 9) * font_scale_;
+    double pen_x = -width * halign / 2.0;
+    double pen_y = -height * valign / 2.0;
+    const double radians = std::remainder(angle, 360.0) * 3.141592653589793 / 180.0;
+    const double cosine = std::cos(radians), sine = std::sin(radians);
+    const double scale = coordinate_scale_;
+    const double anchor_x = x * scale, anchor_y = y * scale;
+
+    for (char c : value) {
+        if (newline(c)) {
+            pen_x = -width * halign / 2.0;
+            pen_y += 9 * font_scale_;
             continue;
         }
         const auto bitmap = glyph(c);
         for (int row = 0; row < 7; ++row)
-            for (int column = 0; column < 5; ++column) {
-                if ((bitmap[static_cast<std::size_t>(row)] & (1U << static_cast<unsigned>(4 - column))) !=
-                    0) {
-                    const auto px = std::floor(x) + column * font_scale_,
-                               py = std::floor(y) + row * font_scale_;
-                    rectangle(px, py, px + font_scale_, py + font_scale_, false);
+            for (int column = 0; column < 5;) {
+                const auto bits = bitmap[static_cast<std::size_t>(row)];
+                while (column < 5 && (bits & (1U << static_cast<unsigned>(4 - column))) == 0)
+                    ++column;
+                const int first = column;
+                while (column < 5 && (bits & (1U << static_cast<unsigned>(4 - column))) != 0)
+                    ++column;
+                if (first == column)
+                    continue;
+
+                const double left = pen_x + first * font_scale_;
+                const double right = pen_x + column * font_scale_;
+                const double top = pen_y + row * font_scale_;
+                const double bottom = top + font_scale_;
+                if (sine == 0) {
+                    rectangle(x + left * sx,
+                              y + top * sy,
+                              x + right * sx,
+                              y + bottom * sy,
+                              false);
+                    continue;
                 }
+
+                const auto transform_x = [&](double px, double py) {
+                    return anchor_x + (px * sx * cosine + py * sy * sine) * scale;
+                };
+                const auto transform_y = [&](double px, double py) {
+                    return anchor_y + (-px * sx * sine + py * sy * cosine) * scale;
+                };
+                const double corners_x[] = {transform_x(left, top), transform_x(right, top),
+                                             transform_x(left, bottom), transform_x(right, bottom)};
+                const double corners_y[] = {transform_y(left, top), transform_y(right, top),
+                                             transform_y(left, bottom), transform_y(right, bottom)};
+                const double min_x = *std::min_element(std::begin(corners_x), std::end(corners_x));
+                const double max_x = *std::max_element(std::begin(corners_x), std::end(corners_x));
+                const double min_y = *std::min_element(std::begin(corners_y), std::end(corners_y));
+                const double max_y = *std::max_element(std::begin(corners_y), std::end(corners_y));
+                const int x0 = static_cast<int>(std::clamp(std::floor(min_x), 0.0, static_cast<double>(width_)));
+                const int x1 = static_cast<int>(std::clamp(std::ceil(max_x), 0.0, static_cast<double>(width_)));
+                const int y0 = static_cast<int>(std::clamp(std::floor(min_y), 0.0, static_cast<double>(height_)));
+                const int y1 = static_cast<int>(std::clamp(std::ceil(max_y), 0.0, static_cast<double>(height_)));
+                const double inverse_width = 1.0 / (sx * scale);
+                const double inverse_height = 1.0 / (sy * scale);
+                for (int py = y0; py < y1; ++py)
+                    for (int px = x0; px < x1; ++px) {
+                        const double dx = px + 0.5 - anchor_x;
+                        const double dy = py + 0.5 - anchor_y;
+                        const double local_x = (dx * cosine - dy * sine) * inverse_width;
+                        const double local_y = (dx * sine + dy * cosine) * inverse_height;
+                        if (local_x >= left && local_x < right && local_y >= top && local_y < bottom)
+                            plot(px, py);
+                    }
             }
-        x += 6 * font_scale_;
+        pen_x += 6 * font_scale_;
     }
 }
 void Canvas::debug_text_overlay(std::span<const std::string_view> lines) {

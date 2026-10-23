@@ -183,6 +183,15 @@ if(REGML_ANDROID)
 else()
     set(REGML_TARGET regml_engine)
 endif()
+if(NOT REGML_ANDROID AND NOT REGML_WEB AND NOT REGML_WIIU AND NOT REGML_WII AND NOT PS2)
+    find_package(BZip2 QUIET)
+endif()
+if(BZip2_FOUND AND NOT REGML_ANDROID AND NOT REGML_WEB AND NOT REGML_WIIU AND NOT REGML_WII AND NOT PS2)
+    target_compile_definitions(${REGML_TARGET} PRIVATE REGML_HAS_BZIP2=1)
+    target_link_libraries(${REGML_TARGET} PUBLIC BZip2::BZip2)
+else()
+    target_compile_definitions(${REGML_TARGET} PRIVATE REGML_HAS_BZIP2=0)
+endif()
 target_compile_definitions(${REGML_TARGET} PUBLIC
     REGML_240P=$<BOOL:${REGML_240P}>
     REGML_LOW_MEMORY=$<BOOL:${REGML_LOW_MEMORY}>

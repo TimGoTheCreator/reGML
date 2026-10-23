@@ -12,12 +12,20 @@ struct PackageSymbol {
 struct LinkedPackage {
     struct ReferenceBinding {
         std::uint32_t address, symbol;
+        bool optional_function = false;
     };
     struct ProgramReferenceRange {
         std::uint32_t offset = 0, count = 0;
     };
     std::vector<Program> programs;
+    // Bytecode 17 stores several code entries in one shared CODE blob.
+    // These two maps keep one decoded program per blob while preserving the
+    // code-entry indices used by the resource tables.
+    std::vector<std::size_t> code_to_program;
+    std::vector<std::size_t> program_code_entries;
+    bool shared_code = false;
     std::vector<std::uint32_t> reference_symbols;
+    std::vector<std::uint32_t> reference_addresses;
     std::vector<ProgramReferenceRange> program_reference_ranges;
     bool lazy_programs = false;
     std::size_t decoded_program_bytes = 0;
@@ -28,7 +36,7 @@ struct LinkedPackage {
     std::unordered_map<std::size_t, std::size_t> variable_at, function_at;
     std::size_t instruction_count = 0;
 };
-// only for v15/v16; the VM handles scopes and arrays
+// Decodes and links package symbols for bytecode 15, 16, and 17.
 LinkedPackage link_legacy_package(const Package &package,
                                   LoadLimits limits = {},
                                   bool retain_audit_maps = true,

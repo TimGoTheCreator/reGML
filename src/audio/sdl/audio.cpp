@@ -8,6 +8,48 @@
 #include "platform/wiiu/audio_async.hpp"
 #endif
 namespace regml {
+namespace {
+std::optional<std::filesystem::path> find_audio_file(const std::filesystem::path &directory,
+                                                     std::string_view filename) {
+    const std::filesystem::path relative_path(filename);
+    std::vector<std::filesystem::path> names{relative_path};
+    if (relative_path.extension().empty())
+        for (const auto extension : {".ogg", ".wav", ".mp3"})
+            names.emplace_back(relative_path.string() + extension);
+    const auto search = [&](const std::filesystem::path &base) -> std::optional<std::filesystem::path> {
+        for (const auto &name : names) {
+            const auto direct = base / name;
+            if (std::filesystem::is_regular_file(direct))
+                return direct;
+            const auto exported = base / "Exported_Sounds" / name;
+            if (std::filesystem::is_regular_file(exported))
+                return exported;
+        }
+        return {};
+    };
+    const auto chapter_root = directory.parent_path();
+    for (auto base = directory; !base.empty();) {
+        if (auto found = search(base))
+            return found;
+        if (base == chapter_root) {
+            std::error_code error;
+            for (std::filesystem::directory_iterator entry(base, error), end; !error && entry != end;
+                 entry.increment(error)) {
+                if (!entry->is_directory(error) ||
+                    entry->path().filename().string().find("_windows") == std::string::npos)
+                    continue;
+                if (auto found = search(entry->path()))
+                    return found;
+            }
+        }
+        const auto parent = base.parent_path();
+        if (parent == base)
+            break;
+        base = parent;
+    }
+    return {};
+}
+} // namespace
 struct GameAudio::Stream {
     std::span<const std::uint8_t> bytes;
     std::size_t position = 0, begin = 0, count = 0;
@@ -340,6 +382,9 @@ GameAudio::Clip *GameAudio::load(int id) {
     auto &sound = sounds_.at(id);
     if (sound.clip)
         return sound.clip.get();
+    if (!sound.filename.empty())
+        if (const auto path = find_audio_file(directory_, sound.filename))
+            sound.filename = path->string();
 #if REGML_WII
     if (!sound.filename.empty()) {
         const auto path = directory_ / sound.filename;
@@ -430,6 +475,14 @@ GameAudio::Clip *GameAudio::load(int id) {
 int GameAudio::create_stream(std::string_view filename) {
     const int id = next_stream_++;
     sounds_[id] = {-1, std::string(filename), 1, {}};
+    const auto path = find_audio_file(directory_, filename);
+    if (!path) {
+        sounds_[id].clip = std::make_unique<Clip>();
+        sounds_[id].clip->silent = true;
+        sounds_[id].clip->streamed_frames = 48'000 * 60 * 60;
+        return id;
+    }
+    sounds_[id].filename = path->string();
     load(id);
     return id;
 }
@@ -441,6 +494,8 @@ int GameAudio::play(int sound, bool loop, double priority) {
 #else
     auto *clip = load(sound);
 #endif
+    if (!clip || clip->frames() == 0)
+        return -1;
     std::scoped_lock lock(voices_mutex_);
     if (voices_.size() >= static_cast<std::size_t>(channels_)) {
         auto lowest = std::min_element(voices_.begin(), voices_.end(), [](const auto &a, const auto &b) {
@@ -457,6 +512,8 @@ int GameAudio::play(int sound, bool loop, double priority) {
 #if REGML_WIIU
     if (!clip && !async_->pending(sound)) {
         const auto &resource = sounds_.at(sound);
+        const auto audio_path =
+            find_audio_file(directory_, resource.filename).value_or(directory_ / resource.filename);
         std::size_t embedded_offset = 0, embedded_size = 0;
         bool has_embedded = false;
         if (resource.embedded >= 0) {
@@ -476,8 +533,7 @@ int GameAudio::play(int sound, bool loop, double priority) {
             has_embedded = true;
         }
         try {
-            async_->request(sound, directory_ / resource.filename, package_, embedded_offset, embedded_size,
-                            has_embedded);
+            async_->request(sound, audio_path, package_, embedded_offset, embedded_size, has_embedded);
         } catch (...) {
             voices_.erase(id);
             throw;
@@ -505,6 +561,8 @@ bool GameAudio::playing(int id) const {
 }
 double GameAudio::gain(int id) {
     std::scoped_lock lock(voices_mutex_);
+    if (id < 0)
+        return 1.0;
     if (const auto it = voices_.find(id); it != voices_.end())
         return it->second.gain;
     if (const auto it = sounds_.find(id); it != sounds_.end())
@@ -514,6 +572,8 @@ double GameAudio::gain(int id) {
 void GameAudio::gain(int id, double value) {
     if (!std::isfinite(value))
         throw Error(ErrorKind::vm, "nonfinite audio gain");
+    if (id < 0)
+        return;
     std::scoped_lock lock(voices_mutex_);
     if (auto it = voices_.find(id); it != voices_.end())
         it->second.gain = value;
@@ -615,6 +675,10 @@ void GameAudio::mix(std::span<float> out, double playback_rate) noexcept {
                     v.frame = std::fmod(v.frame, static_cast<double>(length));
                 else
                     break;
+            }
+            if (v.clip->silent) {
+                v.frame += v.pitch * playback_rate;
+                continue;
             }
             const auto source = static_cast<std::size_t>(v.frame);
             float streamed[2]{};

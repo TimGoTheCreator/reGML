@@ -3,6 +3,8 @@
 #include "package.hpp"
 #include <array>
 #include <bitset>
+#include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -23,6 +25,7 @@ class GameAssets {
     bool mask_pixel(int id, double frame, int x, int y) const;
     [[nodiscard]] std::span<const std::uint8_t> mask_frame(int id, std::size_t frame) const;
     [[nodiscard]] bool sprite_exists(int id) const noexcept {
+        id = unpack_sprite_reference(id);
         return id >= 0 && static_cast<std::size_t>(id) < sprites_.size();
     }
     [[nodiscard]] std::string_view sprite_name(int id) const { return sprite(id).name; }
@@ -63,6 +66,11 @@ class GameAssets {
                      double angle = 0,
                      unsigned color = 0xffffff,
                      double alpha = 1);
+    [[nodiscard]] std::uint32_t sample_sprite(int id,
+                                              double frame,
+                                              double u,
+                                              double v,
+                                              bool repeat = true);
     void draw_sprite_part(Canvas &canvas,
                           int id,
                           double frame,
@@ -90,13 +98,23 @@ class GameAssets {
                    double angle = 0);
     double text_width(int font, std::string_view text) const;
     double text_height(int font) const;
+    int add_sprite_font(int sprite, std::string_view string_map, bool proportional, int separation);
     void view(double x, double y, double sx, double sy, double px, double py);
     void rectangle(Canvas &canvas, double x1, double y1, double x2, double y2, bool outline) const;
 
   private:
+    static int unpack_sprite_reference(int id) noexcept {
+        if (id < 0)
+            return id;
+        const auto reference = static_cast<std::uint32_t>(id);
+        return (reference >> 24) == 1 ? static_cast<int>(reference & 0x00ffffffU) : id;
+    }
+    enum class TextureFormat : std::uint8_t { png, qoi, bzip2_qoi };
     struct Page {
         int width = 0, height = 0;
         std::size_t png = 0;
+        std::size_t data_size = 0;
+        TextureFormat format = TextureFormat::png;
         std::size_t last_used = 0;
         std::vector<std::uint32_t> pixels;
     };
@@ -111,15 +129,17 @@ class GameAssets {
     struct Glyph {
         std::uint16_t x = 0, y = 0, w = 0, h = 0;
         std::int16_t shift = 0, offset = 0;
+        std::uint16_t page = 0;
         mutable std::int8_t alpha_mode = -1;
     };
-    static_assert(sizeof(Glyph) <= 14, "font glyph metadata should stay compact");
+    static_assert(sizeof(Glyph) <= 16, "font glyph metadata should stay compact");
     struct Font {
         std::size_t region = 0;
         int size = 0;
         std::array<Glyph, 256> glyphs{};
         std::bitset<256> has_glyph{};
         const Region *atlas = nullptr;
+        bool page_per_glyph = false;
     };
     static_assert(sizeof(std::bitset<256>) <= 32, "glyph presence should stay bit-packed");
     const Package &package_;
@@ -133,6 +153,7 @@ class GameAssets {
     std::vector<RegionEntry> regions_;
     std::vector<const Region *> background_regions_;
     std::vector<Font> fonts_;
+    std::vector<std::unique_ptr<Region>> dynamic_font_atlases_;
     std::vector<std::size_t> backgrounds_;
 #if REGML_WII
     static constexpr std::size_t page_cache_limit_ = 4ULL * 1024 * 1024;

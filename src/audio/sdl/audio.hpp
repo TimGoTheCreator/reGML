@@ -43,7 +43,10 @@ class GameAudio {
         std::size_t package_offset = 0, package_length = 0;
         std::size_t streamed_frames = 0;
         double gain = 1;
+        bool silent = false;
         std::size_t frames() const noexcept {
+            if (silent)
+                return streamed_frames;
             return compressed.empty() && file_path.empty() && !package ? stereo.size() / 2 : streamed_frames;
         }
     };

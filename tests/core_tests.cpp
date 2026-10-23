@@ -687,6 +687,40 @@ int main(int argc, char **argv) {
              const auto package = regml::Package::from_bytes(f.bytes);
              const auto linked = regml::link_legacy_package(package);
              check(linked.programs[0].bytecode_version == 17, "v17 package symbol/link stage");
+             auto chain_fixture = fixture(17);
+             const auto chain_program =
+                 words({0x840f0007, 0x4522ffff, 0xa0000008, 0xc005ffff, 0xa0000000, 0x9d000000});
+             std::copy(chain_program.begin(), chain_program.end(),
+                       chain_fixture.bytes.begin() + static_cast<std::ptrdiff_t>(chain_fixture.blob));
+             const auto symbol_name = regml::BinaryView(chain_fixture.bytes).u32(chain_fixture.record);
+             (void)chunk(chain_fixture.bytes, "VARI", 32);
+             for (unsigned i = 0; i < 3; ++i)
+                 u32(chain_fixture.bytes, 0);
+             u32(chain_fixture.bytes, symbol_name);
+             u32(chain_fixture.bytes, 0xffffffffU);
+             u32(chain_fixture.bytes, 0);
+             u32(chain_fixture.bytes, 2);
+             u32(chain_fixture.bytes, static_cast<std::uint32_t>(chain_fixture.blob + 4));
+             finish(chain_fixture.bytes);
+             const auto chain_linked =
+                 regml::link_legacy_package(regml::Package::from_bytes(chain_fixture.bytes));
+             check(chain_linked.variables.size() == 1,
+                   "v17 reference chains do not use the legacy terminal string check");
+             auto call_fixture = fixture(17);
+             const auto call_program = words({0xd9020000, 0, 0x9d000000});
+             std::copy(call_program.begin(), call_program.end(),
+                       call_fixture.bytes.begin() + static_cast<std::ptrdiff_t>(call_fixture.blob));
+             const auto function_name = regml::BinaryView(call_fixture.bytes).u32(call_fixture.record);
+             (void)chunk(call_fixture.bytes, "FUNC", 16);
+             u32(call_fixture.bytes, 1);
+             u32(call_fixture.bytes, function_name);
+             u32(call_fixture.bytes, 1);
+             u32(call_fixture.bytes, static_cast<std::uint32_t>(call_fixture.blob + 4));
+             finish(call_fixture.bytes);
+             const auto call_linked =
+                 regml::link_legacy_package(regml::Package::from_bytes(call_fixture.bytes));
+             check(call_linked.functions.size() == 1 && call_linked.programs[0].instructions[0].symbol_id == 0,
+                   "v17 function references point at the call operand");
          }},
         {"truncated payload and unsupported opcode",
          [] {

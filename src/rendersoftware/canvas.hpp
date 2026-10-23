@@ -9,6 +9,7 @@ namespace regml {
 // the CPU draws into this buffer; SDL just puts it on screen
 class Canvas {
   public:
+    using PixelShader = std::uint32_t (*)(void *context, int x, int y, std::uint32_t rgba) noexcept;
     Canvas(int width, int height, bool main_screen = false);
     double render_scale() const noexcept { return render_scale_; }
     int logical_width() const noexcept { return logical_width_; }
@@ -24,6 +25,10 @@ class Canvas {
     void clear_transparent() noexcept;
     void color(std::uint32_t gml_bgr) noexcept;
     void alpha(double alpha);
+    void pixel_shader(PixelShader shader, void *context = nullptr) noexcept {
+        pixel_shader_ = shader;
+        pixel_shader_context_ = context;
+    }
     void font(int id);
     void rectangle(double x1, double y1, double x2, double y2, bool outline);
     void circle(double x, double y, double radius, bool outline);
@@ -49,6 +54,14 @@ class Canvas {
                    double opacity,
                    std::int8_t source_alpha_mode = 0) noexcept;
     void text(double x, double y, std::string_view text);
+    void text(double x,
+              double y,
+              std::string_view text,
+              double sx,
+              double sy,
+              double angle,
+              int halign,
+              int valign);
     void debug_text_overlay(std::span<const std::string_view> lines);
     void rgba_pixel(int x, int y, std::uint32_t rgba, std::uint32_t bgr, double opacity);
     void rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, double opacity) noexcept;
@@ -67,6 +80,8 @@ class Canvas {
     double render_scale_ = 1, coordinate_scale_ = 1;
     int logical_width_, logical_height_;
     bool gpu_ = false;
+    PixelShader pixel_shader_ = nullptr;
+    void *pixel_shader_context_ = nullptr;
     int width_, height_;
     std::vector<std::uint32_t> pixels_;
     std::uint32_t rgb_ = 0xffffff;

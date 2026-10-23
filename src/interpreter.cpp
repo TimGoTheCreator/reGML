@@ -199,6 +199,9 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                 push(static_cast<double>(std::get<std::int32_t>(value)));
             else if (ins.type2() == DataType::boolean && std::holds_alternative<std::int32_t>(value))
                 push(std::get<std::int32_t>(value) != 0);
+            else if (ins.type1 == DataType::variable && ins.type2() == DataType::boolean &&
+                     std::holds_alternative<std::monostate>(value))
+                push(false);
             else
                 throw Error(ErrorKind::unsupported, "conversion is not implemented by the numeric VM",
                             absolute);
@@ -227,6 +230,19 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
             if (ins.type1 == DataType::variable || ins.type2() == DataType::variable) {
                 check_type(right, ins.type1);
                 check_type(left, ins.type2());
+                if (ins.opcode() == Opcode::cmp &&
+                    (std::holds_alternative<std::monostate>(left) ||
+                     std::holds_alternative<std::monostate>(right))) {
+                    const bool equal = std::holds_alternative<std::monostate>(left) &&
+                                       std::holds_alternative<std::monostate>(right);
+                    if (ins.comparison() == 3)
+                        push(equal);
+                    else if (ins.comparison() == 4)
+                        push(!equal);
+                    else
+                        push(false);
+                    break;
+                }
                 const auto a = value_number(left);
                 const auto b = value_number(right);
                 if (ins.opcode() == Opcode::cmp)
@@ -376,6 +392,10 @@ std::string value_text(const Value &value) {
         return "undefined";
     if (std::holds_alternative<ArrayPtr>(value))
         return "[array]";
+    if (std::holds_alternative<StructPtr>(value))
+        return "[struct]";
+    if (std::holds_alternative<FunctionReference>(value) || std::holds_alternative<CallablePtr>(value))
+        return "[function]";
     std::ostringstream out;
     out.imbue(std::locale::classic());
     out << std::setprecision(std::numeric_limits<double>::max_digits10) << std::get<double>(value);

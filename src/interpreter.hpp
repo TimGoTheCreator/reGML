@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -15,6 +16,13 @@ struct PackageString {
     std::string_view value;
     bool operator==(const PackageString &) const = default;
 };
+struct FunctionReference {
+    std::uint32_t symbol_id = 0;
+};
+struct StructValue;
+using StructPtr = std::shared_ptr<StructValue>;
+struct CallableValue;
+using CallablePtr = std::shared_ptr<CallableValue>;
 // not thread safe; the VM thread owns the arrays
 class ArrayPtr {
   public:
@@ -36,7 +44,14 @@ class ArrayPtr {
   private:
     ArrayValue *value_ = nullptr;
 };
-using Value = std::variant<std::int32_t, double, bool, std::string, PackageString, std::monostate, ArrayPtr>;
+using Value = std::variant<std::int32_t, double, bool, std::string, PackageString, std::monostate, ArrayPtr,
+                           FunctionReference, CallablePtr, StructPtr>;
+struct CallableValue {
+    std::function<Value(std::span<const Value>)> invoke;
+    std::uint32_t symbol_id = Instruction::no_symbol;
+    StructPtr bound_struct;
+    StructPtr properties;
+};
 inline bool value_is_string(const Value &value) noexcept {
     return std::holds_alternative<std::string>(value) || std::holds_alternative<PackageString>(value);
 }
@@ -123,6 +138,9 @@ class VariableStore : public std::unordered_map<std::string_view, Value, Variabl
     std::pair<iterator, bool> emplace(std::string_view key, Value value) {
         return this->try_emplace(intern(key), std::move(value));
     }
+};
+struct StructValue {
+    VariableStore variables;
 };
 enum class VariableScope { local, self, global };
 struct VariableBinding {
