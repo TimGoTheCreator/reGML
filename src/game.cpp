@@ -213,7 +213,7 @@ struct GameSession::Impl {
     int shoujo_shader = -1, shoujo_time_uniform = -1, shoujo_width_uniform = -1;
     std::array<int, 3> shoujo_sampler_uniforms{-1, -1, -1};
     std::array<bool, 3> shoujo_texture_failed{};
-    std::atomic<double> audio_master_gain{1.0};
+    std::atomic<float> audio_master_gain{1.0f};
     Canvas canvas{640, 480, true};
     std::vector<Path> paths;
     std::vector<Object> objects;
@@ -523,7 +523,9 @@ struct GameSession::Impl {
             const auto row_length = (*array)->row_lengths.find(0);
             const int length = row_length == (*array)->row_lengths.end()
                                    ? 0
-                                   : std::max(row_length->second - offset, 0);
+                                   : std::max<std::int32_t>(row_length->second -
+                                                                static_cast<std::int32_t>(offset),
+                                                            0);
             values.reserve(static_cast<std::size_t>(length));
             for (int i = 0; i < length; ++i) {
                 const auto item = (*array)->elements.find(offset + i);
@@ -1371,7 +1373,8 @@ struct GameSession::Impl {
                                     !std::get<ArrayPtr>(element->second)) {
                                     (*array)->elements[array_index] = ArrayPtr(new ArrayValue);
                                     auto &length = (*array)->row_lengths[row];
-                                    length = std::max(length, col + 1);
+                                    length = std::max<std::int32_t>(
+                                        length, static_cast<std::int32_t>(col + 1));
                                 }
                                 return (*array)->elements.at(array_index);
                             }
@@ -1382,7 +1385,8 @@ struct GameSession::Impl {
                                     throw Error(ErrorKind::vm, "array element limit reached");
                                 (*array)->elements[array_index] = value;
                                 auto &length = (*array)->row_lengths[row];
-                                length = std::max<std::int64_t>(length, static_cast<std::int64_t>(col) + 1);
+                                length = std::max<std::int32_t>(
+                                    length, static_cast<std::int32_t>(col + 1));
                                 return value;
                             }
                             const auto length = (*array)->row_lengths.find(row);
@@ -1782,7 +1786,8 @@ struct GameSession::Impl {
                                 !std::get<ArrayPtr>(found->second)) {
                                 (*array)->elements[index] = ArrayPtr(new ArrayValue);
                                 auto &length = (*array)->row_lengths[index / 32000];
-                                length = std::max(length, index % 32000 + 1);
+                                length = std::max<std::int32_t>(
+                                    length, static_cast<std::int32_t>(index % 32000 + 1));
                             }
                             push((*array)->elements.at(index));
                         }
@@ -1795,7 +1800,8 @@ struct GameSession::Impl {
                             throw Error(ErrorKind::vm, "invalid multi-dimensional array assignment");
                         (*array)->elements[index] = value;
                         auto &length = (*array)->row_lengths[index / 32000];
-                        length = std::max(length, index % 32000 + 1);
+                        length = std::max<std::int32_t>(
+                            length, static_cast<std::int32_t>(index % 32000 + 1));
                     } else if (sub == -5) {
                         (void)pop();
                     } else
@@ -2013,7 +2019,7 @@ struct GameSession::Impl {
             for (const auto &[index, value] : (*array)->elements) {
                 (void)value;
                 if (index >= 0 && index < 32000)
-                    length = std::max(length, index + 1);
+                    length = std::max<std::int32_t>(length, static_cast<std::int32_t>(index + 1));
             }
             return length;
         }
@@ -2029,7 +2035,8 @@ struct GameSession::Impl {
                 for (const auto &[index, value] : elements) {
                     (void)value;
                     if (index >= 0 && index < 32000)
-                        length = std::max(length, index + 1);
+                        length = std::max<std::int32_t>(
+                            length, static_cast<std::int32_t>(index + 1));
                 }
             }
             if (args.size() - 1 > static_cast<std::size_t>(32000 - length))
@@ -2692,7 +2699,8 @@ struct GameSession::Impl {
             if (listener == 0) {
                 if (!std::isfinite(gain))
                     throw Error(ErrorKind::vm, "master audio gain must be finite");
-                audio_master_gain.store(std::clamp(gain, 0.0, 1.0), std::memory_order_relaxed);
+                audio_master_gain.store(static_cast<float>(std::clamp(gain, 0.0, 1.0)),
+                                        std::memory_order_relaxed);
             }
             return std::monostate{};
         }
@@ -2700,7 +2708,8 @@ struct GameSession::Impl {
             const auto gain = n(0);
             if (!std::isfinite(gain))
                 throw Error(ErrorKind::vm, "master audio gain must be finite");
-            audio_master_gain.store(std::clamp(gain, 0.0, 1.0), std::memory_order_relaxed);
+            audio_master_gain.store(static_cast<float>(std::clamp(gain, 0.0, 1.0)),
+                                    std::memory_order_relaxed);
             return std::monostate{};
         }
         if (name == "audio_group_is_loaded")
