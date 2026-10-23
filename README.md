@@ -1,18 +1,18 @@
 # reGML
 
-A GameMaker VM Runner in C++
+A GameMaker bytecode runner and package inspector in C++
 
-Supporting bytecode V15 and V16
+Package inspection reads v14-v17 layouts
+Bytecode decoding and disassembly cover v15-v17
+v17 is supported, but not every GameMaker feature is implemented yet
 
-Tested with UNDERTALE on Windows and with CEMU for Wii U!
-Linux builds are checked in CI
-
-Compatibility is incomplete...
-PS2 Is radically slow, don't expect a heaven
+Tested with UNDERTALE on Windows and the Wii U build in Cemu
+No full playthrough is verified
+PS2 builds are slow
 
 ## Build
 
-Requires C++20, CMake 3.24+, libpng, zlib, libvorbisfile and SDL2
+Requires C++20, CMake 3.22+, libpng, zlib, libvorbisfile and SDL2
 
 ### CMake
 
@@ -22,7 +22,7 @@ cmake --build build --config Release
 ctest --test-dir build --output-on-failure -C Release
 ```
 
-for headless builds, add `-DREGML_SDL2=OFF` when config'in
+For a headless build, add `-DREGML_SDL2=OFF`
 
 aswell the optional miniaudio can be tried:
 
@@ -36,22 +36,36 @@ cmake --build build/miniaudio --config Release
 OpenAL can also be selected for desktop audio output: Install OpenAl (soft), then config with `-DREGML_OPENAL=ON`. 
 the decode/mix story is same as SDL.
 
-## Run
+### Web / GX.games
 
-```powershell
-.\build\direct\regml.exe run 'C:\path\to\data.win'
+Build with the Emscripten SDK installed and activated:
+
+```sh
+emcmake cmake -S . -B build/web -DREGML_WEB=ON -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build/web
 ```
 
-Keep external files in the same folder as the  `data.win`
-(game files aren't included)
+Upload `index.html`, `index.js`, and `index.wasm` from `build/web` as a web game on GX.games. When it opens, choose the folder containing `data.win` and the game's external files. Save data is kept in the browser.
 
-The PowerShell build outputs `build/direct/regml.exe`
-CMake outputs `build/regml`, `build/regml.exe` or `build/Release/regml.exe`
+## Run
+
+```sh
+./build/regml run path/to/data.win
+```
+
+On Windows with the Visual Studio CMake generator:
+
+```powershell
+.\build\Release\regml.exe run 'C:\path\to\data.win'
+```
+
+Keep external files in the same folder as `data.win`
+Game files aren't included
 
 For speed:
 
 ```powershell
-.\build\direct\regml.exe run 'C:\path\to\data.win' --speed 4x
+.\build\Release\regml.exe run 'C:\path\to\data.win' --speed 4x
 ```
 
 `--speed` accepts values from `0.01` to `1000`, with an optional `x` suffix
@@ -127,9 +141,9 @@ wii hardware and Dolphin have not been tested. rendering still uses the software
 ## Tools
 
 ```powershell
-.\build\direct\regml.exe inspect 'C:\path\to\data.win' --code --strings
-.\build\direct\regml.exe audit 'C:\path\to\data.win'
-.\build\direct\regml.exe disasm 'C:\path\to\data.win' 0 --linked
+.\build\Release\regml.exe inspect 'C:\path\to\data.win' --code --strings
+.\build\Release\regml.exe audit 'C:\path\to\data.win'
+.\build\Release\regml.exe disasm 'C:\path\to\data.win' 0 --linked
 ```
 
 ## Tests
