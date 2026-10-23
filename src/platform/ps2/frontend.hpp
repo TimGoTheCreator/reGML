@@ -18,7 +18,9 @@ class Ps2Frontend {
     Ps2Frontend &operator=(const Ps2Frontend &) = delete;
 
     bool poll(double *speed_multiplier = nullptr);
-    void tick_game(GameSession &session, const KeyboardState *replay);
+    void tick_game(GameSession &session,
+                   const KeyboardState *replay,
+                   const KeyboardState *replay_pressed = nullptr);
     void present(const Canvas &canvas);
 
   private:

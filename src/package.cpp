@@ -80,8 +80,31 @@ void Package::parse(LoadLimits limits) {
         throw Error(ErrorKind::malformed, "expected a GameMaker FORM container", 0);
     if (static_cast<std::size_t>(header.u32(4)) != size_ - 8)
         throw Error(ErrorKind::malformed, "FORM length does not match file size (strict inspection)", 4);
+    auto valid_chunk_header = [&](std::size_t offset) {
+        if (offset > size_ || size_ - offset < 8)
+            return false;
+        const auto candidate = read_bytes(offset, 8);
+        const BinaryView view(candidate, offset);
+        for (std::size_t i = 0; i < 4; ++i) {
+            const auto byte = view.u8(i);
+            if (byte < 0x20 || byte > 0x7e)
+                return false;
+        }
+        return view.u32(4) <= size_ - offset - 8;
+    };
+    std::size_t chunk_start = 8;
+    if (!valid_chunk_header(chunk_start) && valid_chunk_header(16)) {
+        gmrt_ = true;
+        chunk_start = 16;
+    }
+    if (gmrt_) {
+        GeneralInfo info;
+        info.bytecode_version = 17;
+        info.reported_version[0] = 2;
+        info_ = info;
+    }
     std::unordered_set<std::string> seen;
-    for (std::size_t offset = 8; offset < data_size;) {
+    for (std::size_t offset = chunk_start; offset < data_size;) {
         if (chunks_.size() >= limits.max_chunks)
             throw Error(ErrorKind::unsupported, "chunk count exceeds configured limit", offset);
         if (offset > data_size || 8 > data_size - offset)
@@ -108,9 +131,9 @@ void Package::parse(LoadLimits limits) {
     }
     if (const auto *c = find_chunk("GEN8"))
         parse_info(*c);
+    if (const auto *c = find_chunk("STRG"); c && !gmrt_ && info_ && info_->has_known_prefix)
+        parse_strings(*c, limits);
     if (info_ && info_->has_known_prefix) {
-        if (const auto *c = find_chunk("STRG"))
-            parse_strings(*c, limits);
         if (info_->name_pointer != 0)
             (void)string_pointer(info_->name_pointer);
         if (info_->display_name_pointer != 0)

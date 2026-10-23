@@ -157,9 +157,12 @@ KeyboardState Ps2Frontend::take_pressed() noexcept {
     return result;
 }
 
-void Ps2Frontend::tick_game(GameSession &session, const KeyboardState *replay) {
+void Ps2Frontend::tick_game(GameSession &session,
+                            const KeyboardState *replay,
+                            const KeyboardState *replay_pressed) {
     const auto pressed = take_pressed();
-    session.tick(replay ? *replay : held_, replay ? KeyboardState{} : pressed);
+    session.tick(replay ? *replay : held_,
+                 replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed);
 }
 
 void Ps2Frontend::present(const Canvas &canvas) {

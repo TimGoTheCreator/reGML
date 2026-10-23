@@ -18,9 +18,8 @@ struct LinkedPackage {
         std::uint32_t offset = 0, count = 0;
     };
     std::vector<Program> programs;
-    // Bytecode 17 stores several code entries in one shared CODE blob.
-    // These two maps keep one decoded program per blob while preserving the
-    // code-entry indices used by the resource tables.
+    // v17 puts several code entries in one shared CODE blob
+    // these maps share the decoded program but keep each code entry's index
     std::vector<std::size_t> code_to_program;
     std::vector<std::size_t> program_code_entries;
     bool shared_code = false;
@@ -36,7 +35,7 @@ struct LinkedPackage {
     std::unordered_map<std::size_t, std::size_t> variable_at, function_at;
     std::size_t instruction_count = 0;
 };
-// Decodes and links package symbols for bytecode 15, 16, and 17.
+// link package symbols for bytecode 15, 16, and 17
 LinkedPackage link_legacy_package(const Package &package,
                                   LoadLimits limits = {},
                                   bool retain_audit_maps = true,

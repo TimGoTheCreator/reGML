@@ -1,3 +1,5 @@
+#include "gmrt_vm.hpp"
+#include "gmrt_wad.hpp"
 #include "interpreter.hpp"
 #include "linker.hpp"
 #include "lookup.hpp"
@@ -41,8 +43,12 @@ void help() {
                  "  regml inspect <data.win> [--strings] [--code]\n"
                  "  regml disasm <data.win> <code-index> [--linked]\n"
                  "  regml audit <data.win>\n"
+                 "  regml gmrt inspect <game.wad>\n"
+                 "  regml gmrt extract <game.wad> <output-directory>\n"
+                 "  regml gmrt run-function <game.wad> <module-index> <function-index> [--trace]\n"
+                 "  regml gmrt run-ir-function <module.gmir> <function-index> [--trace]\n"
                  "  regml vm-demo [--trace]\n"
-                 "  regml run <data.win> [--frames N] [--headless | --hidden]\n"
+                 "  regml run <data.win|game.wad> [--frames N] [--headless | --hidden]\n"
                  "                  [--screenshot output.bmp] [--input-script file]\n"
                  "                  [--seed N] [--save-dir directory] [--speed Nx] [--speed-control]\n"
                  "                  [--debug-overlay]\n"
@@ -52,6 +58,8 @@ void help() {
                  "  regml --help | --version\n\n"
                  "Inspection is read-only. Resource tables: v14-v17 prefix/layout.\n"
                  "Instruction decoding: v15/v16/v17. VM demo: numeric scalar subset.\n"
+                 "GMRT support: WAD/GMIR parsing, cross-module calls, and a boot path for indexed sample projects; "
+                 "game compatibility is incomplete.\n"
                  "Native game execution is experimental and compatibility is incomplete.\n"
                  "Undertale has been tested on Windows and in Cemu; no full playthrough\n"
                  "is verified. F10 closes the native game window.\n";
@@ -191,6 +199,114 @@ int command(int argc, char **argv) {
                   << "\nLinked function occurrences: " << linked.function_at.size()
                   << "\nReference chains verified. Runtime compatibility is not established.\n";
         return 0;
+    }
+    if (name == "gmrt") {
+        if (argc < 4)
+            throw regml::Error(regml::ErrorKind::usage, "gmrt requires inspect or extract and a WAD path");
+        const std::string_view operation = argv[2];
+        if (operation == "inspect") {
+            if (argc != 4)
+                throw regml::Error(regml::ErrorKind::usage, "gmrt inspect requires one WAD path");
+            const auto wad = regml::GmrtWad::load(argv[3]);
+            std::cout << "GMRT WAD inspection\nSize: " << wad.size()
+                      << " bytes\nChunks: " << wad.chunks().size() << '\n';
+            for (const auto &chunk : wad.chunks())
+                std::cout << "  " << chunk.name() << "  header=0x" << std::hex << chunk.header_offset
+                          << "  data=0x" << chunk.data_offset << std::dec << "  bytes=" << chunk.size << '\n';
+
+            std::size_t total_module_bytes = 0;
+            std::size_t total_functions = 0;
+            std::size_t total_instructions = 0;
+            for (std::size_t i = 0; i < wad.modules().size(); ++i) {
+                const auto &module = wad.modules()[i];
+                total_module_bytes += module.size;
+                const auto ir = regml::GmrtModule::parse(wad.read_module(i));
+                total_functions += ir.functions.size();
+                for (const auto &function : ir.functions)
+                    for (const auto &block : function.blocks)
+                        total_instructions += block.instructions.size();
+            }
+            std::cout << "GMIR modules: " << wad.modules().size() << "\nGMIR bytes: " << total_module_bytes
+                      << "\nParsed functions: " << total_functions
+                      << "\nParsed instructions: " << total_instructions << "\nFirst modules:\n";
+            constexpr std::size_t module_listing_limit = 16;
+            for (std::size_t i = 0; i < std::min(wad.modules().size(), module_listing_limit); ++i) {
+                const auto &module = wad.modules()[i];
+                std::cout << "  [" << i << "] record=0x" << std::hex << module.record_offset << " data=0x"
+                          << module.data_offset << " id=0x" << module.opaque_id << std::dec
+                          << " bytes=" << module.size << '\n';
+            }
+            if (wad.modules().size() > module_listing_limit)
+                std::cout << "  (listing limited to " << module_listing_limit << " modules)\n";
+            std::cout << "The IR tables are parsed. Game-level resource and host-function integration is "
+                         "incomplete.\n";
+            return 0;
+        }
+        if (operation == "extract") {
+            if (argc != 5)
+                throw regml::Error(regml::ErrorKind::usage,
+                                   "gmrt extract requires a WAD path and output directory");
+            const auto wad = regml::GmrtWad::load(argv[3]);
+            wad.extract_modules(argv[4]);
+            std::cout << "Extracted " << wad.modules().size() << " GMIR modules to " << argv[4] << '\n';
+            return 0;
+        }
+        if (operation == "run-function") {
+            const bool trace = argc == 7 && std::string_view(argv[6]) == "--trace";
+            if ((argc != 6 && !trace) || (argc == 7 && !trace))
+                throw regml::Error(regml::ErrorKind::usage, "gmrt run-function requires a WAD path, module "
+                                                            "index, function index, and optional --trace");
+            const auto wad = regml::GmrtWad::load(argv[3]);
+            const auto module_index = parse_index(argv[4]);
+            const auto function_index = parse_index(argv[5]);
+            if (module_index >= wad.modules().size())
+                throw regml::Error(regml::ErrorKind::usage, "GMIR module index is out of range");
+            std::vector<regml::GmrtModule> modules;
+            modules.reserve(wad.modules().size());
+            for (std::size_t i = 0; i < wad.modules().size(); ++i)
+                modules.push_back(regml::GmrtModule::parse(wad.read_module(i)));
+            const auto &module = modules[module_index];
+            regml::GmrtExecutionContext context;
+            context.self = std::make_shared<regml::StructValue>();
+            regml::GmrtVmOptions options;
+            if (trace)
+                options.trace = [](const regml::GmrtFunction &function, const regml::GmrtBlock &block,
+                                   const regml::GmrtInstruction &instruction, std::span<const regml::Value>) {
+                    std::cout << function.symbol << " / " << block.name << "  "
+                              << regml::gmrt_opcode_name(instruction.opcode) << '\n';
+                };
+            const auto result = regml::execute_gmrt(modules, module_index, function_index, std::move(context),
+                                                    std::move(options));
+            std::cout << "Executed GMIR function " << module.functions.at(function_index).symbol
+                      << "\nInstructions: " << result.instructions_executed
+                      << "\nReturn: " << regml::value_text(result.returned) << '\n';
+            return 0;
+        }
+        if (operation == "run-ir-function") {
+            const bool trace = argc == 6 && std::string_view(argv[5]) == "--trace";
+            if ((argc != 5 && !trace) || (argc == 6 && !trace))
+                throw regml::Error(
+                    regml::ErrorKind::usage,
+                    "gmrt run-ir-function requires a GMIR path, function index, and optional --trace");
+            const auto module = regml::GmrtModule::load(argv[3]);
+            const auto function_index = parse_index(argv[4]);
+            regml::GmrtExecutionContext context;
+            context.self = std::make_shared<regml::StructValue>();
+            regml::GmrtVmOptions options;
+            if (trace)
+                options.trace = [](const regml::GmrtFunction &function, const regml::GmrtBlock &block,
+                                   const regml::GmrtInstruction &instruction, std::span<const regml::Value>) {
+                    std::cout << function.symbol << " / " << block.name << "  "
+                              << regml::gmrt_opcode_name(instruction.opcode) << '\n';
+                };
+            const auto result =
+                regml::execute_gmrt(module, function_index, std::move(context), std::move(options));
+            std::cout << "Executed GMIR function " << module.functions.at(function_index).symbol
+                      << "\nInstructions: " << result.instructions_executed
+                      << "\nReturn: " << regml::value_text(result.returned) << '\n';
+            return 0;
+        }
+        throw regml::Error(regml::ErrorKind::usage, "unknown gmrt operation: " + std::string(operation));
     }
     if (name == "disasm") {
         const bool resolve = argc == 5 && std::string_view(argv[4]) == "--linked";

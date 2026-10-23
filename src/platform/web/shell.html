@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>reGML</title>
+  <style>
+    body { margin: 0; color: #eee; background: #171717; font: 16px sans-serif; }
+    main { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+    canvas { display: block; width: 100%; height: auto; background: #000; image-rendering: pixelated; }
+    #status { min-height: 1.5em; margin: 12px 0; }
+    #controls { margin: 12px 0; }
+    #pick-game { padding: 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div id="controls">
+      <label for="pick-game">Select the game folder containing data.win and its external files:</label>
+      <input id="pick-game" type="file" webkitdirectory multiple>
+    </div>
+    <div id="status">Loading runner…</div>
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="0"></canvas>
+  </main>
+  <script>
+    var Module = {
+      canvas: document.getElementById('canvas'),
+      noInitialRun: true,
+      print: function (text) { console.log(text); },
+      printErr: function (text) { console.error(text); },
+      setStatus: function (text) {
+        var status = document.getElementById('status');
+        if (status) status.textContent = text;
+      }
+    };
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

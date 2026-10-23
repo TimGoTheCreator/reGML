@@ -45,6 +45,7 @@ class Package {
         return BinaryView(bytes_);
     }
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
+    [[nodiscard]] bool is_gmrt() const noexcept { return gmrt_; }
     [[nodiscard]] std::vector<std::uint8_t> read_bytes(std::size_t offset, std::size_t length) const;
     void read_into(std::size_t offset, std::span<std::uint8_t> output) const;
     [[nodiscard]] const std::vector<Chunk> &chunks() const noexcept { return chunks_; }
@@ -69,6 +70,7 @@ class Package {
     std::size_t string_chunk_offset_ = 0;
     std::filesystem::path source_path_;
     std::size_t size_ = 0;
+    bool gmrt_ = false;
     std::vector<Chunk> chunks_;
     std::optional<GeneralInfo> info_;
     std::vector<StringRecord> strings_;

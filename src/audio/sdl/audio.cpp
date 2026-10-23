@@ -168,6 +168,8 @@ GameAudio::GameAudio(const Package &package, std::filesystem::path directory)
 #if REGML_WIIU
     async_ = std::make_unique<AsyncState>();
 #endif
+    if (package_.is_gmrt())
+        return;
     auto pointers = [&](const Chunk &c) {
         if (c.size < 4)
             throw Error(ErrorKind::malformed, "audio table range", c.data_offset);
@@ -196,9 +198,11 @@ GameAudio::GameAudio(const Package &package, std::filesystem::path directory)
             const auto record = package.read_bytes(p, 36);
             const BinaryView d(record, p);
             Sound sound;
+            sound.name = package.string_pointer(d.u32(0));
             sound.filename = package.string_pointer(d.u32(12));
             sound.gain = std::bit_cast<float>(d.u32(20));
             const auto group = d.i32(28), audio_id = d.i32(32);
+            sound.group = group;
             if (group == 0)
                 sound.embedded = audio_id;
             sounds_.emplace(id++, std::move(sound));
@@ -208,7 +212,7 @@ GameAudio::GameAudio(const Package &package, std::filesystem::path directory)
 GameAudio::~GameAudio() = default;
 std::optional<int> GameAudio::find_sound_id(std::string_view filename) const {
     for (const auto &[id, sound] : sounds_)
-        if (sound.filename == filename)
+        if (sound.name == filename || sound.filename == filename)
             return id;
     return std::nullopt;
 }
@@ -348,19 +352,7 @@ std::vector<std::uint8_t> GameAudio::read_audio(int id) const {
     if (found == sounds_.end())
         throw Error(ErrorKind::vm, "audio resource does not exist");
     const auto &sound = found->second;
-    const auto path = directory_ / sound.filename;
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (file) {
-        const auto size = file.tellg();
-        if (size < 0 || size > 100'000'000)
-            throw Error(ErrorKind::unsupported, "audio file size exceeds limit");
-        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-        file.seekg(0);
-        file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-        if (!file)
-            throw Error(ErrorKind::io, "audio file read failed");
-        return bytes;
-    } else if (sound.embedded >= 0) {
+    if (sound.embedded >= 0) {
         if (static_cast<std::size_t>(sound.embedded) >= embedded_.size())
             throw Error(ErrorKind::malformed, "embedded audio ID out of range");
         const auto at = embedded_[static_cast<std::size_t>(sound.embedded)];
@@ -374,6 +366,19 @@ std::vector<std::uint8_t> GameAudio::read_audio(int id) const {
         if (size > c->data_offset + c->size - at - 4)
             throw Error(ErrorKind::malformed, "embedded audio length out of range", at);
         return package_.read_bytes(at + 4, size);
+    }
+    const auto path = directory_ / sound.filename;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (file) {
+        const auto size = file.tellg();
+        if (size < 0 || size > 100'000'000)
+            throw Error(ErrorKind::unsupported, "audio file size exceeds limit");
+        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+        file.seekg(0);
+        file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (!file)
+            throw Error(ErrorKind::io, "audio file read failed");
+        return bytes;
     } else {
         throw Error(ErrorKind::io, "audio file missing: " + path.string());
     }
@@ -382,11 +387,11 @@ GameAudio::Clip *GameAudio::load(int id) {
     auto &sound = sounds_.at(id);
     if (sound.clip)
         return sound.clip.get();
-    if (!sound.filename.empty())
+    if (sound.embedded < 0 && !sound.filename.empty())
         if (const auto path = find_audio_file(directory_, sound.filename))
             sound.filename = path->string();
 #if REGML_WII
-    if (!sound.filename.empty()) {
+    if (sound.embedded < 0 && !sound.filename.empty()) {
         const auto path = directory_ / sound.filename;
         std::ifstream input(path, std::ios::binary);
         char signature[4]{};
@@ -414,7 +419,7 @@ GameAudio::Clip *GameAudio::load(int id) {
         }
     }
 #endif
-    if (!sound.filename.empty()) {
+    if (sound.embedded < 0 && !sound.filename.empty()) {
         auto clip = std::make_unique<Clip>();
         clip->file_path = (directory_ / sound.filename).string();
         std::ifstream external(clip->file_path, std::ios::binary);
@@ -435,8 +440,7 @@ GameAudio::Clip *GameAudio::load(int id) {
             return sound.clip.get();
         }
     }
-    std::ifstream external_audio(directory_ / sound.filename, std::ios::binary);
-    if (sound.embedded >= 0 && !external_audio) {
+    if (sound.embedded >= 0) {
         if (static_cast<std::size_t>(sound.embedded) >= embedded_.size())
             throw Error(ErrorKind::malformed, "embedded audio ID out of range");
         const auto at = embedded_[static_cast<std::size_t>(sound.embedded)];
@@ -474,7 +478,10 @@ GameAudio::Clip *GameAudio::load(int id) {
 }
 int GameAudio::create_stream(std::string_view filename) {
     const int id = next_stream_++;
-    sounds_[id] = {-1, std::string(filename), 1, {}};
+    Sound stream;
+    stream.filename = filename;
+    sounds_.emplace(id, std::move(stream));
+    streams_.insert(id);
     const auto path = find_audio_file(directory_, filename);
     if (!path) {
         sounds_[id].clip = std::make_unique<Clip>();
@@ -485,6 +492,33 @@ int GameAudio::create_stream(std::string_view filename) {
     sounds_[id].filename = path->string();
     load(id);
     return id;
+}
+bool GameAudio::destroy_stream(int id) {
+    std::scoped_lock lock(voices_mutex_);
+    const auto stream = streams_.find(id);
+    if (stream == streams_.end())
+        return false;
+    std::erase_if(voices_, [id](const auto &voice) { return voice.second.sound == id; });
+    sounds_.erase(id);
+    streams_.erase(stream);
+    return true;
+}
+void GameAudio::group_gain(int group, double value, double duration_ms) {
+    if (!std::isfinite(value) || !std::isfinite(duration_ms) || duration_ms < 0)
+        throw Error(ErrorKind::vm, "invalid audio group gain or fade duration");
+    const auto frames = static_cast<std::size_t>(std::clamp(duration_ms, 0.0, 3'600'000.0) * 48.0);
+    std::scoped_lock lock(voices_mutex_);
+    auto &gain = group_gains_[group];
+    gain.target = value;
+    gain.frames_left = frames;
+    gain.step = frames ? (gain.target - gain.current) / static_cast<double>(frames) : 0;
+    if (!frames)
+        gain.current = value;
+}
+double GameAudio::group_gain(int group) const {
+    std::scoped_lock lock(voices_mutex_);
+    const auto found = group_gains_.find(group);
+    return found == group_gains_.end() ? 1.0 : found->second.current;
 }
 int GameAudio::play(int sound, bool loop, double priority) {
 #if REGML_WIIU
@@ -507,6 +541,7 @@ int GameAudio::play(int sound, bool loop, double priority) {
     }
     const int id = next_voice_++;
     voices_[id] = {sound, clip, 0, 1, 1, priority, loop, false};
+    voices_[id].group = sounds_.at(sound).group;
     if (clip && (!clip->compressed.empty() || !clip->file_path.empty() || clip->package))
         voices_[id].stream = std::make_shared<Stream>(*clip);
 #if REGML_WIIU
@@ -668,6 +703,11 @@ void GameAudio::mix(std::span<float> out, double playback_rate) noexcept {
     for (auto &[id, v] : voices_) {
         if (v.paused || !v.clip)
             continue;
+        const auto group = group_gains_.find(v.group);
+        const auto group_start = group == group_gains_.end() ? 1.0 : group->second.current;
+        const auto group_target = group == group_gains_.end() ? 1.0 : group->second.target;
+        const auto group_step = group == group_gains_.end() ? 0.0 : group->second.step;
+        const auto group_frames_left = group == group_gains_.end() ? 0 : group->second.frames_left;
         const auto length = v.clip->frames();
         for (std::size_t f = 0; f < frames; ++f) {
             if (v.frame >= static_cast<double>(length)) {
@@ -686,9 +726,12 @@ void GameAudio::mix(std::span<float> out, double playback_rate) noexcept {
                 v.frame = static_cast<double>(length);
                 break;
             }
+            const auto group_volume = f < group_frames_left
+                                          ? group_start + group_step * static_cast<double>(f + 1)
+                                          : group_target;
             for (std::size_t c = 0; c < 2; ++c) {
                 const auto sample = (v.stream ? streamed[c] : v.clip->stereo[source * 2 + c]) *
-                                    static_cast<float>(v.gain * v.clip->gain);
+                                    static_cast<float>(v.gain * v.clip->gain * group_volume);
                 out[f * 2 + c] += sample;
             }
             v.frame += v.pitch * playback_rate;
@@ -698,6 +741,15 @@ void GameAudio::mix(std::span<float> out, double playback_rate) noexcept {
         return p.second.clip && !p.second.loop &&
                p.second.frame >= static_cast<double>(p.second.clip->frames());
     });
+    for (auto &[group, gain] : group_gains_) {
+        if (!gain.frames_left)
+            continue;
+        const auto advanced = std::min(frames, gain.frames_left);
+        gain.current += gain.step * static_cast<double>(advanced);
+        gain.frames_left -= advanced;
+        if (!gain.frames_left)
+            gain.current = gain.target;
+    }
     for (auto &sample : out)
         sample = std::clamp(sample, -1.0f, 1.0f);
 }

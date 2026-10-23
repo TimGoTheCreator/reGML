@@ -246,8 +246,11 @@ class VideoWindow {
         sdl_ok(SDL_RenderCopy(renderer_.get(), texture_.get(), nullptr, nullptr), "frame presentation");
         SDL_RenderPresent(renderer_.get());
     }
-    void tick_game(GameSession &session, const KeyboardState *replay) {
-        session.tick(replay ? *replay : held_, replay ? KeyboardState{} : pressed_);
+    void tick_game(GameSession &session,
+                   const KeyboardState *replay,
+                   const KeyboardState *replay_pressed = nullptr) {
+        session.tick(replay ? *replay : held_, replay ? (replay_pressed ? *replay_pressed : KeyboardState{})
+                                                       : pressed_);
         pressed_.fill(false);
     }
 
@@ -303,10 +306,13 @@ class VideoWindow {
         (void)speed_multiplier;
         return input_.poll();
     }
-    void tick_game(GameSession &session, const KeyboardState *replay) {
+    void tick_game(GameSession &session,
+                   const KeyboardState *replay,
+                   const KeyboardState *replay_pressed = nullptr) {
         session.canvas().gpu_target(true);
         const auto pressed = input_.take_pressed();
-        session.tick(replay ? *replay : input_.held(), replay ? KeyboardState{} : pressed);
+        session.tick(replay ? *replay : input_.held(),
+                     replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed);
     }
     void present(const Canvas &canvas) { renderer_.present(canvas); }
 
@@ -472,10 +478,13 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             replay[frame] = keys;
         }
     }
-    KeyboardState replay_keys{};
+    KeyboardState replay_keys{}, replay_pressed{};
     auto input = [&]() {
+        const auto previous = replay_keys;
         if (const auto it = replay.find(session.frames()); it != replay.end())
             replay_keys = it->second;
+        for (std::size_t i = 0; i < replay_keys.size(); ++i)
+            replay_pressed[i] = replay_keys[i] && !previous[i];
         return replay_keys;
     };
     if (options.headless) {
@@ -484,7 +493,11 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             using Clock = std::chrono::steady_clock;
             const auto start = profile.enabled() ? Clock::now() : Clock::time_point{};
             const auto instructions_begin = session.instructions();
-            session.tick(!replay.empty() ? input() : KeyboardState{}, {});
+            if (!replay.empty()) {
+                input();
+                session.tick(replay_keys, replay_pressed);
+            } else
+                session.tick(KeyboardState{}, {});
             const auto tick_end = profile.enabled() ? Clock::now() : Clock::time_point{};
             silent_audio.resize(static_cast<std::size_t>(96000 / session.speed()));
             session.mix_audio(silent_audio);
@@ -529,7 +542,8 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             input();
             trace_stage("tick", &session);
             const auto tick_begin = profile.enabled() ? Clock::now() : Clock::time_point{};
-            window.tick_game(session, replay.empty() ? nullptr : &replay_keys);
+            window.tick_game(session, replay.empty() ? nullptr : &replay_keys,
+                             replay.empty() ? nullptr : &replay_pressed);
 #if !REGML_PS2
             audio.pump();
 #endif

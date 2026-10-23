@@ -6,6 +6,7 @@
 #include <span>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 namespace regml {
 class GameAudio {
   public:
@@ -13,6 +14,9 @@ class GameAudio {
     ~GameAudio();
     std::optional<int> find_sound_id(std::string_view filename) const;
     int create_stream(std::string_view filename);
+    bool destroy_stream(int id);
+    void group_gain(int group, double value, double duration_ms = 0);
+    double group_gain(int group) const;
     int play(int sound, bool loop, double priority);
     void stop(int id);
     void pause(int id, bool paused);
@@ -52,10 +56,12 @@ class GameAudio {
     };
     struct Stream;
     struct Sound {
+        std::string_view name;
         int embedded = -1;
         std::string filename;
         double gain = 1;
         std::unique_ptr<Clip> clip;
+        int group = 0;
     };
     struct Voice {
         int sound = 0;
@@ -63,12 +69,19 @@ class GameAudio {
         double frame = 0, gain = 1, pitch = 1, priority = 0;
         bool loop = false, paused = false;
         std::shared_ptr<Stream> stream;
+        int group = 0;
+    };
+    struct GroupGain {
+        double current = 1, target = 1, step = 0;
+        std::size_t frames_left = 0;
     };
     const Package &package_;
     std::filesystem::path directory_;
     std::vector<std::size_t> embedded_;
     std::unordered_map<int, Sound> sounds_;
     std::unordered_map<int, Voice> voices_;
+    std::unordered_set<int> streams_;
+    std::unordered_map<int, GroupGain> group_gains_;
     mutable std::mutex voices_mutex_;
     int next_stream_ = 100000, next_voice_ = 1000000, channels_ = 128;
     Clip *load(int id);

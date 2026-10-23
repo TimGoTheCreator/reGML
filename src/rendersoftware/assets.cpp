@@ -1,4 +1,5 @@
 ﻿#include "assets.hpp"
+#include "../gmrt_project.hpp"
 #include "platform/wii/gpu.hpp"
 #include <algorithm>
 #include <bit>
@@ -428,6 +429,38 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
             if (ptr && !find_region(ptr))
                 throw Error(ErrorKind::malformed, "background TPAG reference invalid", p + 16);
             backgrounds_.push_back(ptr);
+            Tileset tileset;
+            if (package.general_info() && package.general_info()->reported_version[0] >= 2 &&
+                p <= bg->data_offset + bg->size && bg->data_offset + bg->size - p >= 64) {
+                const auto metadata = rec(p, *bg, 64);
+                tileset.width = static_cast<int>(metadata.u32(24));
+                tileset.height = static_cast<int>(metadata.u32(28));
+                tileset.border_x = static_cast<int>(metadata.u32(32));
+                tileset.border_y = static_cast<int>(metadata.u32(36));
+                tileset.columns = static_cast<int>(metadata.u32(40));
+                tileset.frames_per_tile = static_cast<int>(metadata.u32(44));
+                tileset.count = static_cast<int>(metadata.u32(48));
+                tileset.frame_length_us = metadata.u64(56);
+                if (tileset.width <= 0 || tileset.height <= 0 || tileset.width > 8192 ||
+                    tileset.height > 8192 || tileset.border_x < 0 || tileset.border_x > 256 ||
+                    tileset.border_y < 0 || tileset.border_y > 256 || tileset.columns <= 0 ||
+                    tileset.columns > 8192 || tileset.frames_per_tile < 1 || tileset.frames_per_tile > 1024 ||
+                    tileset.count < 0 || tileset.count > 1'000'000 ||
+                    static_cast<std::uint64_t>(tileset.count) * tileset.frames_per_tile > 4'000'000 ||
+                    static_cast<std::uint64_t>(tileset.count) * tileset.frames_per_tile * 4 >
+                        bg->data_offset + bg->size - p - 64)
+                    tileset = {};
+                else {
+                    const auto ids = rec(p, *bg, 64 +
+                                                     static_cast<std::size_t>(tileset.count) *
+                                                         static_cast<std::size_t>(tileset.frames_per_tile) * 4);
+                    tileset.tile_ids.reserve(static_cast<std::size_t>(tileset.count) * tileset.frames_per_tile);
+                    for (std::size_t i = 0; i < static_cast<std::size_t>(tileset.count) * tileset.frames_per_tile;
+                         ++i)
+                        tileset.tile_ids.push_back(ids.u32(64 + i * 4));
+                }
+            }
+            tilesets_.push_back(tileset);
         }
     auto font_glyphs = [&](std::size_t p) {
         std::size_t best_offset = bytecode17 ? 44 : 40;
@@ -545,6 +578,47 @@ const GameAssets::Region *GameAssets::find_region(std::size_t pointer) const noe
     const auto index = find_region_index(pointer);
     return index == std::numeric_limits<std::uint32_t>::max() ? nullptr : &regions_[index].region;
 }
+GameAssets::GameAssets(const Package &package, const GmrtProject &project) : package_(package) {
+    const auto &resources = project.sprites();
+    sprites_.resize(resources.size());
+    std::vector<std::pair<std::size_t, std::size_t>> ranges(resources.size());
+    for (std::size_t id = 0; id < resources.size(); ++id) {
+        const auto &source = resources[id];
+        auto &sprite = sprites_[id];
+        if (source.id < 0)
+            continue;
+        sprite.name = source.name;
+        sprite.width = source.width;
+        sprite.height = source.height;
+        sprite.ox = source.origin_x;
+        sprite.oy = source.origin_y;
+        sprite.left = source.left;
+        sprite.right = source.right;
+        sprite.top = source.top;
+        sprite.bottom = source.bottom;
+        ranges[id].first = sprite_frame_regions_.size();
+        for (const auto &image_path : source.frames) {
+            Page page;
+            page.external_file = image_path.is_absolute() ? image_path : project.index_path().parent_path() / image_path;
+            const auto page_id = static_cast<int>(pages_.size());
+            pages_.push_back(std::move(page));
+            Region region;
+            region.w = source.width;
+            region.h = source.height;
+            region.tw = source.width;
+            region.th = source.height;
+            region.page = page_id;
+            const auto region_id = static_cast<std::uint32_t>(regions_.size());
+            regions_.push_back({0, region});
+            sprite_frame_regions_.push_back(region_id);
+        }
+        ranges[id].second = sprite_frame_regions_.size() - ranges[id].first;
+    }
+    for (std::size_t id = 0; id < sprites_.size(); ++id)
+        sprites_[id].frames = std::span<const std::uint32_t>(sprite_frame_regions_)
+                                  .subspan(ranges[id].first, ranges[id].second);
+}
+
 const GameAssets::Sprite &GameAssets::sprite(int id) const {
     id = unpack_sprite_reference(id);
     if (id < 0 || static_cast<std::size_t>(id) >= sprites_.size())
@@ -586,6 +660,39 @@ std::pair<int, int> GameAssets::background_size(int id) const {
     const auto &r = *region;
     return {r.tw, r.th};
 }
+std::optional<GameAssets::TileSource> GameAssets::background_tile_source(int id,
+                                                                         std::uint32_t tile,
+                                                                         std::uint64_t elapsed_us) const {
+    if (id < 0 || static_cast<std::size_t>(id) >= backgrounds_.size() ||
+        static_cast<std::size_t>(id) >= tilesets_.size())
+        return std::nullopt;
+    const auto &tileset = tilesets_[static_cast<std::size_t>(id)];
+    if (tile >= static_cast<std::uint32_t>(tileset.count) || tileset.width <= 0 || tileset.height <= 0 ||
+        tileset.columns <= 0 || tileset.frames_per_tile <= 0)
+        return std::nullopt;
+    const auto frame = tileset.frame_length_us
+                           ? static_cast<std::size_t>((elapsed_us / tileset.frame_length_us) %
+                                                      static_cast<std::uint64_t>(tileset.frames_per_tile))
+                           : 0;
+    const auto tile_id_at = static_cast<std::size_t>(tile) * tileset.frames_per_tile + frame;
+    if (tile_id_at >= tileset.tile_ids.size())
+        return std::nullopt;
+    tile = tileset.tile_ids[tile_id_at];
+    if (tile >= static_cast<std::uint32_t>(tileset.count))
+        return std::nullopt;
+    const auto *region = background_regions_[static_cast<std::size_t>(id)];
+    if (!region)
+        return std::nullopt;
+    const auto stride_x = tileset.width + 2 * tileset.border_x;
+    const auto stride_y = tileset.height + 2 * tileset.border_y;
+    const auto x = static_cast<int>(tile % static_cast<std::uint32_t>(tileset.columns)) * stride_x +
+                   tileset.border_x;
+    const auto y = static_cast<int>(tile / static_cast<std::uint32_t>(tileset.columns)) * stride_y +
+                   tileset.border_y;
+    if (x < 0 || y < 0 || x > region->tw - tileset.width || y > region->th - tileset.height)
+        return std::nullopt;
+    return TileSource{x, y, tileset.width, tileset.height};
+}
 GameAssets::Page &GameAssets::load_page(int id) {
     auto &page = pages_.at(static_cast<std::size_t>(id));
     if (!page.pixels.empty()) {
@@ -611,6 +718,21 @@ GameAssets::Page &GameAssets::load_page(int id) {
     std::size_t width = 0, height = 0;
     const bool is_png = page.format == TextureFormat::png;
     if (is_png) {
+        if (!page.external_file.empty()) {
+            image.version = PNG_IMAGE_VERSION;
+            const auto path = page.external_file.string();
+            if (!png_image_begin_read_from_file(&image, path.c_str()))
+                throw Error(ErrorKind::io, "cannot open sprite frame: " + path);
+            guard.active = true;
+            if (image.width > 8192 || image.height > 8192 || !image.width || !image.height)
+                throw Error(ErrorKind::unsupported, "sprite frame dimensions exceed limit");
+            if constexpr (std::endian::native == std::endian::little)
+                image.format = PNG_FORMAT_BGRA;
+            else
+                image.format = PNG_FORMAT_ARGB;
+            width = image.width;
+            height = image.height;
+        } else {
         const auto *chunk = package_.find_chunk("TXTR");
         const auto png_header = package_.read_bytes(page.png, 8);
         if (png_header[0] != 0x89 || png_header[1] != 'P' || png_header[2] != 'N' || png_header[3] != 'G' ||
@@ -647,6 +769,7 @@ GameAssets::Page &GameAssets::load_page(int id) {
             image.format = PNG_FORMAT_ARGB;
         width = image.width;
         height = image.height;
+        }
     } else {
         std::size_t texture_size = page.data_size;
         if (!texture_size && page.format == TextureFormat::qoi) {
@@ -834,7 +957,8 @@ void GameAssets::draw_tile(Canvas &canvas,
                            double y,
                            double sx,
                            double sy,
-                           unsigned color) {
+                           unsigned color,
+                           std::uint32_t tile_data) {
     if (id < 0 || static_cast<std::size_t>(id) >= backgrounds_.size())
         throw Error(ErrorKind::vm, "tile background ID out of range");
     const auto ptr = backgrounds_[static_cast<std::size_t>(id)];
@@ -852,8 +976,80 @@ void GameAssets::draw_tile(Canvas &canvas,
     Region cut{r.x + (left - r.tx), r.y + (top - r.ty), right - left, bottom - top, 0, 0,
                right - left,        bottom - top,       r.page};
     cut.alpha_mode = r.alpha_mode;
-    blit(canvas, cut, x + (left - source_x) * sx, y + (top - source_y) * sy, sx, sy, 0, color & 0xffffff,
-         static_cast<double>(color >> 24) / 255);
+    const auto draw_x = x + (left - source_x) * sx;
+    const auto draw_y = y + (top - source_y) * sy;
+    constexpr std::uint32_t mirror_mask = 1U << 28;
+    constexpr std::uint32_t flip_mask = 1U << 29;
+    constexpr std::uint32_t rotate_mask = 1U << 30;
+    const auto transform = tile_data & (mirror_mask | flip_mask | rotate_mask);
+    if (!transform) {
+        blit(canvas, cut, draw_x, draw_y, sx, sy, 0, color & 0xffffff,
+             static_cast<double>(color >> 24) / 255);
+        return;
+    }
+
+    double target_x = (draw_x - view_x_) * view_sx_ + port_x_;
+    double target_y = (draw_y - view_y_) * view_sy_ + port_y_;
+    double target_w = (right - left) * sx * view_sx_;
+    double target_h = (bottom - top) * sy * view_sy_;
+    bool mirror = (transform & mirror_mask) != 0;
+    bool flip = (transform & flip_mask) != 0;
+    if (target_w < 0) {
+        target_x += target_w;
+        target_w = -target_w;
+        mirror = !mirror;
+    }
+    if (target_h < 0) {
+        target_y += target_h;
+        target_h = -target_h;
+        flip = !flip;
+    }
+    const auto render_scale = canvas.render_scale();
+    target_x *= render_scale;
+    target_y *= render_scale;
+    target_w *= render_scale;
+    target_h *= render_scale;
+    if (target_w <= 0 || target_h <= 0)
+        return;
+
+    const int dest_left = static_cast<int>(std::clamp(std::ceil(target_x - 0.5), 0.0,
+                                                       static_cast<double>(canvas.width())));
+    const int dest_top = static_cast<int>(std::clamp(std::ceil(target_y - 0.5), 0.0,
+                                                     static_cast<double>(canvas.height())));
+    const int dest_right = static_cast<int>(std::clamp(std::ceil(target_x + target_w - 0.5), 0.0,
+                                                        static_cast<double>(canvas.width())));
+    const int dest_bottom = static_cast<int>(std::clamp(std::ceil(target_y + target_h - 0.5), 0.0,
+                                                         static_cast<double>(canvas.height())));
+    if (dest_left >= dest_right || dest_top >= dest_bottom)
+        return;
+
+    int page_x = 0, page_y = 0;
+    const auto &page = region_pixels(cut, page_x, page_y);
+    const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
+    const double alpha = static_cast<double>(color >> 24) / 255;
+    for (int dy = dest_top; dy < dest_bottom; ++dy) {
+        for (int dx = dest_left; dx < dest_right; ++dx) {
+            double u = (dx + 0.5 - target_x) / target_w;
+            double v = (dy + 0.5 - target_y) / target_h;
+            if (transform & rotate_mask) {
+                const auto old_u = u;
+                u = v;
+                v = 1 - old_u;
+            }
+            if (flip)
+                v = 1 - v;
+            if (mirror)
+                u = 1 - u;
+            const int sample_x = left + static_cast<int>(u * (right - left));
+            const int sample_y = top + static_cast<int>(v * (bottom - top));
+            if (sample_x < left || sample_x >= right || sample_y < top || sample_y >= bottom)
+                continue;
+            const int pixel_x = page_x + (sample_x - left) * cut.w / cut.tw;
+            const int pixel_y = page_y + (sample_y - top) * cut.h / cut.th;
+            const auto rgba = page.pixels[static_cast<std::size_t>(pixel_y) * page.width + pixel_x];
+            canvas.rgba_pixel_tinted(dx, dy, rgba, tint, alpha);
+        }
+    }
 }
 void GameAssets::view(double x, double y, double sx, double sy, double px, double py) {
     if (!std::isfinite(x + y + sx + sy + px + py))
@@ -897,7 +1093,7 @@ const GameAssets::Page &GameAssets::region_pixels(const Region &r, int &source_x
     cropped.height = r.h;
     cropped.last_used = ++page_cache_clock_;
     const auto &page = pages_.at(static_cast<std::size_t>(r.page));
-    if (page.format == TextureFormat::png) {
+    if (page.format == TextureFormat::png && page.external_file.empty()) {
         cropped.pixels = read_png_region(package_, page.png, r.x, r.y, r.w, r.h);
     } else {
         const auto &source = load_page(r.page);

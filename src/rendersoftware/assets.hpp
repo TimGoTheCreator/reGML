@@ -4,16 +4,20 @@
 #include <array>
 #include <bitset>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 namespace regml {
+class GmrtProject;
 class GameAssets {
   public:
     explicit GameAssets(const Package &package);
+    GameAssets(const Package &package, const GmrtProject &project);
     struct Sprite {
         std::string_view name;
         int width = 0, height = 0, ox = 0, oy = 0, left = 0, right = 0, top = 0, bottom = 0;
@@ -22,6 +26,7 @@ class GameAssets {
         std::size_t mask_offset = 0, mask_count = 0;
     };
     const Sprite &sprite(int id) const;
+    [[nodiscard]] std::size_t sprite_count() const noexcept { return sprites_.size(); }
     bool mask_pixel(int id, double frame, int x, int y) const;
     [[nodiscard]] std::span<const std::uint8_t> mask_frame(int id, std::size_t frame) const;
     [[nodiscard]] bool sprite_exists(int id) const noexcept {
@@ -30,6 +35,12 @@ class GameAssets {
     }
     [[nodiscard]] std::string_view sprite_name(int id) const { return sprite(id).name; }
     [[nodiscard]] std::pair<int, int> background_size(int id) const;
+    struct TileSource {
+        int x = 0, y = 0, width = 0, height = 0;
+    };
+    [[nodiscard]] std::optional<TileSource> background_tile_source(int id,
+                                                                   std::uint32_t tile,
+                                                                   std::uint64_t elapsed_us = 0) const;
     void prefetch(int id);
     void draw_background(Canvas &canvas, int id, double x, double y);
     void draw_background_stretched(Canvas &canvas, int id, double x, double y, double width, double height);
@@ -55,7 +66,8 @@ class GameAssets {
                    double y,
                    double sx,
                    double sy,
-                   unsigned color);
+                   unsigned color,
+                   std::uint32_t tile_data = 0);
     void draw_sprite(Canvas &canvas,
                      int id,
                      double frame,
@@ -115,6 +127,7 @@ class GameAssets {
         std::size_t png = 0;
         std::size_t data_size = 0;
         TextureFormat format = TextureFormat::png;
+        std::filesystem::path external_file;
         std::size_t last_used = 0;
         std::vector<std::uint32_t> pixels;
     };
@@ -125,6 +138,11 @@ class GameAssets {
     struct RegionEntry {
         std::uint32_t pointer = 0;
         Region region;
+    };
+    struct Tileset {
+        int width = 0, height = 0, border_x = 0, border_y = 0, columns = 0, count = 0, frames_per_tile = 1;
+        std::uint64_t frame_length_us = 0;
+        std::vector<std::uint32_t> tile_ids;
     };
     struct Glyph {
         std::uint16_t x = 0, y = 0, w = 0, h = 0;
@@ -152,6 +170,7 @@ class GameAssets {
     int scratch_page_id_ = -1;
     std::vector<RegionEntry> regions_;
     std::vector<const Region *> background_regions_;
+    std::vector<Tileset> tilesets_;
     std::vector<Font> fonts_;
     std::vector<std::unique_ptr<Region>> dynamic_font_atlases_;
     std::vector<std::size_t> backgrounds_;
