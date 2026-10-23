@@ -5,7 +5,7 @@ A GameMaker bytecode runner and package inspector in C++
 Package inspection reads v14-v17 layouts
 
 Bytecode decoding and disassembly cover v15-v17
-v17 is supported, but not every GameMaker feature is implemented yet
+v17 is supported, but not every GameMaker feature is implemented yet (as in deltarune doesn't even show maps, and plays wrong SFX, so experiemental?)
 
 Tested with UNDERTALE on Windows and the Wii U build in Cemu
 No full playthrough is verified
