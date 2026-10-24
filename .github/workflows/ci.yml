@@ -96,13 +96,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: host_cache/ccache
+          key: freebsd-14.3-${{ github.sha }}
+          restore-keys: freebsd-14.3-
       - name: Build in FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         with:
           release: "14.3"
-          prepare: pkg install -y cmake ninja pkgconf png libvorbis sdl2
+          prepare: pkg install -y cmake ninja pkgconf png libvorbis sdl2 ccache
           run: |
-            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON
+            mkdir -p "$PWD/host_cache/ccache"
+            export CCACHE_DIR="$PWD/host_cache/ccache"
+            export CCACHE_BASEDIR="$PWD"
+            export CCACHE_COMPILERCHECK=content
+            export CCACHE_NOHASHDIR=true
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
             cmake --build build --parallel
             env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software ctest --test-dir build --output-on-failure
             mkdir -p demo
@@ -110,6 +123,263 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: game-freebsd
+          path: demo/demo.bmp
+          if-no-files-found: warn
+
+  netbsd:
+    name: NetBSD
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: cpa.sh {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: host_cache/ccache
+          key: netbsd-11.0-${{ github.sha }}
+          restore-keys: netbsd-11.0-
+      - name: Start NetBSD VM
+        uses: cross-platform-actions/action@b77f08480307e762b98be92ba7ef04ea7c2272f8
+        with:
+          operating_system: netbsd
+          architecture: x86-64
+          version: '11.0'
+      - name: Install dependencies
+        run: |
+          export PATH="/usr/pkg/sbin:/usr/pkg/bin:$PATH"
+          if ! command -v pkgin >/dev/null 2>&1; then
+            export PKG_PATH="https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/$(uname -r | cut -d_ -f1)/All/"
+            sudo pkg_add pkgin
+          fi
+          sudo pkgin -y update
+          sudo pkgin -y install cmake ninja-build pkgconf png libvorbis SDL2 ccache
+      - name: Configure and build
+        run: |
+          export PATH="/usr/pkg/sbin:/usr/pkg/bin:$PATH"
+          mkdir -p "$PWD/host_cache/ccache"
+          export CCACHE_DIR="$PWD/host_cache/ccache"
+          export CCACHE_BASEDIR="$PWD"
+          export CCACHE_COMPILERCHECK=content
+          export CCACHE_NOHASHDIR=true
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+      - name: Run tests
+        run: |
+          export PATH="/usr/pkg/sbin:/usr/pkg/bin:$PATH"
+          SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software ctest --test-dir build --output-on-failure
+      - name: Try package screenshot
+        continue-on-error: true
+        run: |
+          export PATH="/usr/pkg/sbin:/usr/pkg/bin:$PATH"
+          mkdir -p demo
+          ./build/regml run include/data.win --headless --frames 90 --screenshot demo/demo.bmp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: game-netbsd
+          path: demo/demo.bmp
+          if-no-files-found: warn
+
+  openbsd:
+    name: OpenBSD
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: cpa.sh {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: host_cache/ccache
+          key: openbsd-7.9-${{ github.sha }}
+          restore-keys: openbsd-7.9-
+      - name: Start OpenBSD VM
+        uses: cross-platform-actions/action@b77f08480307e762b98be92ba7ef04ea7c2272f8
+        with:
+          operating_system: openbsd
+          architecture: x86-64
+          version: '7.9'
+      - name: Install dependencies
+        run: sudo pkg_add -I cmake ninja pkgconf png libvorbis sdl2 ccache
+      - name: Configure and build
+        run: |
+          mkdir -p "$PWD/host_cache/ccache"
+          export CCACHE_DIR="$PWD/host_cache/ccache"
+          export CCACHE_BASEDIR="$PWD"
+          export CCACHE_COMPILERCHECK=content
+          export CCACHE_NOHASHDIR=true
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+      - name: Run tests
+        run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software ctest --test-dir build --output-on-failure
+      - name: Try package screenshot
+        continue-on-error: true
+        run: |
+          mkdir -p demo
+          ./build/regml run include/data.win --headless --frames 90 --screenshot demo/demo.bmp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: game-openbsd
+          path: demo/demo.bmp
+          if-no-files-found: warn
+
+  dragonflybsd:
+    name: DragonFly BSD
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: cpa.sh {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: host_cache/ccache
+          key: dragonflybsd-6.4.2-${{ github.sha }}
+          restore-keys: dragonflybsd-6.4.2-
+      - name: Start DragonFly BSD VM
+        uses: cross-platform-actions/action@b77f08480307e762b98be92ba7ef04ea7c2272f8
+        with:
+          operating_system: dragonflybsd
+          architecture: x86-64
+          version: '6.4.2'
+      - name: Install dependencies
+        run: sudo pkg install -y cmake ninja pkgconf png libvorbis sdl2 ccache
+      - name: Configure and build
+        run: |
+          mkdir -p "$PWD/host_cache/ccache"
+          export CCACHE_DIR="$PWD/host_cache/ccache"
+          export CCACHE_BASEDIR="$PWD"
+          export CCACHE_COMPILERCHECK=content
+          export CCACHE_NOHASHDIR=true
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+      - name: Run tests
+        run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software ctest --test-dir build --output-on-failure
+      - name: Try package screenshot
+        continue-on-error: true
+        run: |
+          mkdir -p demo
+          ./build/regml run include/data.win --headless --frames 90 --screenshot demo/demo.bmp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: game-dragonflybsd
+          path: demo/demo.bmp
+          if-no-files-found: warn
+
+  midnightbsd:
+    name: MidnightBSD
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: cpa.sh {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: host_cache/ccache
+          key: midnightbsd-4.0.4-${{ github.sha }}
+          restore-keys: midnightbsd-4.0.4-
+      - name: Start MidnightBSD VM
+        uses: cross-platform-actions/action@b77f08480307e762b98be92ba7ef04ea7c2272f8
+        with:
+          operating_system: midnightbsd
+          architecture: x86-64
+          version: '4.0.4'
+      - name: Install dependencies
+        run: doas mport install cmake ninja pkgconf png libvorbis sdl2 ccache
+      - name: Configure and build
+        run: |
+          mkdir -p "$PWD/host_cache/ccache"
+          export CCACHE_DIR="$PWD/host_cache/ccache"
+          export CCACHE_BASEDIR="$PWD"
+          export CCACHE_COMPILERCHECK=content
+          export CCACHE_NOHASHDIR=true
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+      - name: Run tests
+        run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software ctest --test-dir build --output-on-failure
+      - name: Try package screenshot
+        continue-on-error: true
+        run: |
+          mkdir -p demo
+          ./build/regml run include/data.win --headless --frames 90 --screenshot demo/demo.bmp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: game-midnightbsd
+          path: demo/demo.bmp
+          if-no-files-found: warn
+
+  haiku:
+    name: Haiku
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: cpa.sh {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore Haiku caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            host_cache/ccache
+            host_cache/packages
+          key: haiku-r1beta6-${{ github.sha }}
+          restore-keys: haiku-r1beta6-
+      - name: Start Haiku VM
+        uses: cross-platform-actions/action@b77f08480307e762b98be92ba7ef04ea7c2272f8
+        with:
+          operating_system: haiku
+          architecture: x86-64
+          version: 'r1beta6'
+      - name: Install dependencies
+        run: |
+          mkdir -p host_cache/packages
+          if ls host_cache/packages/*.hpkg >/dev/null 2>&1; then
+            pkgman install -y host_cache/packages/*.hpkg || true
+          fi
+
+          ls /boot/system/packages/ > baseline_packages.txt
+          pkgman install -y cmake make ccache gcc gcc_syslibs_devel libpng16_devel libvorbis_devel libsdl2_devel
+          ls /boot/system/packages/ > current_packages.txt
+
+          comm -13 baseline_packages.txt current_packages.txt | while IFS= read -r pkg; do
+            if [ -n "$pkg" ]; then
+              cp "/boot/system/packages/$pkg" host_cache/packages/
+            fi
+          done
+      - name: Configure and build
+        run: |
+          mkdir -p "$PWD/host_cache/ccache"
+          export CCACHE_DIR="$PWD/host_cache/ccache"
+          export CCACHE_BASEDIR="$PWD"
+          export CCACHE_COMPILERCHECK=content
+          export CCACHE_NOHASHDIR=true
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+      - name: Run tests
+        run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software ctest --test-dir build --output-on-failure
+      - name: Try package screenshot
+        continue-on-error: true
+        run: |
+          mkdir -p demo
+          ./build/regml run include/data.win --headless --frames 90 --screenshot demo/demo.bmp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: game-haiku
           path: demo/demo.bmp
           if-no-files-found: warn
 
