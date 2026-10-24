@@ -1,6 +1,7 @@
 #pragma once
 #include <filesystem>
 #include <optional>
+#include <string_view>
 namespace regml {
 struct PlayOptions {
     std::size_t frame_limit = 0;

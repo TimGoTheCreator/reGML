@@ -27,10 +27,24 @@
       canvas: document.getElementById('canvas'),
       noInitialRun: true,
       print: function (text) { console.log(text); },
-      printErr: function (text) { console.error(text); },
+      printErr: function (text) {
+        console.error(text);
+        var status = document.getElementById('status');
+        if (status && Module.gameStarted && !Module.reportedError) {
+          status.textContent = text;
+          Module.reportedError = true;
+        }
+      },
+      onAbort: function (reason) {
+        var status = document.getElementById('status');
+        if (status && !Module.reportedError) {
+          status.textContent = 'WebAssembly stopped: ' + String(reason);
+          Module.reportedError = true;
+        }
+      },
       setStatus: function (text) {
         var status = document.getElementById('status');
-        if (status) status.textContent = text;
+        if (status && (text || !Module.runnerReady)) status.textContent = text;
       }
     };
   </script>

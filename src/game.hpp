@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#if !REGML_PS2
+#include <mutex>
+#endif
 #include <optional>
 #include <span>
 #include <string>
@@ -50,5 +53,8 @@ class GameSession {
   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+#if !REGML_PS2
+    std::mutex audio_mutex_;
+#endif
 };
 } // namespace regml

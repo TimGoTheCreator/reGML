@@ -425,7 +425,19 @@ double value_number(const Value &value) {
         return *real;
     if (const auto *boolean = std::get_if<bool>(&value))
         return *boolean ? 1 : 0;
-    throw Error(ErrorKind::vm, "numeric argument requires a scalar number");
+    const char *type = "value";
+    if (value_is_string(value))
+        type = "string";
+    else if (std::holds_alternative<std::monostate>(value))
+        type = "undefined";
+    else if (std::holds_alternative<ArrayPtr>(value))
+        type = "array";
+    else if (std::holds_alternative<FunctionReference>(value) ||
+             std::holds_alternative<CallablePtr>(value))
+        type = "function";
+    else if (std::holds_alternative<StructPtr>(value))
+        type = "struct";
+    throw Error(ErrorKind::vm, std::string("numeric argument requires a scalar number (got ") + type + ")");
 }
 std::vector<std::uint8_t> demo_bytecode() {
     constexpr std::uint32_t words[] = {0x840f0007, 0x840f0005, 0x0d220000,

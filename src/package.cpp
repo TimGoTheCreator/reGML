@@ -1,5 +1,7 @@
 #include "package.hpp"
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <fstream>
 #include <limits>
 #include <mutex>
@@ -159,6 +161,17 @@ void Package::parse_info(const Chunk &c) {
         info.height = data.u32(64);
         info.display_name_pointer = data.u32(100);
         info.has_known_prefix = true;
+        if (info.reported_version[0] >= 2 && data.size() >= 132) {
+            const auto room_count = static_cast<std::size_t>(data.u32(128));
+            if (room_count <= (data.size() - 132) / 4) {
+                const auto fps_offset = 132 + room_count * 4 + 5 * sizeof(std::uint64_t);
+                if (fps_offset <= data.size() && data.size() - fps_offset >= sizeof(float)) {
+                    const auto game_speed = std::bit_cast<float>(data.u32(fps_offset));
+                    if (std::isfinite(game_speed) && game_speed >= 1.0f && game_speed <= 1000.0f)
+                        info.game_speed = game_speed;
+                }
+            }
+        }
     }
     info_ = info;
 }

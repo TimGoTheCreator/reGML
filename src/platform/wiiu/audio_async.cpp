@@ -62,8 +62,12 @@ int GameAudio::AsyncState::decode_thread(void *context) {
     std::string error;
     try {
         std::vector<std::uint8_t> bytes;
-        std::ifstream file(task->path, std::ios::binary | std::ios::ate);
-        if (file) {
+        if (task->has_embedded) {
+            bytes = task->package->read_bytes(task->embedded_offset, task->embedded_size);
+        } else {
+            std::ifstream file(task->path, std::ios::binary | std::ios::ate);
+            if (!file)
+                throw Error(ErrorKind::io, "audio file missing: " + task->path.string());
             const auto size = file.tellg();
             if (size < 0 || size > 100'000'000)
                 throw Error(ErrorKind::unsupported, "audio file size exceeds limit");
@@ -72,10 +76,6 @@ int GameAudio::AsyncState::decode_thread(void *context) {
             file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
             if (!file)
                 throw Error(ErrorKind::io, "audio file read failed");
-        } else if (task->has_embedded) {
-            bytes = task->package->read_bytes(task->embedded_offset, task->embedded_size);
-        } else {
-            throw Error(ErrorKind::io, "audio file missing: " + task->path.string());
         }
         clip = decode(bytes).release();
     } catch (const std::exception &exception) {

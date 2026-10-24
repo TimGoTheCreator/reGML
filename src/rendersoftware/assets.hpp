@@ -26,6 +26,16 @@ class GameAssets {
         std::size_t mask_offset = 0, mask_count = 0;
     };
     const Sprite &sprite(int id) const;
+    bool set_sprite_offset(int id, int x, int y);
+    int create_sprite_from_surface(const Canvas &surface,
+                                   int x,
+                                   int y,
+                                   int width,
+                                   int height,
+                                   bool remove_background,
+                                   bool smooth,
+                                   int origin_x,
+                                   int origin_y);
     [[nodiscard]] std::size_t sprite_count() const noexcept { return sprites_.size(); }
     bool mask_pixel(int id, double frame, int x, int y) const;
     [[nodiscard]] std::span<const std::uint8_t> mask_frame(int id, std::size_t frame) const;
@@ -160,6 +170,8 @@ class GameAssets {
         bool page_per_glyph = false;
     };
     static_assert(sizeof(std::bitset<256>) <= 32, "glyph presence should stay bit-packed");
+    static constexpr std::size_t max_dynamic_sprites_ = 4096;
+    static constexpr std::size_t max_dynamic_sprite_bytes_ = 16ULL * 1024 * 1024;
     const Package &package_;
     double view_x_ = 0, view_y_ = 0, view_sx_ = 1, view_sy_ = 1, port_x_ = 0, port_y_ = 0;
     std::vector<Sprite> sprites_;
@@ -173,6 +185,8 @@ class GameAssets {
     std::vector<Tileset> tilesets_;
     std::vector<Font> fonts_;
     std::vector<std::unique_ptr<Region>> dynamic_font_atlases_;
+    std::size_t dynamic_sprite_count_ = 0;
+    std::size_t dynamic_sprite_bytes_ = 0;
     std::vector<std::size_t> backgrounds_;
 #if REGML_WII
     static constexpr std::size_t page_cache_limit_ = 4ULL * 1024 * 1024;

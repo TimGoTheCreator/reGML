@@ -22,6 +22,7 @@ struct GeneralInfo {
     std::uint8_t bytecode_version = 0;
     std::array<std::uint32_t, 4> reported_version{};
     std::uint32_t game_id = 0, name_pointer = 0, display_name_pointer = 0, width = 0, height = 0;
+    float game_speed = 30.0f;
     bool has_known_prefix = false;
 };
 struct StringRecord {

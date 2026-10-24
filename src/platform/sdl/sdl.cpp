@@ -26,7 +26,10 @@
 #include <map>
 #include <memory>
 #include <sstream>
+#include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 #if REGML_WITH_SDL2
 #include <SDL2/SDL.h>
 #endif
@@ -166,7 +169,7 @@ class VideoWindow {
 #else
         const auto flags = static_cast<Uint32>(SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
                                                (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN));
-        constexpr int window_width = 800, window_height = 600;
+        constexpr int window_width = 640, window_height = 480;
 #endif
         window_.reset(SDL_CreateWindow(escape_quits ? "reGML - VM Arcade" : "reGML - Game (experimental)",
                                        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, window_width,
@@ -266,6 +269,150 @@ class VideoWindow {
         sdl_ok(SDL_RenderClear(renderer_.get()), "renderer clear");
         sdl_ok(SDL_RenderCopy(renderer_.get(), texture_.get(), nullptr, nullptr), "frame presentation");
         SDL_RenderPresent(renderer_.get());
+    }
+    void show_error_reporter(std::string_view title, std::string_view report) noexcept {
+        try {
+            Canvas canvas(640, 480, true);
+            std::vector<std::string> lines;
+            std::istringstream input{std::string(report)};
+            constexpr std::size_t line_width = 98;
+            std::string paragraph;
+            while (std::getline(input, paragraph)) {
+                if (paragraph.empty()) {
+                    lines.emplace_back();
+                    continue;
+                }
+                std::size_t start = 0;
+                while (start < paragraph.size()) {
+                    std::size_t end = std::min(start + line_width, paragraph.size());
+                    if (end < paragraph.size()) {
+                        const auto space = paragraph.rfind(' ', end);
+                        if (space != std::string::npos && space > start)
+                            end = space;
+                    }
+                    lines.emplace_back(paragraph.substr(start, end - start));
+                    start = end;
+                    while (start < paragraph.size() && paragraph[start] == ' ')
+                        ++start;
+                    if (lines.size() >= 5000) {
+                        lines.emplace_back("(error report truncated)");
+                        break;
+                    }
+                }
+                if (lines.size() >= 5000)
+                    break;
+            }
+            if (lines.empty())
+                lines.emplace_back("No error details were provided.");
+
+            constexpr int first_line_y = 82, line_height = 9, visible_lines = 36;
+            int scroll = 0;
+            std::string status = "C copies the report   X clears it   Esc aborts";
+            auto draw_button = [&](int left, int right, std::string_view label) {
+                canvas.color(0x424242);
+                canvas.rectangle(left, 438, right, 466, false);
+                canvas.color(0xb0b0b0);
+                canvas.rectangle(left, 438, right, 466, true);
+                canvas.color(0xffffff);
+                canvas.text(left + 7, 448, label);
+            };
+            auto redraw = [&] {
+                canvas.clear(0x171717);
+                canvas.color(0x303030);
+                canvas.rectangle(8, 8, 632, 472, false);
+                canvas.color(0xaaaaaa);
+                canvas.rectangle(8, 8, 632, 472, true);
+                canvas.color(0x0000a8);
+                canvas.rectangle(9, 9, 631, 42, false);
+                canvas.color(0xffffff);
+                canvas.text(20, 20, title.empty() ? "reGML Runtime Error" : title);
+                canvas.color(0xbcbcbc);
+                canvas.text(20, 53, "The game stopped while reGML was running it.");
+                canvas.color(0x202020);
+                canvas.rectangle(16, 72, 624, 412, false);
+                canvas.color(0x777777);
+                canvas.rectangle(16, 72, 624, 412, true);
+                canvas.color(0xffffff);
+                for (int row = 0; row < visible_lines; ++row) {
+                    const auto index = static_cast<std::size_t>(scroll + row);
+                    if (index >= lines.size())
+                        break;
+                    canvas.text(22, first_line_y + row * line_height, lines[index]);
+                }
+                canvas.color(0xcccccc);
+                canvas.text(20, 421, status);
+                draw_button(360, 444, "COPY [C]");
+                draw_button(450, 534, "CLEAR [X]");
+                draw_button(540, 624, "ABORT [ESC]");
+                present(canvas);
+            };
+
+            SDL_SetWindowTitle(window_.get(), "reGML - Runtime Error");
+            bool open = true;
+            redraw();
+            while (open) {
+                SDL_Event event;
+                bool changed = false;
+                while (SDL_PollEvent(&event)) {
+                    if (event.type == SDL_QUIT) {
+                        open = false;
+                    } else if (event.type == SDL_KEYDOWN && !event.key.repeat) {
+                        const auto key = event.key.keysym.sym;
+                        if (key == SDLK_ESCAPE || key == SDLK_RETURN || key == SDLK_KP_ENTER ||
+                            key == SDLK_F10) {
+                            open = false;
+                        } else if (key == SDLK_c) {
+                            if (SDL_SetClipboardText(std::string(report).c_str()) == 0)
+                                status = "Copied the report to the clipboard.";
+                            else
+                                status = std::string("Clipboard copy failed: ") + SDL_GetError();
+                            changed = true;
+                        } else if (key == SDLK_x) {
+                            lines.clear();
+                            scroll = 0;
+                            status = "Error details cleared.";
+                            changed = true;
+                        } else if (key == SDLK_UP || key == SDLK_PAGEUP) {
+                            scroll = std::max(0, scroll - (key == SDLK_PAGEUP ? visible_lines - 1 : 1));
+                            changed = true;
+                        } else if (key == SDLK_DOWN || key == SDLK_PAGEDOWN) {
+                            scroll = std::min(std::max(0, static_cast<int>(lines.size()) - visible_lines),
+                                              scroll + (key == SDLK_PAGEDOWN ? visible_lines - 1 : 1));
+                            changed = true;
+                        }
+                    } else if (event.type == SDL_MOUSEWHEEL) {
+                        scroll = std::clamp(scroll - event.wheel.y, 0,
+                                            std::max(0, static_cast<int>(lines.size()) - visible_lines));
+                        changed = true;
+                    } else if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT) {
+                        int width = 640, height = 480;
+                        SDL_GetWindowSize(window_.get(), &width, &height);
+                        const int x = width ? event.button.x * 640 / width : event.button.x;
+                        const int y = height ? event.button.y * 480 / height : event.button.y;
+                        if (y >= 438 && y <= 466 && x >= 360 && x <= 444) {
+                            if (SDL_SetClipboardText(std::string(report).c_str()) == 0)
+                                status = "Copied the report to the clipboard.";
+                            else
+                                status = std::string("Clipboard copy failed: ") + SDL_GetError();
+                            changed = true;
+                        } else if (y >= 438 && y <= 466 && x >= 450 && x <= 534) {
+                            lines.clear();
+                            scroll = 0;
+                            status = "Error details cleared.";
+                            changed = true;
+                        } else if (y >= 438 && y <= 466 && x >= 540 && x <= 624) {
+                            open = false;
+                        }
+                    }
+                }
+                if (!open)
+                    break;
+                if (changed)
+                    redraw();
+                SDL_Delay(16);
+            }
+        } catch (...) {
+        }
     }
     void tick_game(GameSession &session,
                    const KeyboardState *replay,
@@ -469,7 +616,44 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
     if (options.frame_limit > 1'000'000)
         throw Error(ErrorKind::usage, "frame limit exceeds 1000000");
     trace_stage("load.begin");
-    GameSession session(package, options.seed, options.save_directory);
+#if REGML_WITH_SDL2 || REGML_WII || REGML_PS2
+    std::optional<VideoWindow> video_window;
+    if (!options.headless) {
+#if REGML_PS2
+        video_window.emplace(options.hidden, false, options.speed_controls, options.uncapped);
+#else
+        video_window.emplace(options.hidden, false, options.speed_controls);
+#endif
+    }
+#endif
+    auto show_error = [&](std::string_view title, std::string_view report) {
+#if REGML_WITH_SDL2 && !REGML_WEB && !REGML_WII && !REGML_PS2
+        if (video_window && !options.hidden)
+            video_window->show_error_reporter(title, report);
+#else
+        (void)title;
+        (void)report;
+#endif
+    };
+    auto show_reGML_error = [&](const Error &error) {
+        std::ostringstream report;
+        report << "reGML " << error_kind_name(error.kind()) << " error";
+        if (error.offset())
+            report << " at 0x" << std::hex << *error.offset() << std::dec;
+        report << ":\n\n" << error.what();
+        show_error(error.kind() == ErrorKind::vm ? "Runner Error" : "reGML Error", report.str());
+    };
+    std::unique_ptr<GameSession> game;
+    try {
+        game = std::make_unique<GameSession>(package, options.seed, options.save_directory);
+    } catch (const Error &error) {
+        show_reGML_error(error);
+        throw;
+    } catch (const std::exception &error) {
+        show_error("reGML Error", error.what());
+        throw;
+    }
+    GameSession &session = *game;
     session.profile_tick(profile.enabled());
     trace_stage("load.end", &session);
     std::map<std::size_t, KeyboardState> replay;
@@ -535,11 +719,7 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
     } else {
 #if REGML_WITH_SDL2 || REGML_WII || REGML_PS2
         trace_stage("video.begin", &session);
-#if REGML_PS2
-        VideoWindow window(options.hidden, false, options.speed_controls, options.uncapped);
-#else
-        VideoWindow window(options.hidden, false, options.speed_controls);
-#endif
+        auto &window = *video_window;
         trace_stage("audio.begin", &session);
 #if !REGML_PS2
         AudioDevice audio(session, options.speed_multiplier);
@@ -571,25 +751,35 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
             input();
             trace_stage("tick", &session);
             const auto tick_begin = profile.enabled() ? Clock::now() : Clock::time_point{};
-            window.tick_game(session, replay.empty() ? nullptr : &replay_keys,
-                             replay.empty() ? nullptr : &replay_pressed);
+            auto tick_end = Clock::time_point{};
+            auto present_end = Clock::time_point{};
+            try {
+                window.tick_game(session, replay.empty() ? nullptr : &replay_keys,
+                                 replay.empty() ? nullptr : &replay_pressed);
 #if !REGML_PS2
-            audio.pump();
+                audio.pump();
 #endif
-            const auto tick_end = profile.enabled() ? Clock::now() : Clock::time_point{};
-            if (options.debug_overlay)
-                draw_debug_overlay(session, debug_frame_ms);
-            trace_stage("present", &session);
-            window.present(session.canvas());
+                tick_end = profile.enabled() ? Clock::now() : Clock::time_point{};
+                if (options.debug_overlay)
+                    draw_debug_overlay(session, debug_frame_ms);
+                trace_stage("present", &session);
+                window.present(session.canvas());
+                present_end = profile.enabled() ? Clock::now() : Clock::time_point{};
 #if REGML_WII
-            if (!options.trace_log.empty()) {
-                if (session.frames() <= 10 || session.frames() % 30 == 0)
-                    report_wii_frame(session.frames(), session.room_name());
-                if (session.frames() == 30)
-                    session.canvas().save_bmp(package.parent_path() / "regml-frame.bmp");
-            }
+                if (!options.trace_log.empty()) {
+                    if (session.frames() <= 10 || session.frames() % 30 == 0)
+                        report_wii_frame(session.frames(), session.room_name());
+                    if (session.frames() == 30)
+                        session.canvas().save_bmp(package.parent_path() / "regml-frame.bmp");
+                }
 #endif
-            const auto present_end = profile.enabled() ? Clock::now() : Clock::time_point{};
+            } catch (const Error &error) {
+                show_reGML_error(error);
+                throw;
+            } catch (const std::exception &error) {
+                show_error("reGML Error", error.what());
+                throw;
+            }
             trace_stage("delay", &session);
             const auto frame_time = std::chrono::duration<double>(1.0 / (session.speed() * speed_multiplier));
             next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(frame_time);

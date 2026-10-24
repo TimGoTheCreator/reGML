@@ -9,6 +9,25 @@
 #endif
 namespace regml {
 namespace {
+std::vector<std::size_t> audio_entries(const Package &package, const Chunk &chunk) {
+    if (chunk.size < 4)
+        throw Error(ErrorKind::malformed, "audio table range", chunk.data_offset);
+    const auto prefix = package.read_bytes(chunk.data_offset, 4);
+    const auto count = BinaryView(prefix, chunk.data_offset).u32(0);
+    if (count > 1'000'000 || count > (chunk.size - 4) / 4)
+        throw Error(ErrorKind::malformed, "audio table range", chunk.data_offset);
+    const auto table = package.read_bytes(chunk.data_offset, 4 + static_cast<std::size_t>(count) * 4);
+    const BinaryView view(table, chunk.data_offset);
+    std::vector<std::size_t> out;
+    out.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto pointer = view.u32(4 + i * 4);
+        if (pointer < chunk.data_offset || pointer >= chunk.data_offset + chunk.size)
+            throw Error(ErrorKind::malformed, "audio pointer outside chunk", pointer);
+        out.push_back(pointer);
+    }
+    return out;
+}
 std::optional<std::filesystem::path> find_audio_file(const std::filesystem::path &directory,
                                                      std::string_view filename) {
     const std::filesystem::path relative_path(filename);
@@ -170,29 +189,11 @@ GameAudio::GameAudio(const Package &package, std::filesystem::path directory)
 #endif
     if (package_.is_gmrt())
         return;
-    auto pointers = [&](const Chunk &c) {
-        if (c.size < 4)
-            throw Error(ErrorKind::malformed, "audio table range", c.data_offset);
-        const auto prefix = package.read_bytes(c.data_offset, 4);
-        const auto count = BinaryView(prefix, c.data_offset).u32(0);
-        if (count > 1'000'000 || count > (c.size - 4) / 4)
-            throw Error(ErrorKind::malformed, "audio table range", c.data_offset);
-        const auto table = package.read_bytes(c.data_offset, 4 + static_cast<std::size_t>(count) * 4);
-        const BinaryView view(table, c.data_offset);
-        std::vector<std::size_t> out;
-        for (std::size_t i = 0; i < count; ++i) {
-            const auto p = view.u32(4 + i * 4);
-            if (p < c.data_offset || p >= c.data_offset + c.size)
-                throw Error(ErrorKind::malformed, "audio pointer outside chunk", p);
-            out.push_back(p);
-        }
-        return out;
-    };
     if (const auto *c = package.find_chunk("AUDO"))
-        embedded_ = pointers(*c);
+        embedded_ = audio_entries(package, *c);
     if (const auto *c = package.find_chunk("SOND")) {
         int id = 0;
-        for (auto p : pointers(*c)) {
+        for (auto p : audio_entries(package, *c)) {
             if (c->data_offset + c->size - p < 36)
                 throw Error(ErrorKind::malformed, "sound record range", p);
             const auto record = package.read_bytes(p, 36);
@@ -203,13 +204,73 @@ GameAudio::GameAudio(const Package &package, std::filesystem::path directory)
             sound.gain = std::bit_cast<float>(d.u32(20));
             const auto group = d.i32(28), audio_id = d.i32(32);
             sound.group = group;
-            if (group == 0)
-                sound.embedded = audio_id;
+            sound.audio_id = audio_id;
             sounds_.emplace(id++, std::move(sound));
         }
     }
 }
-GameAudio::~GameAudio() = default;
+GameAudio::~GameAudio() {
+#if REGML_WIIU
+    // Async decode tasks may still be reading a lazily opened audio-group file.
+    async_.reset();
+#endif
+}
+const GameAudio::AudioGroup *GameAudio::load_audio_group(int group) {
+    if (group <= 0 || group > 4096 || missing_audio_groups_.contains(group))
+        return nullptr;
+    if (const auto found = audio_groups_.find(group); found != audio_groups_.end())
+        return &found->second;
+
+    const auto path = directory_ / ("audiogroup" + std::to_string(group) + ".dat");
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(path, error) || error) {
+        missing_audio_groups_.insert(group);
+        return nullptr;
+    }
+
+    AudioGroup loaded;
+    loaded.package = std::make_unique<Package>(Package::load(path));
+    const auto *chunk = loaded.package->find_chunk("AUDO");
+    if (!chunk)
+        throw Error(ErrorKind::malformed, "audio group has no AUDO chunk");
+    loaded.entries = audio_entries(*loaded.package, *chunk);
+    return &audio_groups_.emplace(group, std::move(loaded)).first->second;
+}
+bool GameAudio::load_group(int group) {
+    return group == 0 || load_audio_group(group) != nullptr;
+}
+bool GameAudio::group_is_loaded(int group) const {
+    return group == 0 || audio_groups_.contains(group);
+}
+std::optional<GameAudio::AudioData> GameAudio::audio_data(const Sound &sound) {
+    if (sound.audio_id < 0)
+        return {};
+
+    const Package *package = nullptr;
+    const std::vector<std::size_t> *entries = nullptr;
+    if (sound.group == 0) {
+        package = &package_;
+        entries = &embedded_;
+    } else if (const auto *group = load_audio_group(sound.group)) {
+        package = group->package.get();
+        entries = &group->entries;
+    } else {
+        return {};
+    }
+
+    if (static_cast<std::size_t>(sound.audio_id) >= entries->size())
+        throw Error(ErrorKind::malformed, "audio ID out of range");
+    const auto *chunk = package->find_chunk("AUDO");
+    const auto at = (*entries)[static_cast<std::size_t>(sound.audio_id)];
+    if (!chunk || at < chunk->data_offset || at > chunk->data_offset + chunk->size ||
+        chunk->data_offset + chunk->size - at < 4)
+        throw Error(ErrorKind::malformed, "audio length out of range", at);
+    const auto prefix = package->read_bytes(at, 4);
+    const auto length = static_cast<std::size_t>(BinaryView(prefix, at).u32(0));
+    if (length > chunk->data_offset + chunk->size - at - 4)
+        throw Error(ErrorKind::malformed, "audio length out of range", at);
+    return AudioData{package, at + 4, length};
+}
 std::optional<int> GameAudio::find_sound_id(std::string_view filename) const {
     for (const auto &[id, sound] : sounds_)
         if (sound.name == filename || sound.filename == filename)
@@ -347,26 +408,13 @@ std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::vector<std::uint8_t> own
     }
     return clip;
 }
-std::vector<std::uint8_t> GameAudio::read_audio(int id) const {
+std::vector<std::uint8_t> GameAudio::read_audio(int id) {
     auto found = sounds_.find(id);
     if (found == sounds_.end())
         throw Error(ErrorKind::vm, "audio resource does not exist");
     const auto &sound = found->second;
-    if (sound.embedded >= 0) {
-        if (static_cast<std::size_t>(sound.embedded) >= embedded_.size())
-            throw Error(ErrorKind::malformed, "embedded audio ID out of range");
-        const auto at = embedded_[static_cast<std::size_t>(sound.embedded)];
-        const auto *c = package_.find_chunk("AUDO");
-        if (!c)
-            throw Error(ErrorKind::malformed, "embedded audio chunk is missing", at);
-        if (at < c->data_offset || at > c->data_offset + c->size || c->data_offset + c->size - at < 4)
-            throw Error(ErrorKind::malformed, "embedded audio length out of range", at);
-        const auto prefix = package_.read_bytes(at, 4);
-        const auto size = BinaryView(prefix, at).u32(0);
-        if (size > c->data_offset + c->size - at - 4)
-            throw Error(ErrorKind::malformed, "embedded audio length out of range", at);
-        return package_.read_bytes(at + 4, size);
-    }
+    if (const auto data = audio_data(sound))
+        return data->package->read_bytes(data->offset, data->length);
     const auto path = directory_ / sound.filename;
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (file) {
@@ -387,11 +435,12 @@ GameAudio::Clip *GameAudio::load(int id) {
     auto &sound = sounds_.at(id);
     if (sound.clip)
         return sound.clip.get();
-    if (sound.embedded < 0 && !sound.filename.empty())
+    const auto data = audio_data(sound);
+    if (!data && !sound.filename.empty())
         if (const auto path = find_audio_file(directory_, sound.filename))
             sound.filename = path->string();
 #if REGML_WII
-    if (sound.embedded < 0 && !sound.filename.empty()) {
+    if (!data && !sound.filename.empty()) {
         const auto path = directory_ / sound.filename;
         std::ifstream input(path, std::ios::binary);
         char signature[4]{};
@@ -419,7 +468,7 @@ GameAudio::Clip *GameAudio::load(int id) {
         }
     }
 #endif
-    if (sound.embedded < 0 && !sound.filename.empty()) {
+    if (!data && !sound.filename.empty()) {
         auto clip = std::make_unique<Clip>();
         clip->file_path = (directory_ / sound.filename).string();
         std::ifstream external(clip->file_path, std::ios::binary);
@@ -440,33 +489,22 @@ GameAudio::Clip *GameAudio::load(int id) {
             return sound.clip.get();
         }
     }
-    if (sound.embedded >= 0) {
-        if (static_cast<std::size_t>(sound.embedded) >= embedded_.size())
-            throw Error(ErrorKind::malformed, "embedded audio ID out of range");
-        const auto at = embedded_[static_cast<std::size_t>(sound.embedded)];
-        const auto *chunk = package_.find_chunk("AUDO");
-        if (!chunk || at < chunk->data_offset || at > chunk->data_offset + chunk->size ||
-            chunk->data_offset + chunk->size - at < 4)
-            throw Error(ErrorKind::malformed, "embedded audio length out of range", at);
-        const auto prefix = package_.read_bytes(at, 4);
-        const auto length = static_cast<std::size_t>(BinaryView(prefix, at).u32(0));
-        if (length > chunk->data_offset + chunk->size - at - 4)
-            throw Error(ErrorKind::malformed, "embedded audio length out of range", at);
-        const auto signature = package_.read_bytes(at + 4, std::min<std::size_t>(length, 4));
+    if (data) {
+        const auto signature = data->package->read_bytes(data->offset, std::min<std::size_t>(data->length, 4));
         if (signature.size() == 4 && std::memcmp(signature.data(), "OggS", 4) == 0) {
             auto clip = std::make_unique<Clip>();
-            clip->package = &package_;
-            clip->package_offset = at + 4;
-            clip->package_length = length;
+            clip->package = data->package;
+            clip->package_offset = data->offset;
+            clip->package_length = data->length;
             Stream probe(*clip);
             const auto total = ov_pcm_total(&probe.ogg_file, -1);
             if (!probe.rate || probe.channels < 1 || probe.channels > 2 || total <= 0 ||
                 total > 100'000'000 / probe.channels)
-                throw Error(ErrorKind::unsupported, "embedded Ogg duration exceeds clip limit", at);
+                throw Error(ErrorKind::unsupported, "audio-group Ogg duration exceeds clip limit", data->offset);
             clip->streamed_frames = static_cast<std::size_t>(static_cast<double>(total) * 48000 /
                                                              static_cast<double>(probe.rate));
             if (clip->streamed_frames > 50'000'000)
-                throw Error(ErrorKind::unsupported, "resampled audio exceeds limit", at);
+                throw Error(ErrorKind::unsupported, "resampled audio exceeds limit", data->offset);
             clip->gain = sound.gain;
             sound.clip = std::move(clip);
             return sound.clip.get();
@@ -547,28 +585,18 @@ int GameAudio::play(int sound, bool loop, double priority) {
 #if REGML_WIIU
     if (!clip && !async_->pending(sound)) {
         const auto &resource = sounds_.at(sound);
-        const auto audio_path =
-            find_audio_file(directory_, resource.filename).value_or(directory_ / resource.filename);
-        std::size_t embedded_offset = 0, embedded_size = 0;
-        bool has_embedded = false;
-        if (resource.embedded >= 0) {
-            if (static_cast<std::size_t>(resource.embedded) >= embedded_.size())
-                throw Error(ErrorKind::malformed, "embedded audio ID out of range");
-            const auto at = embedded_[static_cast<std::size_t>(resource.embedded)];
-            const auto *chunk = package_.find_chunk("AUDO");
-            if (!chunk || at < chunk->data_offset || at > chunk->data_offset + chunk->size ||
-                chunk->data_offset + chunk->size - at < 4)
-                throw Error(ErrorKind::malformed, "embedded audio length out of range", at);
-            const auto prefix = package_.read_bytes(at, 4);
-            const auto size = BinaryView(prefix, at).u32(0);
-            if (size > chunk->data_offset + chunk->size - at - 4)
-                throw Error(ErrorKind::malformed, "embedded audio length out of range", at);
-            embedded_offset = at + 4;
-            embedded_size = size;
-            has_embedded = true;
-        }
+        const auto data = audio_data(resource);
+        const auto audio_path = data ? std::filesystem::path{}
+                                     : find_audio_file(directory_, resource.filename)
+                                           .value_or(directory_ / resource.filename);
+        const auto &source_package = data ? *data->package : package_;
         try {
-            async_->request(sound, audio_path, package_, embedded_offset, embedded_size, has_embedded);
+            async_->request(sound,
+                            audio_path,
+                            source_package,
+                            data ? data->offset : 0,
+                            data ? data->length : 0,
+                            data.has_value());
         } catch (...) {
             voices_.erase(id);
             throw;
@@ -602,6 +630,8 @@ double GameAudio::gain(int id) {
         return it->second.gain;
     if (const auto it = sounds_.find(id); it != sounds_.end())
         return it->second.gain;
+    if ((id >= 100'000 && id < next_stream_) || (id >= 1'000'000 && id < next_voice_))
+        return 1.0;
     return load(id)->gain;
 }
 void GameAudio::gain(int id, double value) {
@@ -616,7 +646,7 @@ void GameAudio::gain(int id, double value) {
         it->second.gain = value;
         if (it->second.clip)
             it->second.clip->gain = value;
-    } else
+    } else if (!((id >= 100'000 && id < next_stream_) || (id >= 1'000'000 && id < next_voice_)))
         load(id)->gain = value;
 }
 void GameAudio::pitch(int id, double value) {
@@ -644,6 +674,9 @@ double GameAudio::length(int id) {
     std::scoped_lock lock(voices_mutex_);
     if (auto it = voices_.find(id); it != voices_.end() && it->second.clip)
         return static_cast<double>(it->second.clip->frames()) / 48000;
+    if (((id >= 100'000 && id < next_stream_) || (id >= 1'000'000 && id < next_voice_)) &&
+        !sounds_.contains(id))
+        return 0.0;
     return static_cast<double>(load(id)->frames()) / 48000;
 }
 double GameAudio::position(int id) const {

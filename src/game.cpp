@@ -39,6 +39,8 @@
 #endif
 namespace regml {
 namespace {
+struct GameChangeRequested {};
+
 #if REGML_PS2
 void ps2_memory_trace(std::string_view stage, std::size_t position = 0) {
     static const bool enabled = [] {
@@ -170,22 +172,32 @@ struct LayerSprite {
     int id = 0, sprite = -1;
     double x = 0, y = 0, sx = 1, sy = 1, frame = 0, speed = 1, rotation = 0;
     unsigned color = 0xffffffff;
+    int speed_type = 1;
+};
+struct LayerBackground {
+    int id = 0, sprite = -1;
+    double frame = 0, speed = 1, sx = 1, sy = 1;
+    unsigned color = 0xffffffff;
+    bool visible = true, foreground = false, htiled = false, vtiled = false, stretch = false;
+    int speed_type = 1;
 };
 struct RoomLayer {
     std::string name;
     int id = -1, depth = 0, type = 0, shader = -1;
-    double x = 0, y = 0;
+    double x = 0, y = 0, origin_x = 0, origin_y = 0, hspeed = 0, vspeed = 0;
     bool visible = true;
+    int tile_element_id = -1;
     Value begin_script = std::monostate{}, end_script = std::monostate{};
     std::vector<int> instances;
     std::vector<LayerSprite> sprites;
+    std::vector<LayerBackground> backgrounds;
 };
 struct Background {
     int id = -1, x = 0, y = 0;
     bool foreground = false;
 };
 struct Tile {
-    int id = -1;
+    int id = -1, element_id = -1;
     double x = 0, y = 0;
     int source_x = 0, source_y = 0, width = 0, height = 0, depth = 0;
     double sx = 1, sy = 1;
@@ -193,13 +205,14 @@ struct Tile {
     int layer_id = -1;
     std::uint32_t transform = 0;
     std::uint32_t tileset_index = 0;
-    bool modern_tileset = false;
+    bool modern_tileset = false, visible = true;
 };
 struct Room {
     std::size_t source_offset = 0;
     bool payload_loaded = false, has_layers = false;
     std::string_view name;
-    int width = 640, height = 480, speed = 30, create = -1;
+    int width = 640, height = 480, create = -1;
+    double speed = 30;
     bool persistent = false;
     unsigned color = 0;
     std::vector<Placement> instances;
@@ -208,6 +221,11 @@ struct Room {
     VariableStore views;
     std::vector<Background> backgrounds;
     std::vector<Tile> tiles;
+};
+struct Camera {
+    double x = 0, y = 0, width = 0, height = 0, angle = 0;
+    double border_x = 0, border_y = 0, speed_x = -1, speed_y = -1;
+    int target = -1;
 };
 struct PathPoint {
     double x = 0, y = 0, speed = 100, distance = 0;
@@ -280,6 +298,8 @@ struct GameSession::Impl {
     std::vector<std::uint32_t> tick_collision_route_stamps;
     std::uint32_t tick_collision_route_generation = 0;
     std::vector<Room> rooms;
+    std::unordered_map<int, Camera> cameras;
+    int next_camera_id = 8;
     std::vector<int> order, scripts;
     std::unordered_map<std::string_view, int, VariableStoreHash, std::equal_to<>> code_ids;
     std::unordered_map<std::string, int, VariableStoreHash, std::equal_to<>> script_names;
@@ -318,6 +338,10 @@ struct GameSession::Impl {
     std::unordered_set<int> hidden_tile_layers;
     std::unordered_map<int, std::pair<double, double>> tile_layer_offsets;
     int next_layer_element_id = 1'000'000, next_dynamic_layer_id = 1'000'000;
+    bool vertex_format_building = false, force_draw_depth = false;
+    int next_vertex_format = 1, next_vertex_buffer = 1, forced_depth = 0;
+    std::vector<int> vertex_format_attributes;
+    std::unordered_set<int> vertex_formats, vertex_buffers;
     int next_ds = 0;
     int next_buffer = 1, next_async_request = 1;
     std::unordered_map<int, std::unique_ptr<std::fstream>> files;
@@ -328,6 +352,10 @@ struct GameSession::Impl {
     bool ini_opened = false;
     unsigned draw_color = 0xffffff;
     double draw_alpha = 1;
+    std::array<bool, 4> color_write_enable{true, true, true, true};
+    bool blend_enabled = true;
+    bool alpha_test_enabled = false;
+    unsigned alpha_test_reference = 0;
     double comparison_epsilon = 0.00001;
     int draw_font = -1, halign = 0, valign = 0;
     std::size_t frame = 0, instruction_count = 0, depth = 0, event_budget = 0;
@@ -355,8 +383,9 @@ struct GameSession::Impl {
         std::size_t environment_count = 0;
     };
     std::array<VmScratch, 128> vm_scratch;
-    std::filesystem::path game_dir;
+    std::filesystem::path game_dir, package_path;
     std::optional<std::uint32_t> fixed_seed;
+    std::optional<std::filesystem::path> pending_game_change;
     mutable std::unordered_map<std::string, std::vector<std::uint8_t>> load_chunks;
     explicit Impl(const std::filesystem::path &path,
                   std::optional<std::uint32_t> seed,
@@ -377,7 +406,7 @@ struct GameSession::Impl {
               return GameAssets(package);
           })),
           audio(load_stage("audio metadata", [&] { return GameAudio(package, path.parent_path()); })),
-          game_dir(path.parent_path()), fixed_seed(seed) {
+          game_dir(path.parent_path()), package_path(path), fixed_seed(seed) {
         if (gmrt_project) {
             const auto wad = load_stage("GMRT modules", [&] { return GmrtWad::load(path); });
             gmrt_modules.reserve(wad.modules().size());
@@ -794,6 +823,8 @@ struct GameSession::Impl {
                 layer.type = source_layer.type;
                 layer.x = source_layer.x;
                 layer.y = source_layer.y;
+                layer.origin_x = source_layer.x;
+                layer.origin_y = source_layer.y;
                 layer.visible = source_layer.visible;
                 layer.instances = source_layer.instances;
                 for (const auto &source_sprite : source_layer.sprites) {
@@ -987,14 +1018,15 @@ struct GameSession::Impl {
             room.speed = r.i32(16);
             const bool modern_room = (r.u32(36) & (0x20000U | 0x40000U)) != 0;
             if (modern_room && room.speed == 0)
-                room.speed = 60;
+                room.speed = package.general_info()->game_speed;
             room.color = r.u32(24);
             room.create = r.i32(32);
             code_valid(room.create, p + 32);
             room.persistent = r.u32(20) != 0;
             room.has_layers = modern_room;
             room.source_offset = p;
-            if (room.speed < 1 || room.speed > 1000 || room.width < 1 || room.height < 1)
+            if (!std::isfinite(room.speed) || room.speed < 1 || room.speed > 1000 || room.width < 1 ||
+                room.height < 1)
                 throw Error(ErrorKind::malformed, "invalid room dimensions/speed", p);
 #if !REGML_LOW_MEMORY
             load_room_payload(room);
@@ -1069,6 +1101,10 @@ struct GameSession::Impl {
                 layer.depth = header.i32(12);
                 layer.x = std::bit_cast<float>(header.u32(16));
                 layer.y = std::bit_cast<float>(header.u32(20));
+                layer.origin_x = layer.x;
+                layer.origin_y = layer.y;
+                layer.hspeed = std::bit_cast<float>(header.u32(24));
+                layer.vspeed = std::bit_cast<float>(header.u32(28));
                 layer.visible = header.u32(32) != 0;
                 const auto effect_count = header.u32(44);
                 if (effect_count > 4096)
@@ -1105,12 +1141,29 @@ struct GameSession::Impl {
                             sprite.sy = std::bit_cast<float>(sprite_record.u32(20));
                             sprite.color = sprite_record.u32(24);
                             sprite.speed = std::bit_cast<float>(sprite_record.u32(28));
+                            sprite.speed_type = sprite_record.i32(32);
                             sprite.frame = std::bit_cast<float>(sprite_record.u32(36));
                             sprite.rotation = std::bit_cast<float>(sprite_record.u32(40));
                             layer.sprites.push_back(sprite);
                         }
                     }
+                } else if (layer.type == 1) {
+                    const auto data = record(layer_data_offset, *ro, 40);
+                    LayerBackground background;
+                    background.id = next_layer_element_id++;
+                    background.visible = data.u32(0) != 0;
+                    background.foreground = data.u32(4) != 0;
+                    background.sprite = data.i32(8);
+                    background.htiled = data.u32(12) != 0;
+                    background.vtiled = data.u32(16) != 0;
+                    background.stretch = data.u32(20) != 0;
+                    background.color = data.u32(24);
+                    background.frame = std::bit_cast<float>(data.u32(28));
+                    background.speed = std::bit_cast<float>(data.u32(32));
+                    background.speed_type = data.i32(36);
+                    layer.backgrounds.push_back(background);
                 } else if (layer.type == 4) {
+                    layer.tile_element_id = next_layer_element_id++;
                     const auto tile_header = record(layer_data_offset, *ro, 12);
                     const int tileset = tile_header.i32(0);
                     const auto columns = tile_header.u32(4), rows = tile_header.u32(8);
@@ -1131,6 +1184,7 @@ struct GameSession::Impl {
                                 continue;
                             Tile entry;
                             entry.id = tileset;
+                            entry.element_id = layer.tile_element_id;
                             entry.x = layer.x + static_cast<double>(x * source->width);
                             entry.y = layer.y + static_cast<double>(y * source->height);
                             entry.source_x = source->x;
@@ -1159,10 +1213,20 @@ struct GameSession::Impl {
         }
         for (auto q : list(r.u32(52), *ro)) {
             const auto t = record(q, *ro, 48);
-            room.tiles.push_back({t.i32(8), static_cast<double>(t.i32(0)), static_cast<double>(t.i32(4)),
-                                  t.i32(12), t.i32(16), t.i32(20), t.i32(24),
-                                  t.i32(28), std::bit_cast<float>(t.u32(36)), std::bit_cast<float>(t.u32(40)),
-                                  t.u32(44)});
+            Tile tile;
+            tile.id = t.i32(8);
+            tile.element_id = next_layer_element_id++;
+            tile.x = t.i32(0);
+            tile.y = t.i32(4);
+            tile.source_x = t.i32(12);
+            tile.source_y = t.i32(16);
+            tile.width = t.i32(20);
+            tile.height = t.i32(24);
+            tile.depth = t.i32(28);
+            tile.sx = std::bit_cast<float>(t.u32(36));
+            tile.sy = std::bit_cast<float>(t.u32(40));
+            tile.color = t.u32(44);
+            room.tiles.push_back(tile);
         }
         std::stable_sort(room.tiles.begin(), room.tiles.end(),
                          [](const Tile &a, const Tile &b) { return a.depth > b.depth; });
@@ -1465,10 +1529,31 @@ struct GameSession::Impl {
         engine["room"] = std::int32_t{id};
         engine["room_width"] = std::int32_t{room.width};
         engine["room_height"] = std::int32_t{room.height};
-        engine["room_speed"] = std::int32_t{room.speed};
+        engine["room_speed"] = room.speed;
         engine["room_persistent"] = std::int32_t{room.persistent};
         for (const auto &[key, value] : room.views)
             engine[key] = value;
+        for (int view = 0; view < 8; ++view) {
+            const auto suffix = "[" + std::to_string(view) + "]";
+            engine["view_camera" + suffix] = std::int32_t{view};
+            auto &camera = cameras[view];
+            auto view_number = [&](std::string_view field, double fallback = 0.0) {
+                const auto found = engine.find(std::string(field) + suffix);
+                return found == engine.end() ? fallback : value_number(found->second);
+            };
+            camera.x = view_number("view_xview");
+            camera.y = view_number("view_yview");
+            camera.width = view_number("view_wview");
+            camera.height = view_number("view_hview");
+            camera.angle = 0;
+            camera.border_x = view_number("view_hborder");
+            camera.border_y = view_number("view_vborder");
+            camera.speed_x = view_number("view_hspeed");
+            camera.speed_y = view_number("view_vspeed");
+            camera.target = static_cast<int>(view_number("view_object", -1));
+            if (!engine.contains("view_surface_id" + suffix))
+                engine["view_surface_id" + suffix] = std::int32_t{-1};
+        }
         event_budget = 0;
         placed_instances.clear();
         if (placed_instances.capacity() < room.instances.size())
@@ -2102,12 +2187,16 @@ struct GameSession::Impl {
                         variable(true, v);
                     } else {
                         const auto kind = (ins.reference_value() >> 24) & 0xf8;
-                        std::array<std::pair<Value, DataType>, 2> address;
+                        std::array<std::pair<Value, DataType>, 3> address;
                         std::size_t address_count = 0;
                         if (kind == 0) {
                             address[1] = pop_entry();
                             address[0] = pop_entry();
                             address_count = 2;
+                            if (number(address[0].first) == -9) {
+                                address[2] = pop_entry();
+                                address_count = 3;
+                            }
                         } else if (kind == 0x80) {
                             address[0] = pop_entry();
                             address_count = 1;
@@ -2122,6 +2211,13 @@ struct GameSession::Impl {
                                 push(std::move(address[1].first), address[1].second);
                             if (address_count > 0)
                                 push(std::move(address[0].first), address[0].second);
+                        } else if (kind == 0) {
+                            if (address_count == 3)
+                                push(std::move(address[2].first), address[2].second);
+                            if (address_count > 1)
+                                push(std::move(address[0].first), address[0].second);
+                            if (address_count > 0)
+                                push(std::move(address[1].first), address[1].second);
                         } else {
                             for (std::size_t i = 0; i < address_count; ++i)
                                 push(std::move(address[i].first), address[i].second);
@@ -2255,6 +2351,32 @@ struct GameSession::Impl {
                                                          : c > 0);
                         } else
                             throw Error(ErrorKind::unsupported, "string arithmetic");
+                        break;
+                    }
+                    if (ins.opcode() == Opcode::cmp &&
+                        (ins.comparison() == 3 || ins.comparison() == 4)) {
+                        const auto is_numeric = [](const Value &value) {
+                            return std::holds_alternative<std::int32_t>(value) ||
+                                   std::holds_alternative<double>(value) || std::holds_alternative<bool>(value);
+                        };
+                        bool equal = false;
+                        if (is_numeric(left) && is_numeric(right)) {
+                            equal = compare_numbers(value_number(left), value_number(right), 3,
+                                                    comparison_epsilon);
+                        } else if (const auto *array_left = std::get_if<ArrayPtr>(&left)) {
+                            if (const auto *array_right = std::get_if<ArrayPtr>(&right))
+                                equal = array_left->get() == array_right->get();
+                        } else if (const auto *function_left = std::get_if<FunctionReference>(&left)) {
+                            if (const auto *function_right = std::get_if<FunctionReference>(&right))
+                                equal = function_left->symbol_id == function_right->symbol_id;
+                        } else if (const auto *callable_left = std::get_if<CallablePtr>(&left)) {
+                            if (const auto *callable_right = std::get_if<CallablePtr>(&right))
+                                equal = callable_left->get() == callable_right->get();
+                        } else if (const auto *struct_left = std::get_if<StructPtr>(&left)) {
+                            if (const auto *struct_right = std::get_if<StructPtr>(&right))
+                                equal = struct_left->get() == struct_right->get();
+                        }
+                        push(ins.comparison() == 3 ? equal : !equal);
                         break;
                     }
                     const double a = value_number(left), b = value_number(right);
@@ -2564,6 +2686,11 @@ struct GameSession::Impl {
         auto n = [&](std::size_t i) {
             if (i >= args.size())
                 throw Error(ErrorKind::vm, "missing built-in argument");
+            if (!std::holds_alternative<std::int32_t>(args[i]) &&
+                !std::holds_alternative<double>(args[i]) && !std::holds_alternative<bool>(args[i]))
+                throw Error(ErrorKind::vm,
+                            "numeric argument " + std::to_string(i) + " to " + std::string(name) +
+                                " requires a scalar number (got " + value_text(args[i]) + ")");
             return value_number(args[i]);
         };
         auto text = [&](std::size_t i) {
@@ -2571,6 +2698,149 @@ struct GameSession::Impl {
                 throw Error(ErrorKind::vm, "missing built-in argument");
             return value_text(args[i]);
         };
+        if (name == "game_change") {
+            std::string request;
+            std::vector<std::string> values;
+            values.reserve(args.size());
+            for (const auto &arg : args) {
+                values.push_back(value_text(arg));
+                if (!request.empty())
+                    request += " | ";
+                request += values.back();
+            }
+
+            auto base = game_dir.empty() ? std::filesystem::current_path() : game_dir;
+            const auto folder_name = base.filename().string();
+            if (folder_name.starts_with("chapter") && !base.parent_path().empty())
+                base = base.parent_path();
+            std::vector<std::filesystem::path> candidates;
+            auto add_candidate = [&](std::filesystem::path path) {
+                if (path.empty())
+                    return;
+                if (path.is_relative()) {
+                    if (path.has_root_directory() && !path.has_root_name())
+                        path = base / path.relative_path();
+                    else
+                        path = base / path;
+                } else {
+                    const auto normalized_base = base.lexically_normal().generic_string();
+                    const auto normalized_path = path.lexically_normal().generic_string();
+                    if (!normalized_path.starts_with(normalized_base) ||
+                        (path.has_root_directory() && !path.has_root_name()))
+                        path = base / path.relative_path();
+                }
+                path = path.lexically_normal();
+                if (path != package_path.lexically_normal() &&
+                    std::find(candidates.begin(), candidates.end(), path) == candidates.end())
+                    candidates.push_back(std::move(path));
+            };
+            auto clean_path = [](std::string path) {
+                const auto first = path.find_first_not_of(" \t\r\n\"'");
+                if (first == std::string::npos)
+                    return std::string{};
+                path.erase(0, first);
+                const auto last = path.find_last_not_of(" \t\r\n\"'");
+                path.resize(last + 1);
+                if (path.starts_with("rom:"))
+                    path.erase(0, 4);
+                if (path.starts_with("-game")) {
+                    path.erase(0, 5);
+                    const auto start = path.find_first_not_of(" \t");
+                    if (start == std::string::npos)
+                        return std::string{};
+                    path.erase(0, start);
+                }
+                while (!path.empty() && (path.back() == '"' || path.back() == '\'' ||
+                                         path.back() == ')' || path.back() == ','))
+                    path.pop_back();
+                return path;
+            };
+
+            std::optional<std::filesystem::path> working_directory;
+            std::optional<std::filesystem::path> launch_package;
+            std::optional<unsigned> chapter;
+            for (const auto &value : values) {
+                std::string path_text = value;
+                if (const auto game = path_text.find("-game"); game != std::string::npos) {
+                    path_text = path_text.substr(game);
+                    path_text = clean_path(std::move(path_text));
+                    if (!path_text.empty()) {
+                        const auto end = path_text.find_first_of(" \t\r\n");
+                        if (end != std::string::npos)
+                            path_text.resize(end);
+                        launch_package = std::filesystem::path(path_text);
+                        add_candidate(*launch_package);
+                        const auto marker = path_text.find("chapter");
+                        if (marker != std::string::npos) {
+                            auto chapter_path = clean_path(path_text.substr(marker));
+                            const auto digit = chapter_path.find_first_of("0123456789");
+                            if (digit != std::string::npos && !chapter)
+                                chapter = static_cast<unsigned>(chapter_path[digit] - '0');
+                            const std::filesystem::path requested_path(chapter_path);
+                            if (requested_path.has_extension()) {
+                                add_candidate(requested_path);
+                                working_directory = requested_path.parent_path();
+                            } else {
+                                add_candidate(requested_path / "data.win");
+                                working_directory = requested_path;
+                            }
+                        }
+                    }
+                } else {
+                    const auto marker = path_text.find("chapter");
+                    if (marker != std::string::npos) {
+                        auto end = path_text.find_first_of(" \t\r\n\"'", marker);
+                        if (end == std::string::npos)
+                            end = path_text.size();
+                        auto chapter_path = clean_path(path_text.substr(marker, end - marker));
+                        const auto digit = chapter_path.find_first_of("0123456789");
+                        if (digit != std::string::npos && !chapter)
+                            chapter = static_cast<unsigned>(chapter_path[digit] - '0');
+                        if (!chapter_path.empty()) {
+                            std::filesystem::path requested_path(chapter_path);
+                            if (requested_path.has_extension())
+                                add_candidate(requested_path);
+                            add_candidate(requested_path / "data.win");
+                            add_candidate(requested_path / "game.win");
+                            working_directory = requested_path.has_extension()
+                                                    ? requested_path.parent_path()
+                                                    : std::move(requested_path);
+                        }
+                    } else if (!value.empty() && !working_directory) {
+                        auto requested_path = clean_path(value);
+                        if (!requested_path.empty())
+                            working_directory = std::filesystem::path(requested_path);
+                    }
+                }
+            }
+            if (working_directory) {
+                const auto package_name = launch_package
+                                              ? launch_package->filename()
+                                              : std::filesystem::path("data.win");
+                add_candidate(*working_directory / package_name);
+                add_candidate(*working_directory / "data.win");
+            }
+            if (launch_package && working_directory)
+                add_candidate(*working_directory / *launch_package);
+            if (chapter) {
+                const auto prefix = "chapter" + std::to_string(*chapter);
+                for (const auto *suffix : {"_windows", "_switch", "_mac", "_ps4", "_ps5", ""}) {
+                    const auto directory = std::filesystem::path(prefix + suffix);
+                    add_candidate(directory / "data.win");
+                    add_candidate(directory / "game.win");
+                }
+            }
+
+            std::error_code error;
+            const auto target = std::find_if(candidates.begin(), candidates.end(), [&](const auto &path) {
+                error.clear();
+                return std::filesystem::is_regular_file(path, error) && !error;
+            });
+            if (target == candidates.end())
+                throw Error(ErrorKind::io, "game_change package not found for " + request);
+            pending_game_change = *target;
+            throw GameChangeRequested{};
+        }
         auto find_layer = [&](int id) -> RoomLayer * {
             if (current_room < 0 || static_cast<std::size_t>(current_room) >= rooms.size())
                 return nullptr;
@@ -2604,6 +2874,93 @@ struct GameSession::Impl {
                     if (sprite.id == id)
                         return {&layer, &sprite};
             return {};
+        };
+        auto find_layer_background = [&](int id) -> std::pair<RoomLayer *, LayerBackground *> {
+            if (current_room < 0 || static_cast<std::size_t>(current_room) >= rooms.size())
+                return {};
+            auto &current = rooms[static_cast<std::size_t>(current_room)];
+            for (auto &layer : current.layers)
+                for (auto &background : layer.backgrounds)
+                    if (background.id == id)
+                        return {&layer, &background};
+            return {};
+        };
+        auto find_layer_tile = [&](int id) -> std::pair<RoomLayer *, Tile *> {
+            if (current_room < 0 || static_cast<std::size_t>(current_room) >= rooms.size())
+                return {};
+            auto &current = rooms[static_cast<std::size_t>(current_room)];
+            for (auto &tile : current.tiles) {
+                if (tile.element_id != id)
+                    continue;
+                RoomLayer *layer = nullptr;
+                if (const auto found = current.layer_indices.find(tile.layer_id);
+                    found != current.layer_indices.end())
+                    layer = &current.layers[found->second];
+                return {layer, &tile};
+            }
+            return {};
+        };
+        auto move_layer = [&](RoomLayer &layer, double x, double y) {
+            layer.x = x;
+            layer.y = y;
+        };
+        auto view_suffix = [](int view) { return "[" + std::to_string(view) + "]"; };
+        auto view_value = [&](std::string_view field, int view, Value fallback = std::monostate{}) -> Value {
+            const auto key = std::string(field) + view_suffix(view);
+            const auto found = engine.find(key);
+            return found == engine.end() ? fallback : found->second;
+        };
+        auto view_index = [&](std::size_t argument = 0) {
+            const int view = static_cast<int>(n(argument));
+            if (view < 0 || view >= 8)
+                throw Error(ErrorKind::vm, "view index out of range");
+            return view;
+        };
+        auto camera_for_id = [&](int id) -> Camera & {
+            auto &camera = cameras.try_emplace(id).first->second;
+            for (int view = 0; view < 8; ++view) {
+                if (number(view_value("view_camera", view, std::int32_t{view})) != id)
+                    continue;
+                camera.x = value_number(view_value("view_xview", view));
+                camera.y = value_number(view_value("view_yview", view));
+                camera.width = value_number(view_value("view_wview", view));
+                camera.height = value_number(view_value("view_hview", view));
+                camera.border_x = value_number(view_value("view_hborder", view));
+                camera.border_y = value_number(view_value("view_vborder", view));
+                camera.speed_x = value_number(view_value("view_hspeed", view, -1.0));
+                camera.speed_y = value_number(view_value("view_vspeed", view, -1.0));
+                camera.target = static_cast<int>(value_number(view_value("view_object", view, -1.0)));
+                break;
+            }
+            return camera;
+        };
+        auto camera_for_view = [&](int view) -> int {
+            const auto key = "view_camera" + view_suffix(view);
+            const auto found = engine.find(key);
+            const int id = found == engine.end() ? view : number(found->second);
+            engine[key] = std::int32_t{id};
+            (void)camera_for_id(id);
+            return id;
+        };
+        auto sync_camera_to_views = [&](int id) {
+            const auto found = cameras.find(id);
+            if (found == cameras.end())
+                return;
+            const auto &camera = found->second;
+            for (int view = 0; view < 8; ++view) {
+                if (number(view_value("view_camera", view, std::int32_t{view})) != id)
+                    continue;
+                const auto suffix = view_suffix(view);
+                engine["view_xview" + suffix] = camera.x;
+                engine["view_yview" + suffix] = camera.y;
+                engine["view_wview" + suffix] = camera.width;
+                engine["view_hview" + suffix] = camera.height;
+                engine["view_hborder" + suffix] = camera.border_x;
+                engine["view_vborder" + suffix] = camera.border_y;
+                engine["view_hspeed" + suffix] = camera.speed_x;
+                engine["view_vspeed" + suffix] = camera.speed_y;
+                engine["view_object" + suffix] = std::int32_t{camera.target};
+            }
         };
         auto make_id_array = [](const std::vector<int> &ids) {
             ArrayPtr result(new ArrayValue);
@@ -2714,6 +3071,19 @@ struct GameSession::Impl {
         if (name == "audio_destroy_stream") {
             return std::int32_t{audio.destroy_stream(static_cast<int>(n(0))) ? 1 : -1};
         }
+        if (name == "@@Other@@")
+            return std::int32_t{other ? other->id : -1};
+        if (name == "@@GetInstance@@") {
+            if (args.empty())
+                return std::int32_t{-1};
+            auto instance = instance_for_value(args[0], self, other);
+            if (!instance) {
+                if (const auto *object = std::get_if<std::int32_t>(&args[0]);
+                    object && *object >= 0 && static_cast<std::size_t>(*object) < objects.size())
+                    instance.reset(first_target(*object, self, other));
+            }
+            return std::int32_t{instance ? instance->id : -1};
+        }
         if (gmrt_project && name == "external_define")
             return std::int32_t{-1};
         if (gmrt_project && name == "external_call")
@@ -2722,6 +3092,15 @@ struct GameSession::Impl {
             return execute(it->second, self, args, other, struct_self);
         }
         if (name == "script_execute") {
+            if (args.empty())
+                throw Error(ErrorKind::vm, "script_execute requires a script or function");
+            if (const auto *function = std::get_if<FunctionReference>(&args[0]))
+                return invoke_function(function->symbol_id, args.subspan(1), self, other, struct_self);
+            if (const auto *callable = std::get_if<CallablePtr>(&args[0])) {
+                if (!*callable || !(*callable)->invoke)
+                    throw Error(ErrorKind::vm, "script_execute received an empty callable");
+                return (*callable)->invoke(args.subspan(1));
+            }
             const auto id = static_cast<std::size_t>(n(0));
             if (id >= scripts.size())
                 throw Error(ErrorKind::vm, "script ID out of range");
@@ -2737,6 +3116,36 @@ struct GameSession::Impl {
             return std::string("US");
         if (name == "parameter_count")
             return std::int32_t{0};
+        if (name == "parameter_string")
+            return std::string{};
+        if (name == "environment_get_variable") {
+            const std::string variable = text(0);
+            const char *value = std::getenv(variable.c_str());
+            return std::string(value ? value : "");
+        }
+        if (name == "os_get_info") {
+            auto info = std::make_shared<StructValue>();
+#if defined(_WIN32)
+            info->variables["platform"] = std::string("Windows");
+#elif defined(__APPLE__)
+            info->variables["platform"] = std::string("macOS");
+#elif defined(__linux__)
+            info->variables["platform"] = std::string("Linux");
+#else
+            info->variables["platform"] = std::string("Unknown");
+#endif
+            info->variables["device"] = std::string("Desktop");
+            info->variables["version"] = std::string("reGML");
+            info->variables["language"] = std::string("en");
+            return info;
+        }
+        if (name == "show_error") {
+            const auto message = text(0);
+            std::cerr << "Game error: " << message << '\n';
+            if (args.size() > 1 && n(1) != 0)
+                throw Error(ErrorKind::vm, message);
+            return std::monostate{};
+        }
         if (name == "string")
             return text(0);
         if (name == "real") {
@@ -2752,6 +3161,9 @@ struct GameSession::Impl {
             }
             return n(0);
         }
+        if (name == "is_method")
+            return !args.empty() && std::holds_alternative<CallablePtr>(args[0]) &&
+                   static_cast<bool>(std::get<CallablePtr>(args[0]));
         if (name == "is_undefined") {
             if (args.empty())
                 throw Error(ErrorKind::vm, "is_undefined argument missing");
@@ -2793,6 +3205,39 @@ struct GameSession::Impl {
             if (name == "room_exists")
                 return static_cast<std::size_t>(id) < rooms.size() && !rooms[static_cast<std::size_t>(id)].name.empty();
             return static_cast<std::size_t>(id) < objects.size() && !objects[static_cast<std::size_t>(id)].name.empty();
+        }
+        if (name == "object_get_sprite") {
+            const int id = static_cast<int>(n(0));
+            return id >= 0 && static_cast<std::size_t>(id) < objects.size()
+                       ? Value{std::int32_t{objects[static_cast<std::size_t>(id)].sprite}}
+                       : Value{std::int32_t{-1}};
+        }
+        if (name == "variable_struct_set") {
+            if (args.size() < 3 || !value_is_string(args[1]))
+                throw Error(ErrorKind::vm, "variable_struct_set requires a struct, name, and value");
+            const auto key = value_string_view(args[1]);
+            if (const auto *structure = std::get_if<StructPtr>(&args[0]); structure && *structure) {
+                (*structure)->variables[key] = args[2];
+                return std::monostate{};
+            }
+            if (const auto *callable = std::get_if<CallablePtr>(&args[0]); callable && *callable) {
+                if (!(*callable)->properties)
+                    (*callable)->properties = std::make_shared<StructValue>();
+                (*callable)->properties->variables[key] = args[2];
+                return std::monostate{};
+            }
+            throw Error(ErrorKind::vm, "variable_struct_set received a non-struct value");
+        }
+        if (name == "array_create") {
+            const int length = number(n(0));
+            if (length < 0 || length > 32000)
+                throw Error(ErrorKind::vm, "array_create length must be between 0 and 32000");
+            ArrayPtr result(new ArrayValue);
+            result->row_lengths[0] = length;
+            const Value initial = args.size() > 1 ? args[1] : Value{std::int32_t{0}};
+            for (int i = 0; i < length; ++i)
+                result->elements.emplace(i, initial);
+            return result;
         }
         if (name == "array_length" || name == "array_length_1d") {
             const auto *array = std::get_if<ArrayPtr>(&args[0]);
@@ -2907,6 +3352,28 @@ struct GameSession::Impl {
             std::replace(str.begin(), str.end(), '#', '\n');
             return str;
         }
+        if (name == "string_split") {
+            const std::string source = text(0), delimiter = text(1);
+            const int max_splits = args.size() > 2 ? number(n(2)) : -1;
+            ArrayPtr result(new ArrayValue);
+            int count = 0;
+            std::size_t start = 0;
+            while ((max_splits < 0 || count < max_splits) && !delimiter.empty()) {
+                const auto found = source.find(delimiter, start);
+                if (found == std::string::npos)
+                    break;
+                result->elements[count++] = source.substr(start, found - start);
+                start = found + delimiter.size();
+            }
+            if (delimiter.empty()) {
+                for (std::size_t i = 0; i < source.size() && (max_splits < 0 || count < max_splits); ++i)
+                    result->elements[count++] = source.substr(i, 1);
+                start = source.size();
+            }
+            result->elements[count++] = source.substr(start);
+            result->row_lengths[0] = count;
+            return result;
+        }
         if (name == "string_copy") {
             const auto str = text(0);
             const auto start = std::clamp(static_cast<int>(n(1)) - 1, 0, static_cast<int>(str.size()));
@@ -2977,6 +3444,13 @@ struct GameSession::Impl {
         if (name == "variable_instance_exists") {
             const auto &found = targets(static_cast<int>(n(0)), self, other);
             return !found.empty() && found[0]->vars.contains(text(1));
+        }
+        if (name == "variable_instance_get") {
+            const auto found = first_target(static_cast<int>(n(0)), self, other);
+            if (!found)
+                return std::monostate{};
+            const auto variable = found->vars.find(text(1));
+            return variable == found->vars.end() ? Value{std::monostate{}} : variable->second;
         }
         if (name == "variable_instance_set") {
             const auto found = first_target(static_cast<int>(n(0)), self, other);
@@ -3058,6 +3532,59 @@ struct GameSession::Impl {
             auto &map = maps.at(static_cast<int>(n(0)));
             const auto key = (value_is_string(args[1]) ? "s:" : "n:") + text(1);
             return map.erase(key) != 0;
+        }
+        if (name == "ds_map_size")
+            return static_cast<std::int32_t>(maps.at(static_cast<int>(n(0))).size());
+        if (name == "ds_map_keys_to_array") {
+            const auto &map = maps.at(static_cast<int>(n(0)));
+            std::vector<std::string> keys;
+            keys.reserve(map.size());
+            for (const auto &[key, value] : map) {
+                (void)value;
+                keys.push_back(key);
+            }
+            std::sort(keys.begin(), keys.end());
+            ArrayPtr result(new ArrayValue);
+            result->row_lengths[0] = static_cast<std::int32_t>(keys.size());
+            for (std::size_t i = 0; i < keys.size(); ++i) {
+                if (keys[i].starts_with("s:"))
+                    result->elements[static_cast<std::int32_t>(i)] = keys[i].substr(2);
+                else {
+                    try {
+                        result->elements[static_cast<std::int32_t>(i)] = std::stod(keys[i].substr(2));
+                    } catch (...) {
+                        result->elements[static_cast<std::int32_t>(i)] = std::int32_t{0};
+                    }
+                }
+            }
+            return result;
+        }
+        if (name == "ds_map_find_first" || name == "ds_map_find_next") {
+            if (name == "ds_map_find_next" && args.size() < 2)
+                throw Error(ErrorKind::vm, "ds_map_find_next requires a map ID and key");
+            const auto &map = maps.at(static_cast<int>(n(0)));
+            std::vector<std::string> keys;
+            keys.reserve(map.size());
+            for (const auto &[key, value] : map) {
+                (void)value;
+                keys.push_back(key);
+            }
+            std::sort(keys.begin(), keys.end());
+            auto key_value = [](const std::string &key) -> Value {
+                if (key.starts_with("s:"))
+                    return key.substr(2);
+                try {
+                    return std::stod(key.substr(2));
+                } catch (...) {
+                    return std::int32_t{0};
+                }
+            };
+            if (name == "ds_map_find_first")
+                return keys.empty() ? Value{std::int32_t{-1}} : key_value(keys.front());
+            const std::string current = (value_is_string(args[1]) ? "s:" : "n:") + text(1);
+            const auto found = std::find(keys.begin(), keys.end(), current);
+            return found == keys.end() || found + 1 == keys.end() ? Value{std::int32_t{-1}}
+                                                                    : key_value(*(found + 1));
         }
         if (name == "json_encode") {
             const auto &map = maps.at(static_cast<int>(n(0)));
@@ -3178,6 +3705,87 @@ struct GameSession::Impl {
             list.insert(list.end(), args.begin() + 1, args.end());
             return std::monostate{};
         }
+        if (name == "ds_list_write") {
+            const auto &list = lists.at(static_cast<int>(n(0)));
+            std::string encoded = "RGML1:" + std::to_string(list.size()) + ":";
+            for (const auto &value : list) {
+                char tag = 's';
+                std::string payload;
+                if (std::holds_alternative<std::monostate>(value)) {
+                    tag = 'u';
+                } else if (const auto *integer = std::get_if<std::int32_t>(&value)) {
+                    tag = 'i';
+                    payload = std::to_string(*integer);
+                } else if (const auto *real = std::get_if<double>(&value)) {
+                    tag = 'd';
+                    std::ostringstream number_text;
+                    number_text.precision(std::numeric_limits<double>::max_digits10);
+                    number_text << *real;
+                    payload = number_text.str();
+                } else if (const auto *boolean = std::get_if<bool>(&value)) {
+                    tag = 'b';
+                    payload = *boolean ? "1" : "0";
+                } else
+                    payload = value_text(value);
+                encoded += tag + std::to_string(payload.size()) + ":" + payload;
+            }
+            return encoded;
+        }
+        if (name == "ds_list_read") {
+            auto &list = lists.at(static_cast<int>(n(0)));
+            list.clear();
+            const auto serialized = text(1);
+            if (!serialized.starts_with("RGML1:"))
+                return std::monostate{};
+            std::size_t cursor = 6;
+            const auto count_end = serialized.find(':', cursor);
+            if (count_end == std::string::npos)
+                return std::monostate{};
+            std::size_t count = 0;
+            try {
+                count = std::stoull(serialized.substr(cursor, count_end - cursor));
+            } catch (...) {
+                return std::monostate{};
+            }
+            if (count > 1'000'000)
+                throw Error(ErrorKind::vm, "ds_list_read entry limit exceeded");
+            cursor = count_end + 1;
+            list.reserve(count);
+            for (std::size_t i = 0; i < count && cursor < serialized.size(); ++i) {
+                const char tag = serialized[cursor++];
+                const auto length_end = serialized.find(':', cursor);
+                if (length_end == std::string::npos)
+                    break;
+                std::size_t length = 0;
+                try {
+                    length = std::stoull(serialized.substr(cursor, length_end - cursor));
+                } catch (...) {
+                    break;
+                }
+                cursor = length_end + 1;
+                if (length > serialized.size() - cursor)
+                    break;
+                const auto payload = serialized.substr(cursor, length);
+                cursor += length;
+                Value value;
+                try {
+                    if (tag == 'i')
+                        value = static_cast<std::int32_t>(std::stol(payload));
+                    else if (tag == 'd')
+                        value = std::stod(payload);
+                    else if (tag == 'b')
+                        value = payload == "1";
+                    else if (tag == 'u')
+                        value = std::monostate{};
+                    else
+                        value = payload;
+                } catch (...) {
+                    value = std::monostate{};
+                }
+                list.push_back(std::move(value));
+            }
+            return std::monostate{};
+        }
         if (name == "ds_list_size")
             return static_cast<double>(lists.at(static_cast<int>(n(0))).size());
         if (name == "ds_list_find_value")
@@ -3186,10 +3794,52 @@ struct GameSession::Impl {
             lists.erase(static_cast<int>(n(0)));
             return std::monostate{};
         }
+        if (name == "ds_exists") {
+            const int id = static_cast<int>(n(0)), type = static_cast<int>(n(1));
+            if (type == 1)
+                return maps.contains(id);
+            if (type == 2)
+                return lists.contains(id);
+            if (type == 5)
+                return priorities.contains(id);
+            return false;
+        }
         if (name == "buffer_create") {
             const auto size = static_cast<std::size_t>(std::clamp(n(0), 0.0, 64.0 * 1024 * 1024));
             const int id = next_buffer++;
             buffers.emplace(id, GameBuffer{std::vector<std::uint8_t>(size), 0});
+            return std::int32_t{id};
+        }
+        if (name == "buffer_load") {
+            const std::filesystem::path requested(text(0));
+            std::vector<std::filesystem::path> candidates;
+            if (requested.is_absolute())
+                candidates.push_back(requested);
+            else {
+                if (!requested.has_parent_path())
+                    candidates.push_back(save_dir / requested);
+                candidates.push_back(game_dir / requested);
+            }
+            std::ifstream input;
+            for (const auto &candidate : candidates) {
+                input.open(candidate, std::ios::binary);
+                if (input)
+                    break;
+                input.clear();
+            }
+            if (!input)
+                return std::int32_t{-1};
+            input.seekg(0, std::ios::end);
+            const auto end = input.tellg();
+            if (end < 0 || static_cast<std::uint64_t>(end) > 64ULL * 1024 * 1024)
+                return std::int32_t{-1};
+            std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
+            input.seekg(0, std::ios::beg);
+            if (!bytes.empty() &&
+                !input.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
+                return std::int32_t{-1};
+            const int id = next_buffer++;
+            buffers.emplace(id, GameBuffer{std::move(bytes), 0});
             return std::int32_t{id};
         }
         if (name == "buffer_get_size")
@@ -3306,6 +3956,28 @@ struct GameSession::Impl {
             std::error_code error;
             std::filesystem::remove(save_path(text(0)), error);
             return std::monostate{};
+        }
+        if (name == "file_copy") {
+            const std::filesystem::path requested(text(0));
+            std::filesystem::path source = requested;
+            std::error_code error;
+            if (!source.is_absolute()) {
+                if (!source.has_parent_path()) {
+                    const auto saved_source = save_path(text(0));
+                    if (std::filesystem::is_regular_file(saved_source, error))
+                        source = saved_source;
+                    else
+                        source = game_dir / requested;
+                } else if (!std::filesystem::is_regular_file(source, error))
+                    source = game_dir / requested;
+            }
+            const auto destination = save_path(text(1));
+            if (!prepare_save_directory() || !std::filesystem::is_regular_file(source, error))
+                return false;
+            error.clear();
+            std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing,
+                                       error);
+            return !error;
         }
         if (name == "file_rename") {
             const auto from = save_path(text(0)), to = save_path(text(1));
@@ -3569,8 +4241,10 @@ struct GameSession::Impl {
                                     std::memory_order_relaxed);
             return std::monostate{};
         }
+        if (name == "audio_group_load")
+            return audio.load_group(static_cast<int>(n(0)));
         if (name == "audio_group_is_loaded")
-            return true;
+            return audio.group_is_loaded(static_cast<int>(n(0)));
         if (name == "audio_group_set_gain") {
             audio.group_gain(static_cast<int>(n(0)), n(1), args.size() > 2 ? n(2) : 0);
             return std::monostate{};
@@ -3637,10 +4311,107 @@ struct GameSession::Impl {
             assets.prefetch(static_cast<int>(n(0)));
             return std::int32_t{0};
         }
+        if (name == "texture_prefetch") {
+            const auto found = sprite_textures.find(static_cast<int>(n(0)));
+            if (found != sprite_textures.end())
+                assets.prefetch(found->second.first);
+            return std::monostate{};
+        }
+        if (name == "texture_is_ready")
+            return sprite_textures.contains(static_cast<int>(n(0)));
         if (name == "texturegroup_get_textures")
             return ArrayPtr(new ArrayValue);
         if (name == "sprite_get_texture")
             return std::int32_t{sprite_texture_handle(static_cast<int>(n(0)), n(1))};
+        if (name == "layer_background_create") {
+            auto *layer = find_layer(layer_id_argument(0));
+            const int sprite_id = static_cast<int>(n(1));
+            if (!layer || (sprite_id != -1 && !assets.sprite_exists(sprite_id)))
+                return std::int32_t{-1};
+            LayerBackground background;
+            background.id = next_layer_element_id++;
+            background.sprite = sprite_id;
+            layer->backgrounds.push_back(background);
+            return std::int32_t{background.id};
+        }
+        if (name == "layer_background_exists") {
+            const auto element = find_layer_background(static_cast<int>(n(1)));
+            return element.second && element.first && element.first->id == layer_id_argument(0);
+        }
+        if (name == "layer_background_destroy") {
+            const int layer_id = layer_id_argument(0), element_id = static_cast<int>(n(1));
+            if (auto *layer = find_layer(layer_id))
+                std::erase_if(layer->backgrounds,
+                              [element_id](const LayerBackground &background) { return background.id == element_id; });
+            return std::monostate{};
+        }
+        if (name == "layer_background_get_sprite" || name == "layer_background_get_index" ||
+            name == "layer_background_get_blend" || name == "layer_background_get_alpha" ||
+            name == "layer_background_get_htiled" || name == "layer_background_get_vtiled" ||
+            name == "layer_background_get_stretch" || name == "layer_background_get_xscale" ||
+            name == "layer_background_get_yscale" || name == "layer_background_get_visible") {
+            const auto background = find_layer_background(static_cast<int>(n(0)));
+            if (!background.second)
+                return name == "layer_background_get_sprite" ? Value{std::int32_t{-1}} : Value{0.0};
+            const auto &value = *background.second;
+            if (name == "layer_background_get_sprite")
+                return std::int32_t{value.sprite};
+            if (name == "layer_background_get_index")
+                return value.frame;
+            if (name == "layer_background_get_blend")
+                return std::int32_t{static_cast<int>(value.color & 0xffffffU)};
+            if (name == "layer_background_get_alpha")
+                return static_cast<double>((value.color >> 24) & 0xff) / 255.0;
+            if (name == "layer_background_get_htiled")
+                return value.htiled;
+            if (name == "layer_background_get_vtiled")
+                return value.vtiled;
+            if (name == "layer_background_get_stretch")
+                return value.stretch;
+            if (name == "layer_background_get_xscale")
+                return value.sx;
+            if (name == "layer_background_get_yscale")
+                return value.sy;
+            return value.visible;
+        }
+        if (name == "layer_background_change" || name == "layer_background_sprite" ||
+            name == "layer_background_blend" || name == "layer_background_alpha" ||
+            name == "layer_background_htiled" || name == "layer_background_vtiled" ||
+            name == "layer_background_stretch" || name == "layer_background_xscale" ||
+            name == "layer_background_yscale" || name == "layer_background_visible" ||
+            name == "layer_background_index") {
+            const auto background = find_layer_background(static_cast<int>(n(0)));
+            if (background.second) {
+                auto &value = *background.second;
+                const double setting = n(1);
+                if (name == "layer_background_change" || name == "layer_background_sprite") {
+                    const int sprite_id = static_cast<int>(setting);
+                    if (sprite_id == -1 || assets.sprite_exists(sprite_id)) {
+                        value.sprite = sprite_id;
+                        value.frame = 0;
+                    }
+                } else if (name == "layer_background_blend")
+                    value.color = (value.color & 0xff000000U) | (static_cast<unsigned>(setting) & 0xffffffU);
+                else if (name == "layer_background_alpha")
+                    value.color = (value.color & 0x00ffffffU) |
+                                  (static_cast<unsigned>(std::clamp(setting, 0.0, 1.0) * 255) << 24);
+                else if (name == "layer_background_htiled")
+                    value.htiled = setting != 0;
+                else if (name == "layer_background_vtiled")
+                    value.vtiled = setting != 0;
+                else if (name == "layer_background_stretch")
+                    value.stretch = setting != 0;
+                else if (name == "layer_background_xscale")
+                    value.sx = setting;
+                else if (name == "layer_background_yscale")
+                    value.sy = setting;
+                else if (name == "layer_background_visible")
+                    value.visible = setting != 0;
+                else if (name == "layer_background_index")
+                    value.frame = setting;
+            }
+            return std::monostate{};
+        }
         if (name == "layer_get_all") {
             std::vector<int> ids;
             if (current_room >= 0 && static_cast<std::size_t>(current_room) < rooms.size()) {
@@ -3683,6 +4454,73 @@ struct GameSession::Impl {
         if (name == "layer_depth") {
             if (auto *layer = find_layer(layer_id_argument(0)))
                 layer->depth = static_cast<int>(n(1));
+            return std::monostate{};
+        }
+        if (name == "layer_x" || name == "layer_y") {
+            if (auto *layer = find_layer(layer_id_argument(0))) {
+                const auto x = name == "layer_x" ? n(1) : layer->x;
+                const auto y = name == "layer_y" ? n(1) : layer->y;
+                move_layer(*layer, x, y);
+            }
+            return std::monostate{};
+        }
+        if (name == "layer_hspeed" || name == "layer_vspeed") {
+            if (auto *layer = find_layer(layer_id_argument(0))) {
+                if (name == "layer_hspeed")
+                    layer->hspeed = n(1);
+                else
+                    layer->vspeed = n(1);
+            }
+            return std::monostate{};
+        }
+        if (name == "layer_get_x" || name == "layer_get_y" || name == "layer_get_hspeed" ||
+            name == "layer_get_vspeed") {
+            const auto *layer = find_layer(layer_id_argument(0));
+            if (!layer)
+                return 0.0;
+            if (name == "layer_get_x")
+                return layer->x;
+            if (name == "layer_get_y")
+                return layer->y;
+            if (name == "layer_get_hspeed")
+                return layer->hspeed;
+            return layer->vspeed;
+        }
+        if (name == "layer_force_draw_depth") {
+            force_draw_depth = n(0) != 0;
+            forced_depth = static_cast<int>(n(1));
+            return std::monostate{};
+        }
+        if (name == "layer_is_draw_depth_forced")
+            return force_draw_depth;
+        if (name == "layer_get_forced_depth")
+            return force_draw_depth ? forced_depth : 0;
+        if (name == "layer_destroy") {
+            if (current_room < 0 || static_cast<std::size_t>(current_room) >= rooms.size())
+                return std::monostate{};
+            auto &current = rooms[static_cast<std::size_t>(current_room)];
+            const int layer_id = layer_id_argument(0);
+            const auto found = current.layer_indices.find(layer_id);
+            if (found == current.layer_indices.end())
+                return std::monostate{};
+            const auto instance_ids = current.layers[found->second].instances;
+            for (const int instance_id : instance_ids) {
+                const auto instance = std::find_if(instances.begin(), instances.end(),
+                                                   [instance_id](const InstancePtr &item) {
+                                                       return item->alive && item->id == instance_id;
+                                                   });
+                if (instance != instances.end()) {
+                    event(*instance, 1, 0);
+                    (*instance)->alive = false;
+                }
+            }
+            std::erase_if(current.tiles, [layer_id](const Tile &tile) { return tile.layer_id == layer_id; });
+            std::erase_if(current.layers, [layer_id](const RoomLayer &layer) { return layer.id == layer_id; });
+            current.layer_indices.clear();
+            for (std::size_t i = 0; i < current.layers.size(); ++i)
+                current.layer_indices.try_emplace(current.layers[i].id, i);
+            hidden_tile_layers.erase(layer_id);
+            tile_layer_offsets.erase(layer_id);
             return std::monostate{};
         }
         if (name == "layer_shader") {
@@ -3732,10 +4570,14 @@ struct GameSession::Impl {
             const auto *layer = find_layer(layer_id_argument(0));
             std::vector<int> ids;
             if (layer) {
-                ids.reserve(layer->instances.size() + layer->sprites.size());
+                ids.reserve(layer->instances.size() + layer->sprites.size() + layer->backgrounds.size() + 1);
                 ids.insert(ids.end(), layer->instances.begin(), layer->instances.end());
                 for (const auto &sprite : layer->sprites)
                     ids.push_back(sprite.id);
+                for (const auto &background : layer->backgrounds)
+                    ids.push_back(background.id);
+                if (layer->tile_element_id >= 0)
+                    ids.push_back(layer->tile_element_id);
             }
             return make_id_array(ids);
         }
@@ -3744,6 +4586,10 @@ struct GameSession::Impl {
             const auto sprite = find_layer_sprite(id);
             if (sprite.second)
                 return std::int32_t{4};
+            if (find_layer_background(id).second)
+                return std::int32_t{1};
+            if (find_layer_tile(id).second)
+                return std::int32_t{3};
             if (current_room >= 0 && static_cast<std::size_t>(current_room) < rooms.size()) {
                 const auto &current = rooms[static_cast<std::size_t>(current_room)];
                 for (const auto &layer : current.layers)
@@ -3751,6 +4597,68 @@ struct GameSession::Impl {
                         return std::int32_t{2};
             }
             return std::int32_t{-1};
+        }
+        if (name == "layer_tile_get_x" || name == "layer_tile_get_y") {
+            const auto tile = find_layer_tile(static_cast<int>(n(0)));
+            if (!tile.second)
+                return 0.0;
+            const int layer_id = tile.second->layer_id < 0 ? tile.second->id : tile.second->layer_id;
+            const auto offset = tile_layer_offsets.find(layer_id);
+            const double legacy_x = offset == tile_layer_offsets.end() ? 0 : offset->second.first;
+            const double legacy_y = offset == tile_layer_offsets.end() ? 0 : offset->second.second;
+            const double layer_x = tile.first ? tile.first->x - tile.first->origin_x : 0;
+            const double layer_y = tile.first ? tile.first->y - tile.first->origin_y : 0;
+            return name == "layer_tile_get_x" ? tile.second->x + layer_x + legacy_x
+                                              : tile.second->y + layer_y + legacy_y;
+        }
+        if (name == "layer_tile_x" || name == "layer_tile_y" || name == "layer_tile_alpha" ||
+            name == "layer_tile_visible") {
+            auto tile = find_layer_tile(static_cast<int>(n(0)));
+            if (!tile.second)
+                return std::monostate{};
+            auto &current = rooms.at(static_cast<std::size_t>(current_room));
+            const int element_id = tile.second->element_id;
+            const double setting = n(1);
+            if (name == "layer_tile_x" || name == "layer_tile_y") {
+                const int layer_id = tile.second->layer_id < 0 ? tile.second->id : tile.second->layer_id;
+                const auto offset = tile_layer_offsets.find(layer_id);
+                const double legacy_offset = offset == tile_layer_offsets.end()
+                                                 ? 0
+                                                 : (name == "layer_tile_x" ? offset->second.first
+                                                                           : offset->second.second);
+                const double layer_offset = tile.first
+                                                ? (name == "layer_tile_x" ? tile.first->x - tile.first->origin_x
+                                                                          : tile.first->y - tile.first->origin_y)
+                                                : 0;
+                const double old_value = (name == "layer_tile_x" ? tile.second->x : tile.second->y) +
+                                         layer_offset + legacy_offset;
+                const double delta = setting - old_value;
+                for (auto &entry : current.tiles)
+                    if (entry.element_id == element_id) {
+                        if (name == "layer_tile_x")
+                            entry.x += delta;
+                        else
+                            entry.y += delta;
+                    }
+            } else if (name == "layer_tile_alpha") {
+                const auto alpha = static_cast<unsigned>(std::clamp(setting, 0.0, 1.0) * 255);
+                for (auto &entry : current.tiles)
+                    if (entry.element_id == element_id)
+                        entry.color = (entry.color & 0x00ffffffU) | (alpha << 24);
+            } else {
+                for (auto &entry : current.tiles)
+                    if (entry.element_id == element_id)
+                        entry.visible = setting != 0;
+            }
+            return std::monostate{};
+        }
+        if (name == "layer_sprite_destroy") {
+            const int id = static_cast<int>(n(0));
+            const auto sprite = find_layer_sprite(id);
+            if (sprite.first)
+                std::erase_if(sprite.first->sprites,
+                              [id](const LayerSprite &item) { return item.id == id; });
+            return std::monostate{};
         }
         if (name == "layer_sprite_get_x" || name == "layer_sprite_get_y") {
             const auto sprite = find_layer_sprite(static_cast<int>(n(0)));
@@ -3844,8 +4752,37 @@ struct GameSession::Impl {
             return assets.sprite_exists(static_cast<int>(n(0)));
         if (name == "sprite_get_name")
             return std::string(assets.sprite_name(static_cast<int>(n(0))));
-        if (name == "sprite_create_from_surface")
-            return std::int32_t{-1};
+        if (name == "sprite_set_offset") {
+            assets.set_sprite_offset(static_cast<int>(n(0)), static_cast<int>(n(1)), static_cast<int>(n(2)));
+            return std::monostate{};
+        }
+        if (name == "sprite_create_from_surface") {
+            const int surface_id = static_cast<int>(n(0));
+            const Canvas *source = nullptr;
+            if (surface_id == 0)
+                source = &this->canvas;
+            else if (const auto found = surfaces.find(surface_id); found != surfaces.end())
+                source = &found->second;
+            if (!source)
+                return std::int32_t{-1};
+            const int x = static_cast<int>(n(1));
+            const int y = static_cast<int>(n(2));
+            const int width = static_cast<int>(n(3));
+            const int height = static_cast<int>(n(4));
+            const bool remove_background = n(5) != 0;
+            const bool smooth = n(6) != 0;
+            const int origin_x = static_cast<int>(n(7));
+            const int origin_y = static_cast<int>(n(8));
+            return std::int32_t{assets.create_sprite_from_surface(*source,
+                                                                  x,
+                                                                  y,
+                                                                  width,
+                                                                  height,
+                                                                  remove_background,
+                                                                  smooth,
+                                                                  origin_x,
+                                                                  origin_y)};
+        }
         if (name == "sprite_delete")
             return false;
         if (name == "sprite_replace")
@@ -3905,28 +4842,138 @@ struct GameSession::Impl {
             halign = static_cast<int>(n(0));
             return std::monostate{};
         }
-        if (name == "camera_get_view_x")
-            return engine.at("view_xview[0]");
-        if (name == "camera_get_view_y")
-            return engine.at("view_yview[0]");
-        if (name == "camera_get_view_width")
-            return engine.at("view_wview[0]");
-        if (name == "camera_get_view_height")
-            return engine.at("view_hview[0]");
-        if (name == "camera_set_view_pos") {
-            engine["view_xview[0]"] = n(1);
-            engine["view_yview[0]"] = n(2);
+        if (name == "draw_get_halign")
+            return std::int32_t{halign};
+        if (name == "camera_create") {
+            const int id = next_camera_id++;
+            Camera camera;
+            if (args.size() > 0)
+                camera.x = n(0);
+            if (args.size() > 1)
+                camera.y = n(1);
+            if (args.size() > 2)
+                camera.width = n(2);
+            if (args.size() > 3)
+                camera.height = n(3);
+            if (args.size() > 4)
+                camera.angle = n(4);
+            if (args.size() > 5)
+                camera.target = number(args[5]);
+            if (args.size() > 6)
+                camera.speed_x = n(6);
+            if (args.size() > 7)
+                camera.speed_y = n(7);
+            if (args.size() > 8)
+                camera.border_x = n(8);
+            if (args.size() > 9)
+                camera.border_y = n(9);
+            cameras.emplace(id, camera);
+            return std::int32_t{id};
+        }
+        if (name == "view_get_camera")
+            return std::int32_t{camera_for_view(view_index())};
+        if (name == "view_set_camera") {
+            const int view = view_index();
+            const int id = number(n(1));
+            engine["view_camera" + view_suffix(view)] = std::int32_t{id};
+            const auto &camera = camera_for_id(id);
+            engine["view_xview" + view_suffix(view)] = camera.x;
+            engine["view_yview" + view_suffix(view)] = camera.y;
+            engine["view_wview" + view_suffix(view)] = camera.width;
+            engine["view_hview" + view_suffix(view)] = camera.height;
+            engine["view_hborder" + view_suffix(view)] = camera.border_x;
+            engine["view_vborder" + view_suffix(view)] = camera.border_y;
+            engine["view_hspeed" + view_suffix(view)] = camera.speed_x;
+            engine["view_vspeed" + view_suffix(view)] = camera.speed_y;
+            engine["view_object" + view_suffix(view)] = std::int32_t{camera.target};
+            return std::monostate{};
+        }
+        if (name == "camera_get_view_x" || name == "camera_get_view_y" ||
+            name == "camera_get_view_width" || name == "camera_get_view_height" ||
+            name == "camera_get_view_angle" || name == "camera_get_view_target" ||
+            name == "camera_get_view_border_x" || name == "camera_get_view_border_y" ||
+            name == "camera_get_view_speed_x" || name == "camera_get_view_speed_y") {
+            const auto &camera = camera_for_id(static_cast<int>(n(0)));
+            if (name == "camera_get_view_x")
+                return camera.x;
+            if (name == "camera_get_view_y")
+                return camera.y;
+            if (name == "camera_get_view_width")
+                return camera.width;
+            if (name == "camera_get_view_height")
+                return camera.height;
+            if (name == "camera_get_view_angle")
+                return camera.angle;
+            if (name == "camera_get_view_target")
+                return std::int32_t{camera.target};
+            if (name == "camera_get_view_border_x")
+                return camera.border_x;
+            if (name == "camera_get_view_border_y")
+                return camera.border_y;
+            if (name == "camera_get_view_speed_x")
+                return camera.speed_x;
+            return camera.speed_y;
+        }
+        if (name == "camera_set_view_pos" || name == "camera_set_view_size" ||
+            name == "camera_set_view_angle" || name == "camera_set_view_target" ||
+            name == "camera_set_view_border" || name == "camera_set_view_speed") {
+            auto &camera = camera_for_id(static_cast<int>(n(0)));
+            if (name == "camera_set_view_pos") {
+                camera.x = n(1);
+                camera.y = n(2);
+            } else if (name == "camera_set_view_size") {
+                camera.width = n(1);
+                camera.height = n(2);
+            } else if (name == "camera_set_view_angle")
+                camera.angle = n(1);
+            else if (name == "camera_set_view_target")
+                camera.target = number(n(1));
+            else if (name == "camera_set_view_border") {
+                camera.border_x = n(1);
+                camera.border_y = n(2);
+            } else {
+                camera.speed_x = n(1);
+                camera.speed_y = n(2);
+            }
+            sync_camera_to_views(static_cast<int>(n(0)));
+            return std::monostate{};
+        }
+        if (name == "view_get_visible" || name == "view_get_xport" || name == "view_get_yport" ||
+            name == "view_get_wport" || name == "view_get_hport" || name == "view_get_surface_id") {
+            const int view = view_index();
+            const std::string_view field =
+                name == "view_get_visible"     ? "view_visible"
+                : name == "view_get_xport"     ? "view_xport"
+                : name == "view_get_yport"     ? "view_yport"
+                : name == "view_get_wport"     ? "view_wport"
+                : name == "view_get_hport"     ? "view_hport"
+                                              : "view_surface_id";
+            return view_value(field, view, std::int32_t{field == "view_surface_id" ? -1 : 0});
+        }
+        if (name == "view_set_visible" || name == "view_set_xport" || name == "view_set_yport" ||
+            name == "view_set_wport" || name == "view_set_hport" || name == "view_set_surface_id") {
+            const int view = view_index();
+            const std::string_view field =
+                name == "view_set_visible"     ? "view_visible"
+                : name == "view_set_xport"     ? "view_xport"
+                : name == "view_set_yport"     ? "view_yport"
+                : name == "view_set_wport"     ? "view_wport"
+                : name == "view_set_hport"     ? "view_hport"
+                                              : "view_surface_id";
+            engine[std::string(field) + view_suffix(view)] = n(1);
             return std::monostate{};
         }
         if (name == "draw_set_valign") {
             valign = static_cast<int>(n(0));
             return std::monostate{};
         }
+        if (name == "draw_get_valign")
+            return std::int32_t{valign};
         if (name == "draw_text") {
             assets.draw_text(canvas, draw_font, n(0), n(1), text(2), draw_color, draw_alpha, halign, valign);
             return std::monostate{};
         }
-        if (name == "draw_text_color") {
+        if (name == "draw_text_color" || name == "draw_text_colour") {
             const unsigned color = static_cast<unsigned>((n(3) + n(4) + n(5) + n(6)) / 4);
             assets.draw_text(canvas, draw_font, n(0), n(1), text(2), color, n(7), halign, valign);
             return std::monostate{};
@@ -3941,30 +4988,43 @@ struct GameSession::Impl {
                              halign, valign, n(3), n(4), n(5));
             return std::monostate{};
         }
-        if (name == "draw_text_ext") {
+        if (name == "draw_text_ext" || name == "draw_text_ext_transformed") {
             const auto value = text(2);
+            const bool transformed = name == "draw_text_ext_transformed";
             const double line_height = n(3) < 0 ? assets.text_height(draw_font) : n(3);
             const double max_width = n(4);
+            const double sx = transformed ? n(5) : 1;
+            const double sy = transformed ? n(6) : 1;
+            const double angle = transformed ? n(7) : 0;
+            const double radians = angle * 3.14159265358979323846 / 180.0;
+            const double cs = angle == 0 ? 1 : std::cos(radians);
+            const double sn = angle == 0 ? 0 : std::sin(radians);
             std::string line;
             double line_width = 0;
-            double y = n(1);
+            std::size_t line_number = 0;
+            auto draw_line = [&] {
+                const double line_offset = line_height * static_cast<double>(line_number);
+                const double x = n(0) + (transformed ? line_offset * sy * sn : 0);
+                const double y = n(1) + (transformed ? line_offset * sy * cs : line_offset);
+                assets.draw_text(canvas, draw_font, x, y, line, draw_color, draw_alpha, halign, valign,
+                                 sx, sy, angle);
+                line.clear();
+                line_width = 0;
+                ++line_number;
+            };
             for (const char ch : value) {
                 const double char_width =
                     ch == '\n' || ch == '#' ? 0 : assets.text_width(draw_font, {&ch, 1});
                 if ((ch == ' ' && max_width > 0 && line_width + char_width > max_width) || ch == '\n' ||
                     ch == '#') {
-                    assets.draw_text(canvas, draw_font, n(0), y, line, draw_color, draw_alpha, halign,
-                                     valign);
-                    line.clear();
-                    line_width = 0;
-                    y += line_height;
+                    draw_line();
                     if (ch == '\n' || ch == '#')
                         continue;
                 }
                 line += ch;
                 line_width += char_width;
             }
-            assets.draw_text(canvas, draw_font, n(0), y, line, draw_color, draw_alpha, halign, valign);
+            draw_line();
             return std::monostate{};
         }
         if (name == "surface_create") {
@@ -3976,7 +5036,36 @@ struct GameSession::Impl {
             surfaces.emplace(std::piecewise_construct, std::forward_as_tuple(id),
                              std::forward_as_tuple(width, height));
             surfaces.at(id).clear_transparent();
+            surfaces.at(id).color_write_enable(color_write_enable[0], color_write_enable[1],
+                                               color_write_enable[2], color_write_enable[3]);
+            surfaces.at(id).blend_enable(blend_enabled);
+            surfaces.at(id).alpha_test_enable(alpha_test_enabled);
+            surfaces.at(id).alpha_test_ref(alpha_test_reference);
             return std::int32_t{id};
+        }
+        if (name == "surface_resize") {
+            const int id = static_cast<int>(n(0));
+            const int width = static_cast<int>(std::clamp(n(1), 1.0, 4096.0));
+            const int height = static_cast<int>(std::clamp(n(2), 1.0, 4096.0));
+            if (static_cast<std::uint64_t>(width) * height > 64ULL * 1024 * 1024)
+                return std::monostate{};
+            if (id == 0) {
+                this->canvas = Canvas(width, height, true);
+                this->canvas.color_write_enable(color_write_enable[0], color_write_enable[1],
+                                                color_write_enable[2], color_write_enable[3]);
+                this->canvas.blend_enable(blend_enabled);
+                this->canvas.alpha_test_enable(alpha_test_enabled);
+                this->canvas.alpha_test_ref(alpha_test_reference);
+            } else if (surfaces.contains(id)) {
+                surfaces.at(id) = Canvas(width, height);
+                surfaces.at(id).clear_transparent();
+                surfaces.at(id).color_write_enable(color_write_enable[0], color_write_enable[1],
+                                                   color_write_enable[2], color_write_enable[3]);
+                surfaces.at(id).blend_enable(blend_enabled);
+                surfaces.at(id).alpha_test_enable(alpha_test_enabled);
+                surfaces.at(id).alpha_test_ref(alpha_test_reference);
+            }
+            return std::monostate{};
         }
         if (name == "surface_exists") {
             const int id = static_cast<int>(n(0));
@@ -4048,6 +5137,16 @@ struct GameSession::Impl {
             return assets.text_width(draw_font, text(0));
         if (name == "string_height")
             return assets.text_height(draw_font);
+        auto average_color_arguments = [&](std::size_t first, std::size_t count) {
+            std::array<unsigned, 3> channels{};
+            for (std::size_t i = 0; i < count; ++i) {
+                const unsigned color = static_cast<unsigned>(n(first + i));
+                channels[0] += (color >> 16) & 255;
+                channels[1] += (color >> 8) & 255;
+                channels[2] += color & 255;
+            }
+            return ((channels[0] / count) << 16) | ((channels[1] / count) << 8) | (channels[2] / count);
+        };
         if (name == "draw_rectangle") {
             assets.rectangle(canvas, n(0), n(1), n(2), n(3), n(4) != 0);
             return std::monostate{};
@@ -4056,57 +5155,182 @@ struct GameSession::Impl {
             assets.rectangle(canvas, n(0), n(1), n(2), n(3), false);
             return std::monostate{};
         }
-        if (name == "draw_circle") {
-            canvas.circle(n(0), n(1), n(2), n(3) != 0);
+        if (name == "draw_circle" || name == "draw_circle_color" || name == "draw_circle_colour") {
+            const bool colored = name != "draw_circle";
+            if (colored) {
+                draw_color = average_color_arguments(3, 2);
+                canvas.color(draw_color);
+            }
+            canvas.circle(n(0), n(1), n(2), n(colored ? 5 : 3) != 0);
             return std::monostate{};
         }
         if (name == "draw_line" || name == "draw_line_width" || name == "draw_line_color" ||
-            name == "draw_line_width_color") {
-            const bool thick = name == "draw_line_width" || name == "draw_line_width_color";
-            const bool colored = name == "draw_line_color" || name == "draw_line_width_color";
+            name == "draw_line_width_color" || name == "draw_line_colour" ||
+            name == "draw_line_width_colour") {
+            const bool thick = name == "draw_line_width" || name == "draw_line_width_color" ||
+                              name == "draw_line_width_colour";
+            const bool colored = name == "draw_line_color" || name == "draw_line_width_color" ||
+                                 name == "draw_line_colour" || name == "draw_line_width_colour";
             if (colored) {
-                draw_color = static_cast<unsigned>(n(thick ? 5 : 4));
+                draw_color = average_color_arguments(thick ? 5 : 4, 2);
                 canvas.color(draw_color);
             }
             canvas.line(n(0), n(1), n(2), n(3), thick ? n(4) : 1);
             return std::monostate{};
         }
-        if (name == "draw_triangle" || name == "draw_triangle_color") {
-            const bool colored = name == "draw_triangle_color";
+        if (name == "draw_triangle" || name == "draw_triangle_color" || name == "draw_triangle_colour") {
+            const bool colored = name != "draw_triangle";
             const unsigned outline_index = colored ? 9U : 6U;
             if (colored) {
-                const auto c0 = static_cast<unsigned>(n(6)), c1 = static_cast<unsigned>(n(7)),
-                           c2 = static_cast<unsigned>(n(8));
-                draw_color = ((c0 & 0x00fefefeU) + (c1 & 0x00fefefeU) + (c2 & 0x00fefefeU)) / 3;
+                draw_color = average_color_arguments(6, 3);
                 canvas.color(draw_color);
             }
             canvas.triangle(n(0), n(1), n(2), n(3), n(4), n(5), n(outline_index) != 0);
             return std::monostate{};
         }
-        if (name == "draw_ellipse_color") {
-            draw_color = static_cast<unsigned>(n(4));
-            canvas.color(draw_color);
-            canvas.circle((n(0) + n(2)) / 2, (n(1) + n(3)) / 2, std::max(n(2) - n(0), n(3) - n(1)) / 2,
-                          n(6) != 0);
+        if (name == "draw_ellipse" || name == "draw_ellipse_color" || name == "draw_ellipse_colour") {
+            const bool colored = name != "draw_ellipse";
+            if (colored) {
+                draw_color = average_color_arguments(4, 2);
+                canvas.color(draw_color);
+            }
+            canvas.ellipse(n(0), n(1), n(2), n(3), n(colored ? 6 : 4) != 0);
             return std::monostate{};
         }
-        if (name == "draw_roundrect") {
-            assets.rectangle(canvas, n(0), n(1), n(2), n(3), n(4) != 0);
+        if (name == "draw_roundrect" || name == "draw_roundrect_color" || name == "draw_roundrect_colour" ||
+            name == "draw_roundrect_ext" || name == "draw_roundrect_color_ext" ||
+            name == "draw_roundrect_colour_ext") {
+            const bool colored = name == "draw_roundrect_color" || name == "draw_roundrect_colour" ||
+                                 name == "draw_roundrect_color_ext" || name == "draw_roundrect_colour_ext";
+            const bool extended = name == "draw_roundrect_ext" || name == "draw_roundrect_color_ext" ||
+                                  name == "draw_roundrect_colour_ext";
+            const bool outline = n(extended ? (colored ? 8 : 6) : (colored ? 6 : 4)) != 0;
+            if (colored) {
+                draw_color = average_color_arguments(extended ? 6 : 4, 2);
+                canvas.color(draw_color);
+            }
+            const double width = std::abs(n(2) - n(0)), height = std::abs(n(3) - n(1));
+            const double radius_x = extended ? n(4) : std::min(10.0, width / 4);
+            const double radius_y = extended ? n(5) : std::min(10.0, height / 4);
+            canvas.round_rectangle(n(0), n(1), n(2), n(3), radius_x, radius_y, outline);
             return std::monostate{};
         }
-        if (name == "draw_rectangle_color") {
-            draw_color = static_cast<unsigned>(n(4));
+        if (name == "draw_rectangle_color" || name == "draw_rectangle_colour") {
+            draw_color = average_color_arguments(4, 4);
             canvas.color(draw_color);
             assets.rectangle(canvas, n(0), n(1), n(2), n(3), n(8) != 0);
             return std::monostate{};
         }
-        if (name == "draw_point_color") {
-            draw_color = static_cast<unsigned>(n(2));
-            canvas.color(draw_color);
+        if (name == "draw_point" || name == "draw_point_color" || name == "draw_point_colour") {
+            if (name != "draw_point") {
+                draw_color = average_color_arguments(2, 2);
+                canvas.color(draw_color);
+            }
             canvas.line(n(0), n(1), n(0), n(1));
             return std::monostate{};
         }
-        if (name == "draw_enable_alphablend" || name == "draw_set_circle_precision" ||
+        if (name == "draw_arrow") {
+            const double x1 = n(0), y1 = n(1), x2 = n(2), y2 = n(3);
+            const double size = std::max(0.0, n(4));
+            canvas.line(x1, y1, x2, y2);
+            const double angle = std::atan2(y2 - y1, x2 - x1);
+            const double wing = size * 0.55;
+            constexpr double spread = 0.55;
+            canvas.line(x2, y2, x2 - size * std::cos(angle - spread), y2 - size * std::sin(angle - spread), wing);
+            canvas.line(x2, y2, x2 - size * std::cos(angle + spread), y2 - size * std::sin(angle + spread), wing);
+            return std::monostate{};
+        }
+        if (name == "draw_path") {
+            const int path_id = static_cast<int>(n(0));
+            if (path_id < 0 || static_cast<std::size_t>(path_id) >= paths.size())
+                throw Error(ErrorKind::vm, "path ID out of range");
+            const auto &path = paths[static_cast<std::size_t>(path_id)];
+            if (path.points.size() < 2 || path.length <= 0)
+                return std::monostate{};
+            const double x = n(1), y = n(2);
+            const double end = std::clamp(n(3), 0.0, 1.0);
+            const bool reverse = n(4) != 0;
+            double remaining = path.length * end;
+            const std::size_t segment_count = path.points.size() - 1;
+            for (std::size_t step = 0; step < segment_count && remaining > 0; ++step) {
+                const std::size_t first = reverse ? segment_count - step : step;
+                const std::size_t second = reverse ? first - 1 : first + 1;
+                const auto &a = path.points[first];
+                const auto &b = path.points[second];
+                const double length = std::hypot(b.x - a.x, b.y - a.y);
+                if (length <= 0)
+                    continue;
+                const double fraction = std::min(1.0, remaining / length);
+                canvas.line(x + a.x, y + a.y, x + a.x + (b.x - a.x) * fraction,
+                            y + a.y + (b.y - a.y) * fraction);
+                remaining -= length;
+            }
+            return std::monostate{};
+        }
+        if (name == "gpu_set_colorwriteenable" || name == "gpu_set_colourwriteenable") {
+            auto enabled = std::array<bool, 4>{true, true, true, true};
+            if (!args.empty()) {
+                if (const auto *array = std::get_if<ArrayPtr>(&args[0]); array && *array) {
+                    for (std::size_t i = 0; i < enabled.size(); ++i) {
+                        const auto value = (*array)->elements.find(static_cast<std::int32_t>(i));
+                        if (value != (*array)->elements.end())
+                            enabled[i] = value_number(value->second) != 0;
+                    }
+                } else {
+                    for (std::size_t i = 0; i < std::min(enabled.size(), args.size()); ++i)
+                        enabled[i] = value_number(args[i]) != 0;
+                }
+            }
+            color_write_enable = enabled;
+            this->canvas.color_write_enable(enabled[0], enabled[1], enabled[2], enabled[3]);
+            for (auto &[id, surface] : surfaces) {
+                (void)id;
+                surface.color_write_enable(enabled[0], enabled[1], enabled[2], enabled[3]);
+            }
+            return std::monostate{};
+        }
+        if (name == "gpu_get_colorwriteenable" || name == "gpu_get_colourwriteenable") {
+            ArrayPtr result(new ArrayValue);
+            result->row_lengths[0] = 4;
+            for (std::size_t i = 0; i < color_write_enable.size(); ++i)
+                result->elements[static_cast<std::int32_t>(i)] = color_write_enable[i];
+            return result;
+        }
+        if (name == "gpu_set_blendenable" || name == "draw_enable_alphablend") {
+            blend_enabled = !args.empty() && value_number(args[0]) != 0;
+            this->canvas.blend_enable(blend_enabled);
+            for (auto &[id, surface] : surfaces) {
+                (void)id;
+                surface.blend_enable(blend_enabled);
+            }
+            return std::monostate{};
+        }
+        if (name == "gpu_get_blendenable")
+            return blend_enabled;
+        if (name == "gpu_set_alphatestenable") {
+            alpha_test_enabled = !args.empty() && value_number(args[0]) != 0;
+            this->canvas.alpha_test_enable(alpha_test_enabled);
+            for (auto &[id, surface] : surfaces) {
+                (void)id;
+                surface.alpha_test_enable(alpha_test_enabled);
+            }
+            return std::monostate{};
+        }
+        if (name == "gpu_get_alphatestenable")
+            return alpha_test_enabled;
+        if (name == "gpu_set_alphatestref") {
+            const double reference = args.empty() ? 0 : value_number(args[0]);
+            alpha_test_reference = static_cast<unsigned>(std::clamp(reference, 0.0, 255.0));
+            this->canvas.alpha_test_ref(alpha_test_reference);
+            for (auto &[id, surface] : surfaces) {
+                (void)id;
+                surface.alpha_test_ref(alpha_test_reference);
+            }
+            return std::monostate{};
+        }
+        if (name == "gpu_get_alphatestref")
+            return static_cast<double>(alpha_test_reference);
+        if (name == "gpu_set_fog" || name == "gpu_set_texfilter" || name == "draw_set_circle_precision" ||
             name == "gpu_set_blendmode" || name == "gpu_set_blendmode_ext" ||
             name == "gpu_set_blendmode_ext_sepalpha")
             return std::monostate{};
@@ -4634,6 +5858,13 @@ struct GameSession::Impl {
                     i->deactivated = false;
             return std::monostate{};
         }
+        if (name == "instance_deactivate_object") {
+            const int object = static_cast<int>(n(0));
+            for (const auto &i : instances)
+                if (i->alive && matches(*i, object))
+                    i->deactivated = true;
+            return std::monostate{};
+        }
         if (name == "room_set_persistent") {
             const int id = static_cast<int>(n(0));
             if (id < 0 || static_cast<std::size_t>(id) >= rooms.size())
@@ -4745,6 +5976,12 @@ struct GameSession::Impl {
         }
         if (name == "gamepad_get_device_count")
             return std::int32_t{0};
+        if (name == "gamepad_get_description")
+            return std::string{};
+        if (name == "gamepad_get_guid")
+            return std::string{"none"};
+        if (name == "gamepad_test_mapping")
+            return false;
         if (name == "gamepad_is_connected")
             return false;
         if (name == "joystick_exists")
@@ -4756,6 +5993,67 @@ struct GameSession::Impl {
         if (name == "joystick_pov" || name == "joystick_direction" || name == "gamepad_axis_value" ||
             name == "joystick_xpos" || name == "joystick_ypos")
             return 0.0;
+        if (name == "vertex_format_begin") {
+            vertex_format_building = true;
+            vertex_format_attributes.clear();
+            return std::monostate{};
+        }
+        if (name == "vertex_format_add_position") {
+            if (vertex_format_building)
+                vertex_format_attributes.push_back(1);
+            return std::monostate{};
+        }
+        if (name == "vertex_format_add_position_3d") {
+            if (vertex_format_building)
+                vertex_format_attributes.push_back(2);
+            return std::monostate{};
+        }
+        if (name == "vertex_format_add_normal") {
+            if (vertex_format_building)
+                vertex_format_attributes.push_back(3);
+            return std::monostate{};
+        }
+        if (name == "vertex_format_add_colour" || name == "vertex_format_add_color") {
+            if (vertex_format_building)
+                vertex_format_attributes.push_back(4);
+            return std::monostate{};
+        }
+        if (name == "vertex_format_add_textcoord") {
+            if (vertex_format_building)
+                vertex_format_attributes.push_back(5);
+            return std::monostate{};
+        }
+        if (name == "vertex_format_end") {
+            vertex_format_building = false;
+            const int format = next_vertex_format++;
+            vertex_formats.insert(format);
+            vertex_format_attributes.clear();
+            return std::int32_t{format};
+        }
+        if (name == "vertex_create_buffer") {
+            const int buffer = next_vertex_buffer++;
+            vertex_buffers.insert(buffer);
+            return std::int32_t{buffer};
+        }
+        if (name == "switch_accounts_is_user_open")
+            return false;
+        if (name == "switch_controller_support_get_selected_id")
+            return std::int32_t{-1};
+        if (name == "switch_language_get_desired_language")
+            return std::int32_t{0};
+        if (name == "switch_save_data_mount")
+            return true;
+        if (name == "switch_accounts_open_user" || name == "switch_accounts_select_account" ||
+            name == "switch_controller_support_show" || name == "switch_controller_set_supported_styles" ||
+            name == "switch_controller_support_set_defaults" ||
+            name == "switch_controller_support_set_singleplayer_only" ||
+            name == "switch_save_data_commit" || name == "switch_show_store" ||
+            name == "psn_init_np_libs" || name == "psn_init_trophy" || name == "psn_load_modules" ||
+            name == "psn_np_commerce_dialog_tick" || name == "psn_post_uds_event" || name == "psn_tick" ||
+            name == "psn_unlock_trophy")
+            return std::monostate{};
+        if (name == "psn_get_trophy_unlock_state")
+            return std::int32_t{0};
         if (name == "sqr")
             return n(0) * n(0);
         if (name == "power")
@@ -4792,6 +6090,14 @@ struct GameSession::Impl {
             return std::clamp(n(0), n(1), n(2));
         if (name == "lerp")
             return n(0) + (n(1) - n(0)) * n(2);
+        if (name == "angle_difference") {
+            double difference = std::fmod(n(0) - n(1), 360.0);
+            if (difference < -180)
+                difference += 360;
+            else if (difference > 180)
+                difference -= 360;
+            return difference;
+        }
         if (name == "random")
             return std::generate_canonical<double, 53>(random) * n(0);
         if (name == "irandom")
@@ -4805,6 +6111,13 @@ struct GameSession::Impl {
             engine["window_caption"] = text(0);
             return std::monostate{};
         }
+        if (name == "window_set_size") {
+            engine["window_width"] = std::max(1.0, n(0));
+            engine["window_height"] = std::max(1.0, n(1));
+            return std::monostate{};
+        }
+        if (name == "window_set_cursor")
+            return std::monostate{};
         if (name == "game_get_speed") {
             const double fps = value_number(engine.contains("room_speed") ? engine.at("room_speed")
                                                                           : Value{60.0});
@@ -4826,9 +6139,11 @@ struct GameSession::Impl {
             return engine.contains("gui_height") ? engine.at("gui_height")
                                                   : Value{static_cast<double>(canvas.logical_height())};
         if (name == "window_get_width")
-            return static_cast<double>(canvas.logical_width());
+            return engine.contains("window_width") ? engine.at("window_width")
+                                                    : Value{static_cast<double>(canvas.logical_width())};
         if (name == "window_get_height")
-            return static_cast<double>(canvas.logical_height());
+            return engine.contains("window_height") ? engine.at("window_height")
+                                                     : Value{static_cast<double>(canvas.logical_height())};
         if (name == "window_get_x")
             return engine.contains("window_x") ? engine.at("window_x") : Value{0.0};
         if (name == "window_get_y")
@@ -5186,22 +6501,46 @@ struct GameSession::Impl {
                            h = value_number(engine.at("view_hview[0]"));
                 if (w <= 0 || h <= 0)
                     throw Error(ErrorKind::vm, "invalid view dimensions");
-                assets.view(
-                    value_number(engine.at("view_xview[0]")), value_number(engine.at("view_yview[0]")),
-                    value_number(engine.at("view_wport[0]")) / w,
-                    value_number(engine.at("view_hport[0]")) / h, value_number(engine.at("view_xport[0]")),
-                    value_number(engine.at("view_yport[0]")));
+                const double port_x = value_number(engine.at("view_xport[0]"));
+                const double port_y = value_number(engine.at("view_yport[0]"));
+                const double port_width = value_number(engine.at("view_wport[0]"));
+                double port_height = value_number(engine.at("view_hport[0]"));
+                const double screen_width = canvas.logical_width();
+                const double screen_height = canvas.logical_height();
+                if (port_x == 0 && port_y == 0 && std::abs(port_width - screen_width) < 0.5 &&
+                    port_height < screen_height &&
+                    std::abs(w / h - screen_width / screen_height) < 0.001) {
+                    port_height = screen_height;
+                    engine["view_hport[0]"] = port_height;
+                }
+                assets.view(value_number(engine.at("view_xview[0]")),
+                            value_number(engine.at("view_yview[0]")), port_width / w, port_height / h,
+                            port_x, port_y);
             } else
                 assets.view(0, 0, 1, 1, 0, 0);
-            const auto &room = rooms.at(static_cast<std::size_t>(current_room));
+            auto &room = rooms.at(static_cast<std::size_t>(current_room));
+            for (auto &layer : room.layers) {
+                layer.x += layer.hspeed;
+                layer.y += layer.vspeed;
+            }
             allocation_stage = "background and tile drawing";
             for (const auto &b : room.backgrounds)
                 if (!b.foreground)
                     assets.draw_background(canvas, b.id, b.x, b.y);
             auto draw_tile = [&](const Tile &t) {
+                if (!t.visible)
+                    return;
                 const auto layer_id = t.layer_id < 0 ? t.id : t.layer_id;
                 if (hidden_tile_layers.contains(layer_id))
                     return;
+                double layer_x = 0, layer_y = 0;
+                if (const auto found = room.layer_indices.find(t.layer_id); found != room.layer_indices.end()) {
+                    const auto &layer = room.layers[found->second];
+                    if (!layer.visible)
+                        return;
+                    layer_x = layer.x - layer.origin_x;
+                    layer_y = layer.y - layer.origin_y;
+                }
                 const auto offset = tile_layer_offsets.find(layer_id);
                 const double ox = offset == tile_layer_offsets.end() ? 0 : offset->second.first;
                 const double oy = offset == tile_layer_offsets.end() ? 0 : offset->second.second;
@@ -5215,8 +6554,103 @@ struct GameSession::Impl {
                     source_x = source->x;
                     source_y = source->y;
                 }
-                assets.draw_tile(canvas, t.id, source_x, source_y, t.width, t.height, t.x + ox, t.y + oy, t.sx,
-                                 t.sy, t.color, t.transform);
+                assets.draw_tile(canvas, t.id, source_x, source_y, t.width, t.height,
+                                 t.x + ox + layer_x, t.y + oy + layer_y, t.sx, t.sy, t.color, t.transform);
+            };
+            struct LayerVisualEntry {
+                double depth = 0;
+                int layer = -1, element = -1;
+                bool background = false;
+            };
+            std::vector<LayerVisualEntry> layer_visuals;
+            for (const auto &layer : room.layers) {
+                if (!layer.visible)
+                    continue;
+                for (const auto &sprite : layer.sprites)
+                    layer_visuals.push_back({static_cast<double>(layer.depth), layer.id, sprite.id, false});
+                for (const auto &background : layer.backgrounds)
+                    layer_visuals.push_back({background.foreground ? std::numeric_limits<double>::lowest()
+                                                                  : static_cast<double>(layer.depth),
+                                             layer.id, background.id, true});
+            }
+            std::stable_sort(layer_visuals.begin(), layer_visuals.end(),
+                             [](const auto &left, const auto &right) { return left.depth > right.depth; });
+            auto draw_layer_visual = [&](const LayerVisualEntry &entry) {
+                const auto layer_index = room.layer_indices.find(entry.layer);
+                if (layer_index == room.layer_indices.end())
+                    return;
+                auto &layer = room.layers[layer_index->second];
+                if (!layer.visible)
+                    return;
+                const double ox = layer.x - layer.origin_x, oy = layer.y - layer.origin_y;
+                if (entry.background) {
+                    const auto found = std::find_if(layer.backgrounds.begin(), layer.backgrounds.end(),
+                                                    [&](const LayerBackground &item) {
+                                                        return item.id == entry.element;
+                                                    });
+                    if (found == layer.backgrounds.end() || !found->visible || !assets.sprite_exists(found->sprite))
+                        return;
+                    auto &background = *found;
+                    const auto &sprite = assets.sprite(background.sprite);
+                    if (sprite.width <= 0 || sprite.height <= 0)
+                        return;
+                    double sx = background.sx, sy = background.sy;
+                    if (background.stretch) {
+                        sx *= static_cast<double>(room.width) / sprite.width;
+                        sy *= static_cast<double>(room.height) / sprite.height;
+                    }
+                    const double step_x = sprite.width * sx, step_y = sprite.height * sy;
+                    if (step_x == 0 || step_y == 0)
+                        return;
+                    double x = ox, y = oy;
+                    if (background.htiled)
+                        while (x > 0)
+                            x -= step_x;
+                    if (background.vtiled)
+                        while (y > 0)
+                            y -= step_y;
+                    const int columns = background.htiled
+                                            ? std::clamp(static_cast<int>(std::ceil((room.width - x) /
+                                                                                     std::abs(step_x))),
+                                                         1, 256)
+                                            : 1;
+                    const int rows = background.vtiled
+                                         ? std::clamp(static_cast<int>(std::ceil((room.height - y) /
+                                                                                std::abs(step_y))),
+                                                      1, 256)
+                                         : 1;
+                    const auto tint = background.color & 0xffffffU;
+                    const double alpha = static_cast<double>(background.color >> 24) / 255.0;
+                    for (int row = 0; row < rows && row * columns < 4096; ++row)
+                        for (int column = 0; column < columns && row * columns + column < 4096; ++column)
+                            assets.draw_sprite(canvas, background.sprite, background.frame,
+                                               x + column * step_x, y + row * step_y, sx, sy, 0, tint, alpha);
+                    const double frame_count = static_cast<double>(sprite.frames.size());
+                    if (frame_count > 0) {
+                        const double fps = value_number(engine.at("room_speed"));
+                        const double advance = background.speed_type == 0 ? background.speed / fps
+                                                                          : background.speed;
+                        background.frame = std::fmod(std::fmod(background.frame + advance, frame_count) +
+                                                         frame_count,
+                                                     frame_count);
+                    }
+                    return;
+                }
+                const auto found = std::find_if(layer.sprites.begin(), layer.sprites.end(),
+                                                [&](const LayerSprite &item) { return item.id == entry.element; });
+                if (found == layer.sprites.end() || !assets.sprite_exists(found->sprite))
+                    return;
+                auto &sprite = *found;
+                assets.draw_sprite(canvas, sprite.sprite, sprite.frame, sprite.x + ox, sprite.y + oy, sprite.sx,
+                                   sprite.sy, sprite.rotation, sprite.color & 0xffffffU,
+                                   static_cast<double>(sprite.color >> 24) / 255.0);
+                const double frame_count = static_cast<double>(assets.sprite(sprite.sprite).frames.size());
+                if (frame_count > 0 && sprite.speed != 0) {
+                    const double fps = value_number(engine.at("room_speed"));
+                    const double advance = sprite.speed_type == 0 ? sprite.speed / fps : sprite.speed;
+                    sprite.frame = std::fmod(std::fmod(sprite.frame + advance, frame_count) + frame_count,
+                                             frame_count);
+                }
             };
             auto run_layer_script = [&](const Value &script, const InstancePtr &context) {
                 if (std::holds_alternative<std::monostate>(script))
@@ -5245,6 +6679,7 @@ struct GameSession::Impl {
                     engine.erase("event_number");
             };
             std::size_t tile = 0;
+            std::size_t layer_visual = 0;
             allocation_stage = "draw-list allocation";
             bool rebuild_draw_order = draw_entries.size() != snapshot.size();
             bool resort_draw_order = false;
@@ -5274,6 +6709,17 @@ struct GameSession::Impl {
                     return a.depth != b.depth ? a.depth > b.depth : a.order < b.order;
                 });
             allocation_stage = "instance draw calls";
+            auto draw_world_before = [&](double depth) {
+                while ((tile < room.tiles.size() && room.tiles[tile].depth >= depth) ||
+                       (layer_visual < layer_visuals.size() && layer_visuals[layer_visual].depth >= depth)) {
+                    if (tile < room.tiles.size() && room.tiles[tile].depth >= depth &&
+                        (layer_visual >= layer_visuals.size() ||
+                         room.tiles[tile].depth >= layer_visuals[layer_visual].depth))
+                        draw_tile(room.tiles[tile++]);
+                    else
+                        draw_layer_visual(layer_visuals[layer_visual++]);
+                }
+            };
             for (auto &entry : draw_entries) {
                 const auto &i = snapshot[entry.order];
                 if (i->alive && !i->deactivated && number(i->vars.at("visible"))) {
@@ -5289,16 +6735,17 @@ struct GameSession::Impl {
                     }
                     if (draw_layer)
                         run_layer_script(draw_layer->begin_script, i);
-                    while (tile < room.tiles.size() &&
-                           room.tiles[tile].depth >= value_number(i->vars.at("depth")))
-                        draw_tile(room.tiles[tile++]);
+                    draw_world_before(value_number(i->vars.at("depth")));
                     if (objects[static_cast<std::size_t>(i->object)].draw_owner >= 0)
                         event(i, 8, 0);
                     else {
                         const auto sprite = number(i->vars.at("sprite_index"));
                         if (sprite >= 0)
                             assets.draw_sprite(canvas, sprite, value_number(i->vars.at("image_index")),
-                                               value_number(i->vars.at("x")), value_number(i->vars.at("y")),
+                                               value_number(i->vars.at("x")) +
+                                                   (draw_layer ? draw_layer->x - draw_layer->origin_x : 0),
+                                               value_number(i->vars.at("y")) +
+                                                   (draw_layer ? draw_layer->y - draw_layer->origin_y : 0),
                                                value_number(i->vars.at("image_xscale")),
                                                value_number(i->vars.at("image_yscale")),
                                                value_number(i->vars.at("image_angle")),
@@ -5335,8 +6782,9 @@ struct GameSession::Impl {
                     }
                 }
             }
-            while (tile < room.tiles.size())
-                draw_tile(room.tiles[tile++]);
+            draw_world_before(std::numeric_limits<double>::lowest());
+            while (layer_visual < layer_visuals.size())
+                draw_layer_visual(layer_visuals[layer_visual++]);
             for (const auto &b : room.backgrounds)
                 if (b.foreground)
                     assets.draw_background(canvas, b.id, b.x, b.y);
@@ -5350,6 +6798,8 @@ struct GameSession::Impl {
             std::erase_if(instances, [](const auto &i) { return !i->alive; });
             ++frame;
             engine["current_time"] = static_cast<double>(frame) * 1000.0 / value_number(engine["room_speed"]);
+        } catch (const GameChangeRequested &) {
+            return;
         } catch (const std::bad_alloc &) {
             throw Error(ErrorKind::io, "out of memory during " + std::string(allocation_stage));
         } catch (const std::exception &error) {
@@ -5365,6 +6815,19 @@ GameSession::GameSession(const std::filesystem::path &path,
 GameSession::~GameSession() = default;
 void GameSession::tick(const KeyboardState &h, const KeyboardState &p) {
     impl_->tick(h, p);
+    if (impl_->pending_game_change) {
+        const auto path = std::move(*impl_->pending_game_change);
+        const auto seed = impl_->fixed_seed;
+        const auto save_directory = impl_->save_dir;
+        const auto profile = impl_->profile_tick_timing;
+        auto next = std::make_unique<Impl>(path, seed, save_directory);
+        next->profile_tick_timing = profile;
+        next->canvas.profile_text(profile);
+#if !REGML_PS2
+        std::lock_guard lock(audio_mutex_);
+#endif
+        impl_ = std::move(next);
+    }
 }
 void GameSession::profile_tick(bool enabled) noexcept {
     impl_->profile_tick_timing = enabled;
@@ -5429,6 +6892,9 @@ std::size_t GameSession::vm_address() const {
     return impl_->current_vm_address;
 }
 void GameSession::mix_audio(std::span<float> output, double playback_rate) noexcept {
+#if !REGML_PS2
+    std::lock_guard lock(audio_mutex_);
+#endif
     impl_->audio.mix(output, playback_rate);
     const auto master_gain = static_cast<float>(impl_->audio_master_gain.load(std::memory_order_relaxed));
     if (master_gain != 1.0f)

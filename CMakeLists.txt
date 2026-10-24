@@ -203,7 +203,9 @@ else()
     if(NOT REGML_ANDROID AND NOT REGML_WEB AND NOT REGML_WIIU AND NOT REGML_WII)
         find_package(BZip2 QUIET)
     endif()
-    if(BZip2_FOUND AND NOT REGML_ANDROID AND NOT REGML_WEB AND NOT REGML_WIIU AND NOT REGML_WII)
+    if(REGML_WEB)
+        target_compile_definitions(${REGML_TARGET} PRIVATE REGML_HAS_BZIP2=1)
+    elseif(BZip2_FOUND AND NOT REGML_ANDROID AND NOT REGML_WIIU AND NOT REGML_WII)
         target_compile_definitions(${REGML_TARGET} PRIVATE REGML_HAS_BZIP2=1)
         target_link_libraries(${REGML_TARGET} PUBLIC BZip2::BZip2)
     else()
@@ -245,8 +247,8 @@ endif()
 if(REGML_ANDROID)
     target_link_libraries(${REGML_TARGET} PUBLIC png_static vorbisfile)
 elseif(REGML_WEB)
-    target_compile_options(${REGML_TARGET} PUBLIC -sUSE_SDL=2 -sUSE_ZLIB=1 -sUSE_LIBPNG=1 -sUSE_VORBIS=1)
-    target_link_options(${REGML_TARGET} PUBLIC -sUSE_SDL=2 -sUSE_ZLIB=1 -sUSE_LIBPNG=1 -sUSE_VORBIS=1)
+    target_compile_options(${REGML_TARGET} PUBLIC -fexceptions -sUSE_SDL=2 -sUSE_ZLIB=1 -sUSE_LIBPNG=1 -sUSE_VORBIS=1 -sUSE_BZIP2=1)
+    target_link_options(${REGML_TARGET} PUBLIC -fexceptions -sUSE_SDL=2 -sUSE_ZLIB=1 -sUSE_LIBPNG=1 -sUSE_VORBIS=1 -sUSE_BZIP2=1)
 elseif(REGML_WIIU OR REGML_WII)
     target_link_libraries(${REGML_TARGET} PUBLIC
         PkgConfig::REGML_PNG
@@ -319,11 +321,12 @@ if(REGML_WEB)
     target_link_options(regml PRIVATE
         "--shell-file=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/web/shell.html"
         "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/web/runner.js"
+        -lidbfs.js
         -sASYNCIFY=1
         -sALLOW_MEMORY_GROWTH=1
         -sNO_EXIT_RUNTIME=1
         -sFORCE_FILESYSTEM=1
-        "-sEXPORTED_RUNTIME_METHODS=['callMain','FS','IDBFS']"
+        "-sEXPORTED_RUNTIME_METHODS=['callMain','FS']"
     )
 endif()
 if(PS2)

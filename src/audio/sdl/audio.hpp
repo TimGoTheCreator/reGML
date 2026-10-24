@@ -15,6 +15,8 @@ class GameAudio {
     std::optional<int> find_sound_id(std::string_view filename) const;
     int create_stream(std::string_view filename);
     bool destroy_stream(int id);
+    bool load_group(int id);
+    bool group_is_loaded(int id) const;
     void group_gain(int group, double value, double duration_ms = 0);
     double group_gain(int group) const;
     int play(int sound, bool loop, double priority);
@@ -55,9 +57,17 @@ class GameAudio {
         }
     };
     struct Stream;
+    struct AudioGroup {
+        std::unique_ptr<Package> package;
+        std::vector<std::size_t> entries;
+    };
+    struct AudioData {
+        const Package *package = nullptr;
+        std::size_t offset = 0, length = 0;
+    };
     struct Sound {
         std::string_view name;
-        int embedded = -1;
+        int audio_id = -1;
         std::string filename;
         double gain = 1;
         std::unique_ptr<Clip> clip;
@@ -78,14 +88,18 @@ class GameAudio {
     const Package &package_;
     std::filesystem::path directory_;
     std::vector<std::size_t> embedded_;
+    std::unordered_map<int, AudioGroup> audio_groups_;
+    std::unordered_set<int> missing_audio_groups_;
     std::unordered_map<int, Sound> sounds_;
     std::unordered_map<int, Voice> voices_;
     std::unordered_set<int> streams_;
     std::unordered_map<int, GroupGain> group_gains_;
     mutable std::mutex voices_mutex_;
     int next_stream_ = 100000, next_voice_ = 1000000, channels_ = 128;
+    const AudioGroup *load_audio_group(int group);
+    std::optional<AudioData> audio_data(const Sound &sound);
     Clip *load(int id);
-    std::vector<std::uint8_t> read_audio(int id) const;
+    std::vector<std::uint8_t> read_audio(int id);
     static std::unique_ptr<Clip> decode(std::vector<std::uint8_t> bytes);
 };
 } // namespace regml

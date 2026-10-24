@@ -315,7 +315,9 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
         const auto count = rec(list_at, *sp, 4).u32(0);
         return std::pair{list_at, static_cast<std::size_t>(count)};
     };
-    for (auto p : list(tx->data_offset, *tx)) {
+    const auto texture_records = list(tx->data_offset, *tx);
+    pages_.reserve(texture_records.size() + max_dynamic_sprites_);
+    for (auto p : texture_records) {
         if (!bytecode17) {
             const auto r = rec(p, *tx, 8);
             const auto image = r.u32(4);
@@ -352,7 +354,7 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
         pages_.push_back({0, 0, image, block_size, format});
     }
     const auto texture_pages = list(tp->data_offset, *tp);
-    regions_.reserve(texture_pages.size());
+    regions_.reserve(texture_pages.size() + max_dynamic_sprites_);
     for (auto p : texture_pages) {
         const auto r = rec(p, *tp, 22);
         Region region{r.u16(0),  r.u16(2),  r.u16(4),  r.u16(6), r.u16(8),
@@ -375,10 +377,10 @@ GameAssets::GameAssets(const Package &package) : package_(package) {
             throw Error(ErrorKind::unsupported, "sprite frame count exceeds limit", p + 56);
         total_sprite_frames += count;
     }
-    sprite_frame_regions_.reserve(total_sprite_frames);
+    sprite_frame_regions_.reserve(total_sprite_frames + max_dynamic_sprites_);
     std::vector<std::pair<std::size_t, std::size_t>> sprite_frame_ranges;
     sprite_frame_ranges.reserve(sprite_records.size());
-    sprites_.reserve(sprite_records.size());
+    sprites_.reserve(sprite_records.size() + max_dynamic_sprites_);
     for (auto p : sprite_records) {
         const auto [list_at, count] = sprite_frames(p);
         const auto r = rec(p, *sp, 60);
@@ -581,6 +583,13 @@ const GameAssets::Region *GameAssets::find_region(std::size_t pointer) const noe
 }
 GameAssets::GameAssets(const Package &package, const GmrtProject &project) : package_(package) {
     const auto &resources = project.sprites();
+    std::size_t frame_count = 0;
+    for (const auto &resource : resources)
+        frame_count += resource.frames.size();
+    sprites_.reserve(resources.size() + max_dynamic_sprites_);
+    pages_.reserve(frame_count + max_dynamic_sprites_);
+    regions_.reserve(frame_count + max_dynamic_sprites_);
+    sprite_frame_regions_.reserve(frame_count + max_dynamic_sprites_);
     sprites_.resize(resources.size());
     std::vector<std::pair<std::size_t, std::size_t>> ranges(resources.size());
     for (std::size_t id = 0; id < resources.size(); ++id) {
@@ -625,6 +634,130 @@ const GameAssets::Sprite &GameAssets::sprite(int id) const {
     if (id < 0 || static_cast<std::size_t>(id) >= sprites_.size())
         throw Error(ErrorKind::vm, "sprite ID out of range");
     return sprites_[static_cast<std::size_t>(id)];
+}
+bool GameAssets::set_sprite_offset(int id, int x, int y) {
+    id = unpack_sprite_reference(id);
+    if (id < 0 || static_cast<std::size_t>(id) >= sprites_.size())
+        return false;
+    auto &target = sprites_[static_cast<std::size_t>(id)];
+    target.ox = x;
+    target.oy = y;
+    return true;
+}
+int GameAssets::create_sprite_from_surface(const Canvas &surface,
+                                          int x,
+                                          int y,
+                                          int width,
+                                          int height,
+                                          bool remove_background,
+                                          bool smooth,
+                                          int origin_x,
+                                          int origin_y) {
+    if (width <= 0 || height <= 0 || dynamic_sprite_count_ >= max_dynamic_sprites_ ||
+        sprites_.size() >= static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        regions_.size() >= std::numeric_limits<std::uint32_t>::max() ||
+        pages_.size() >= static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        package_.size() > std::numeric_limits<std::uint32_t>::max() - max_dynamic_sprites_ - 1)
+        return -1;
+    const auto pixel_count = static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height);
+    const auto byte_count = pixel_count * sizeof(std::uint32_t);
+    if (pixel_count > std::numeric_limits<std::size_t>::max() ||
+        byte_count > max_dynamic_sprite_bytes_ - dynamic_sprite_bytes_)
+        return -1;
+
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(pixel_count));
+    const auto source = surface.pixels();
+    for (int row = 0; row < height; ++row) {
+        const auto source_y = static_cast<std::int64_t>(y) + row;
+        if (source_y < 0 || source_y >= surface.height())
+            continue;
+        for (int column = 0; column < width; ++column) {
+            const auto source_x = static_cast<std::int64_t>(x) + column;
+            if (source_x >= 0 && source_x < surface.width())
+                pixels[static_cast<std::size_t>(row) * width + column] =
+                    source[static_cast<std::size_t>(source_y) * surface.width() + source_x];
+        }
+    }
+
+    if (remove_background) {
+        const auto background = pixels[static_cast<std::size_t>(height - 1) * width] & 0x00ffffffU;
+        for (auto &pixel : pixels) {
+            if ((pixel & 0x00ffffffU) == background)
+                pixel &= 0x00ffffffU;
+            else
+                pixel |= 0xff000000U;
+        }
+        if (smooth) {
+            auto smoothed = pixels;
+            for (int row = 0; row < height; ++row)
+                for (int column = 0; column < width; ++column) {
+                    const auto index = static_cast<std::size_t>(row) * width + column;
+                    if ((pixels[index] >> 24) == 0)
+                        continue;
+                    bool edge = false;
+                    for (int dy = -1; dy <= 1 && !edge; ++dy)
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            const int nx = column + dx, ny = row + dy;
+                            if (nx >= 0 && ny >= 0 && nx < width && ny < height &&
+                                (pixels[static_cast<std::size_t>(ny) * width + nx] >> 24) == 0) {
+                                edge = true;
+                                break;
+                            }
+                        }
+                    if (edge)
+                        smoothed[index] = (smoothed[index] & 0x00ffffffU) | 0x80000000U;
+                }
+            pixels.swap(smoothed);
+        }
+    }
+
+    int left = width, right = -1, top = height, bottom = -1;
+    for (int row = 0; row < height; ++row)
+        for (int column = 0; column < width; ++column)
+            if ((pixels[static_cast<std::size_t>(row) * width + column] >> 24) != 0) {
+                left = std::min(left, column);
+                right = std::max(right, column);
+                top = std::min(top, row);
+                bottom = std::max(bottom, row);
+            }
+    if (right < 0)
+        left = right = top = bottom = 0;
+
+    const int id = static_cast<int>(sprites_.size());
+    const int page_id = static_cast<int>(pages_.size());
+    const auto region_id = static_cast<std::uint32_t>(regions_.size());
+    const auto pointer = static_cast<std::uint32_t>(package_.size() + dynamic_sprite_count_ + 1);
+
+    Page page;
+    page.width = width;
+    page.height = height;
+    page.last_used = ++page_cache_clock_;
+    page.format = TextureFormat::qoi;
+    page.pixels = std::move(pixels);
+    pages_.push_back(std::move(page));
+
+    Region region;
+    region.w = region.tw = width;
+    region.h = region.th = height;
+    region.page = page_id;
+    regions_.push_back({pointer, region});
+    const auto frame_start = sprite_frame_regions_.size();
+    sprite_frame_regions_.push_back(region_id);
+
+    Sprite sprite;
+    sprite.width = width;
+    sprite.height = height;
+    sprite.ox = origin_x;
+    sprite.oy = origin_y;
+    sprite.left = left;
+    sprite.right = right;
+    sprite.top = top;
+    sprite.bottom = bottom;
+    sprite.frames = std::span<const std::uint32_t>(sprite_frame_regions_).subspan(frame_start, 1);
+    sprites_.push_back(std::move(sprite));
+    ++dynamic_sprite_count_;
+    dynamic_sprite_bytes_ += static_cast<std::size_t>(byte_count);
+    return id;
 }
 bool GameAssets::mask_pixel(int id, double frame, int x, int y) const {
     const auto &s = sprite(id);

@@ -33,6 +33,12 @@ class Canvas {
     void clear_transparent() noexcept;
     void color(std::uint32_t gml_bgr) noexcept;
     void alpha(double alpha);
+    void blend_enable(bool enabled) noexcept { blend_enabled_ = enabled; }
+    void alpha_test_enable(bool enabled) noexcept { alpha_test_enabled_ = enabled; }
+    void alpha_test_ref(unsigned value) noexcept { alpha_test_ref_ = value > 255 ? 255 : value; }
+    void color_write_enable(bool red, bool green, bool blue, bool alpha) noexcept {
+        color_write_ = {red, green, blue, alpha};
+    }
     void pixel_shader(PixelShader shader, void *context = nullptr) noexcept {
         pixel_shader_ = shader;
         pixel_shader_context_ = context;
@@ -40,6 +46,8 @@ class Canvas {
     void font(int id);
     void rectangle(double x1, double y1, double x2, double y2, bool outline);
     void circle(double x, double y, double radius, bool outline);
+    void ellipse(double x1, double y1, double x2, double y2, bool outline);
+    void round_rectangle(double x1, double y1, double x2, double y2, double x_radius, double y_radius, bool outline);
     void line(double x1, double y1, double x2, double y2, double width = 1);
     void triangle(double x1, double y1, double x2, double y2, double x3, double y3, bool outline);
     void draw_surface(const Canvas &source,
@@ -79,6 +87,10 @@ class Canvas {
 
   private:
     void plot(int x, int y);
+    void store_pixel(int x, int y, std::uint32_t rgba) noexcept;
+    bool color_write_all() const noexcept {
+        return color_write_[0] && color_write_[1] && color_write_[2] && color_write_[3];
+    }
     struct CoordinateScale {
         double &active;
         double factor;
@@ -89,6 +101,10 @@ class Canvas {
     int logical_width_, logical_height_;
     bool gpu_ = false;
     bool profile_text_ = false;
+    bool blend_enabled_ = true;
+    bool alpha_test_enabled_ = false;
+    unsigned alpha_test_ref_ = 0;
+    std::array<bool, 4> color_write_{true, true, true, true};
     double text_profile_ms_ = 0;
     PixelShader pixel_shader_ = nullptr;
     void *pixel_shader_context_ = nullptr;

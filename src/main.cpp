@@ -15,6 +15,8 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 
 namespace {
 std::string escaped(std::string_view text, std::size_t limit = 160) {
@@ -42,7 +44,7 @@ void help() {
                  "Usage:\n"
                  "  regml inspect <data.win> [--strings] [--code]\n"
                  "  regml disasm <data.win> <code-index> [--linked]\n"
-                 "  regml audit <data.win>\n"
+                 "  regml audit <data.win> [--functions]\n"
                  "  regml gmrt inspect <game.wad>\n"
                  "  regml gmrt extract <game.wad> <output-directory>\n"
                  "  regml gmrt run-function <game.wad> <module-index> <function-index> [--trace]\n"
@@ -188,10 +190,46 @@ int command(int argc, char **argv) {
         return 0;
     }
     if (name == "audit") {
-        if (argc != 3)
-            throw regml::Error(regml::ErrorKind::usage, "audit requires a package path");
+        const bool list_functions = argc == 4 && std::string_view(argv[3]) == "--functions";
+        if (argc != 3 && !list_functions)
+            throw regml::Error(regml::ErrorKind::usage,
+                               "audit requires a package path and optional --functions");
         const auto package = regml::Package::load(argv[2]);
         const auto linked = regml::link_legacy_package(package);
+        if (list_functions) {
+            std::unordered_set<std::string> defined_names;
+            for (std::size_t i = 0; i < package.code().size(); ++i)
+                defined_names.emplace(package.code_name(i));
+            if (const auto *scripts = package.find_chunk("SCPT")) {
+                const auto bytes = package.read_bytes(scripts->data_offset, scripts->size);
+                const regml::BinaryView data(bytes, scripts->data_offset);
+                if (scripts->size < 4)
+                    throw regml::Error(regml::ErrorKind::malformed, "truncated script table",
+                                       scripts->data_offset);
+                const auto count = static_cast<std::size_t>(data.u32(0));
+                if (count > (scripts->size - 4) / 4)
+                    throw regml::Error(regml::ErrorKind::malformed, "truncated script pointer table",
+                                       scripts->data_offset);
+                for (std::size_t i = 0; i < count; ++i) {
+                    const auto record = static_cast<std::size_t>(data.u32(4 + i * 4));
+                    if (record < scripts->data_offset || record - scripts->data_offset > scripts->size ||
+                        scripts->size - (record - scripts->data_offset) < 8)
+                        throw regml::Error(regml::ErrorKind::malformed, "script record leaves SCPT chunk",
+                                           record);
+                    defined_names.emplace(package.string_pointer(data.u32(record - scripts->data_offset)));
+                }
+            }
+            std::cout << "FUNCTION\toccurrences\tfirst_address\tdefined\tname\n";
+            for (const auto &function : linked.functions) {
+                if (function.occurrences == 0)
+                    continue;
+                std::cout << "FUNCTION\t" << function.occurrences << "\t0x" << std::hex
+                          << function.first_address << std::dec << "\t"
+                          << (defined_names.contains(function.name) ? "1" : "0") << "\t"
+                          << function.name << '\n';
+            }
+            return 0;
+        }
         std::cout << "Legacy package decoding and symbol audit\nCode entries: " << linked.programs.size()
                   << "\nInstructions: " << linked.instruction_count
                   << "\nVariables: " << linked.variables.size() << "\nFunctions: " << linked.functions.size()
