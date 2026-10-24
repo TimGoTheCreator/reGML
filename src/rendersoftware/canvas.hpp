@@ -1,11 +1,13 @@
 #pragma once
 #include "error.hpp"
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <span>
 #include <string_view>
 #include <vector>
 namespace regml {
+std::array<unsigned, 7> font_bitmap(unsigned char character);
 // the CPU draws into this buffer; SDL just puts it on screen
 class Canvas {
   public:
@@ -16,6 +18,12 @@ class Canvas {
     int logical_height() const noexcept { return logical_height_; }
     void gpu_target(bool enabled);
     bool gpu_target() const noexcept { return gpu_; }
+    void profile_text(bool enabled) noexcept { profile_text_ = enabled; }
+    double take_text_profile_ms() noexcept {
+        const double result = text_profile_ms_;
+        text_profile_ms_ = 0;
+        return result;
+    }
     [[nodiscard]] int width() const noexcept { return width_; }
     [[nodiscard]] int height() const noexcept { return height_; }
     [[nodiscard]] std::span<std::uint32_t> pixels() noexcept { return pixels_; }
@@ -80,6 +88,8 @@ class Canvas {
     double render_scale_ = 1, coordinate_scale_ = 1;
     int logical_width_, logical_height_;
     bool gpu_ = false;
+    bool profile_text_ = false;
+    double text_profile_ms_ = 0;
     PixelShader pixel_shader_ = nullptr;
     void *pixel_shader_context_ = nullptr;
     int width_, height_;

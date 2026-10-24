@@ -1,5 +1,6 @@
 ﻿#include "assets.hpp"
 #include "../gmrt_project.hpp"
+#include "platform/ps2/gpu.hpp"
 #include "platform/wii/gpu.hpp"
 #include <algorithm>
 #include <bit>
@@ -1170,8 +1171,9 @@ void GameAssets::blit(Canvas &canvas,
         return;
     int source_x = 0, source_y = 0;
     const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
-#if REGML_WII
+#if REGML_WII || REGML_PS2
     if (canvas.gpu_target()) {
+#if REGML_WII
         const double w = r.tw * sx, h = r.th * sy;
         if (angle == 0) {
             const double right = x + w, bottom = y + h;
@@ -1188,15 +1190,24 @@ void GameAssets::blit(Canvas &canvas,
                 *std::min_element(yy, yy + 4) >= canvas.height())
                 return;
         }
+#endif
         std::uint64_t key = 1469598103934665603ULL;
         for (int value : {r.page, r.x, r.y, r.w, r.h})
             key = (key ^ static_cast<unsigned>(value)) * 1099511628211ULL;
         key = key ? key : 1;
+#if REGML_WII
         if (wii_gpu_cached_image(r.w, r.h, x, y, r.tw * sx, r.th * sy, angle, tint, alpha, key))
             return;
         const auto &page = region_pixels(r, source_x, source_y);
         wii_gpu_image(page.pixels, page.width, source_x, source_y, r.w, r.h, x, y, r.tw * sx, r.th * sy,
                       angle, tint, alpha, key);
+#elif REGML_PS2
+        if (ps2_gpu_cached_image(r.w, r.h, x, y, r.tw * sx, r.th * sy, angle, tint, alpha, key))
+            return;
+        const auto &page = region_pixels(r, source_x, source_y);
+        ps2_gpu_image(page.pixels, page.width, source_x, source_y, r.w, r.h, x, y, r.tw * sx, r.th * sy,
+                      angle, tint, alpha, key);
+#endif
         return;
     }
 #endif

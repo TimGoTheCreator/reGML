@@ -12,7 +12,10 @@ void initialize_ps2_storage();
 
 class Ps2Frontend {
   public:
-    explicit Ps2Frontend(bool hidden = false, bool escape_quits = true, bool speed_controls = false);
+    explicit Ps2Frontend(bool hidden = false,
+                         bool escape_quits = true,
+                         bool speed_controls = false,
+                         bool uncapped = false);
     ~Ps2Frontend();
     Ps2Frontend(const Ps2Frontend &) = delete;
     Ps2Frontend &operator=(const Ps2Frontend &) = delete;
@@ -28,6 +31,8 @@ class Ps2Frontend {
 #if REGML_PS2
     GSGLOBAL *gs_ = nullptr;
     GSTEXTURE texture_{};
+    bool gpu_initialized_ = false;
+    bool uncapped_ = false;
 #else
     void *gs_ = nullptr;
 #endif

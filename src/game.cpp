@@ -14,6 +14,9 @@
 #if REGML_WII
 #include "platform/wii/host.hpp"
 #endif
+#if REGML_PS2
+#include "platform/ps2/gpu.hpp"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <charconv>
@@ -111,6 +114,18 @@ std::string save_profile(const Package &package, const std::filesystem::path &pa
     }
     return safe.empty() ? "game" : safe;
 }
+const std::array<std::array<std::string, 2>, 16> &argument_variable_names() {
+    static const auto names = [] {
+        std::array<std::array<std::string, 2>, 16> result;
+        for (std::size_t i = 0; i < result.size(); ++i) {
+            const auto suffix = std::to_string(i);
+            result[i][0] = "argument" + suffix;
+            result[i][1] = "argument[" + suffix + "]";
+        }
+        return result;
+    }();
+    return names;
+}
 Package load_game_package(const std::filesystem::path &path) {
     return Package::load(path);
 }
@@ -189,6 +204,7 @@ struct Room {
     unsigned color = 0;
     std::vector<Placement> instances;
     std::vector<RoomLayer> layers;
+    std::unordered_map<int, std::size_t> layer_indices;
     VariableStore views;
     std::vector<Background> backgrounds;
     std::vector<Tile> tiles;
@@ -260,6 +276,9 @@ struct GameSession::Impl {
         int source = -1, target = -1;
     };
     std::unordered_map<std::uint64_t, CollisionRoute> collision_routes;
+    std::vector<CollisionRoute> tick_collision_routes;
+    std::vector<std::uint32_t> tick_collision_route_stamps;
+    std::uint32_t tick_collision_route_generation = 0;
     std::vector<Room> rooms;
     std::vector<int> order, scripts;
     std::unordered_map<std::string_view, int, VariableStoreHash, std::equal_to<>> code_ids;
@@ -267,10 +286,12 @@ struct GameSession::Impl {
     std::vector<InstancePtr> instances;
     std::vector<InstancePtr> tick_instances;
     std::vector<InstancePtr> frame_instances;
+    std::vector<InstancePtr> target_fallback;
     std::vector<InstancePtr> placed_instances;
     struct DrawEntry {
         double depth;
         std::size_t order;
+        const Instance *instance;
     };
     std::vector<DrawEntry> draw_entries;
     struct SavedRoom {
@@ -310,6 +331,8 @@ struct GameSession::Impl {
     double comparison_epsilon = 0.00001;
     int draw_font = -1, halign = 0, valign = 0;
     std::size_t frame = 0, instruction_count = 0, depth = 0, event_budget = 0;
+    bool profile_tick_timing = false;
+    double last_logic_ms = 0, last_draw_ms = 0;
     int current_code = -1;
     std::size_t current_vm_address = 0;
     int current_room = -1, pending_room = -1, next_id = 200000;
@@ -321,6 +344,7 @@ struct GameSession::Impl {
     std::vector<EventFrame> event_stack;
     struct VmScratch {
         std::vector<Value> stack, arguments;
+        std::vector<InstancePtr> targets;
         std::vector<DataType> stack_types;
         struct Environment {
             InstancePtr saved, saved_other;
@@ -787,6 +811,7 @@ struct GameSession::Impl {
                     layer.sprites.push_back(sprite);
                 }
                 room.layers.push_back(std::move(layer));
+                room.layer_indices.try_emplace(room.layers.back().id, room.layers.size() - 1);
             }
         }
         order = project.room_order();
@@ -1031,9 +1056,11 @@ struct GameSession::Impl {
             code_valid(placement.precreate, q + 36);
             room.instances.push_back(placement);
         }
-        if (room.has_layers && r.u32(88)) {
+        const std::size_t layer_list_offset =
+            package.general_info() && package.general_info()->bytecode_version >= 17 ? 92 : 88;
+        if (room.has_layers && r.u32(layer_list_offset)) {
             std::unordered_map<int, int> instance_layers;
-            for (const auto layer_offset : list(r.u32(88), *ro)) {
+            for (const auto layer_offset : list(r.u32(layer_list_offset), *ro)) {
                 const auto header = record(layer_offset, *ro, 56);
                 RoomLayer layer;
                 layer.name = package.string_pointer(header.u32(0));
@@ -1119,6 +1146,7 @@ struct GameSession::Impl {
                         }
                 }
                 room.layers.push_back(std::move(layer));
+                room.layer_indices.try_emplace(room.layers.back().id, room.layers.size() - 1);
             }
             for (auto &placement : room.instances)
                 if (const auto found = instance_layers.find(placement.id); found != instance_layers.end())
@@ -1310,12 +1338,21 @@ struct GameSession::Impl {
         }
         return false;
     }
-    std::vector<InstancePtr> targets(int target, const InstancePtr &self, const InstancePtr &other) {
-        if (target == -1)
-            return self ? std::vector{self} : std::vector<InstancePtr>{};
-        if (target == -2)
-            return other && other->alive ? std::vector{other} : std::vector<InstancePtr>{};
-        std::vector<InstancePtr> out;
+    std::vector<InstancePtr> &targets(int target, const InstancePtr &self, const InstancePtr &other) {
+        auto &out = depth == 0 ? target_fallback : vm_scratch[depth - 1].targets;
+        out.clear();
+        if (target == -1) {
+            if (self)
+                out.push_back(self);
+            return out;
+        }
+        if (target == -2) {
+            if (other && other->alive)
+                out.push_back(other);
+            return out;
+        }
+        if (out.capacity() < std::min(instances.size(), std::size_t{64}))
+            out.reserve(std::min(instances.size(), std::size_t{64}));
         for (auto &i : instances)
             if (i->alive && !i->deactivated && matches(*i, target))
                 out.push_back(i);
@@ -1490,6 +1527,11 @@ struct GameSession::Impl {
             ~Guard() { --d; }
         } guard{depth};
         if (gmrt_project) {
+            auto &target_scratch = vm_scratch[depth - 1].targets;
+            struct TargetScratchGuard {
+                std::vector<InstancePtr> &targets;
+                ~TargetScratchGuard() { targets.clear(); }
+            } target_scratch_guard{target_scratch};
             if (static_cast<std::size_t>(code) >= gmrt_code_refs.size())
                 throw Error(ErrorKind::vm, "GMIR code reference is out of range");
             const auto reference = gmrt_code_refs[static_cast<std::size_t>(code)];
@@ -1726,19 +1768,34 @@ struct GameSession::Impl {
         }
         const auto &program = linked.program(package, static_cast<std::size_t>(code));
         VariableStore locals;
-        for (std::size_t i = 0; i < arguments.size(); ++i) {
-            locals["argument" + std::to_string(i)] = arguments[i];
-            locals["argument[" + std::to_string(i) + "]"] = arguments[i];
+        if (!arguments.empty()) {
+            locals.reserve(arguments.size() * 2);
+            const auto &argument_names = argument_variable_names();
+            for (std::size_t i = 0; i < arguments.size(); ++i) {
+                if (i < argument_names.size()) {
+                    const auto &names = argument_names[i];
+                    locals.try_emplace(std::string_view(names[0]), arguments[i]);
+                    locals.try_emplace(std::string_view(names[1]), arguments[i]);
+                } else {
+                    locals["argument" + std::to_string(i)] = arguments[i];
+                    locals["argument[" + std::to_string(i) + "]"] = arguments[i];
+                }
+            }
         }
         auto &scratch = vm_scratch[depth - 1];
         auto &stack = scratch.stack;
         auto &stack_types = scratch.stack_types;
+        if (stack.capacity() < 32)
+            stack.reserve(32);
+        if (stack_types.capacity() < 32)
+            stack_types.reserve(32);
         struct ScratchGuard {
             VmScratch &scratch;
             ~ScratchGuard() {
                 scratch.stack.clear();
                 scratch.stack_types.clear();
                 scratch.arguments.clear();
+                scratch.targets.clear();
                 for (std::size_t i = 0; i < scratch.environment_count; ++i) {
                     auto &environment = scratch.environments[i];
                     environment.choices.clear();
@@ -2518,9 +2575,8 @@ struct GameSession::Impl {
             if (current_room < 0 || static_cast<std::size_t>(current_room) >= rooms.size())
                 return nullptr;
             auto &current = rooms[static_cast<std::size_t>(current_room)];
-            const auto found = std::find_if(current.layers.begin(), current.layers.end(),
-                                            [id](const RoomLayer &layer) { return layer.id == id; });
-            return found == current.layers.end() ? nullptr : &*found;
+            const auto found = current.layer_indices.find(id);
+            return found == current.layer_indices.end() ? nullptr : &current.layers[found->second];
         };
         auto layer_id_argument = [&](std::size_t index) {
             if (index >= args.size())
@@ -2821,7 +2877,7 @@ struct GameSession::Impl {
                 throw Error(ErrorKind::vm, "array_delete index and count must be nonnegative");
             if (index >= length || count == 0)
                 return *array;
-            const int removed = std::min(count, length - index);
+            const int removed = static_cast<int>(std::min<std::int64_t>(count, length - index));
             const int new_length = length - removed;
             for (int destination = index; destination < new_length; ++destination) {
                 const auto source = elements.find(destination + removed);
@@ -2919,7 +2975,7 @@ struct GameSession::Impl {
         if (name == "variable_global_exists")
             return globals.contains(text(0));
         if (name == "variable_instance_exists") {
-            const auto found = targets(static_cast<int>(n(0)), self, other);
+            const auto &found = targets(static_cast<int>(n(0)), self, other);
             return !found.empty() && found[0]->vars.contains(text(1));
         }
         if (name == "variable_instance_set") {
@@ -3667,7 +3723,9 @@ struct GameSession::Impl {
             layer.depth = static_cast<int>(n(0));
             layer.type = 3;
             layer.name = args.size() > 1 ? text(1) : std::string{};
-            rooms[static_cast<std::size_t>(current_room)].layers.push_back(std::move(layer));
+            auto &current = rooms[static_cast<std::size_t>(current_room)];
+            current.layers.push_back(std::move(layer));
+            current.layer_indices.try_emplace(current.layers.back().id, current.layers.size() - 1);
             return std::int32_t{next_dynamic_layer_id - 1};
         }
         if (name == "layer_get_all_elements") {
@@ -4857,10 +4915,14 @@ struct GameSession::Impl {
         throw Error(ErrorKind::unsupported, "engine built-in pending: " + std::string(name));
     }
     void tick(const KeyboardState &input, const KeyboardState &edges) {
+        using ProfileClock = std::chrono::steady_clock;
+        const auto profile_start = profile_tick_timing ? ProfileClock::now() : ProfileClock::time_point{};
+        auto draw_start = ProfileClock::time_point{};
+        last_logic_ms = last_draw_ms = 0;
         const char *allocation_stage = "audio service";
         try {
             audio.service();
-            static const std::array<std::string, 12> alarm_names = {
+            static constexpr std::array<std::string_view, 12> alarm_names = {
                 "alarm[0]", "alarm[1]", "alarm[2]", "alarm[3]", "alarm[4]",  "alarm[5]",
                 "alarm[6]", "alarm[7]", "alarm[8]", "alarm[9]", "alarm[10]", "alarm[11]"};
             held = input;
@@ -4958,8 +5020,9 @@ struct GameSession::Impl {
                                                  before.y + (next->y - before.y) * t,
                                                  before.speed + (next->speed - before.speed) * t, d};
                             };
-                            distance += value_number(i->vars.at("path_speed")) * sample(distance).speed /
-                                        100 / std::max(std::abs(scale), 0.000001);
+                            const auto before = sample(distance);
+                            distance += value_number(i->vars.at("path_speed")) * before.speed / 100 /
+                                        std::max(std::abs(scale), 0.000001);
                             const bool ended = distance < 0 || distance >= path.length;
                             const int action = number(i->vars.at("path_endaction"));
                             double continuation_x = 0, continuation_y = 0;
@@ -4988,7 +5051,6 @@ struct GameSession::Impl {
                                 }
                             }
                             const auto point = sample(distance);
-                            const auto before = sample(position * path.length);
                             const double dx = (point.x - before.x) * scale + continuation_x,
                                          dy = (point.y - before.y) * scale + continuation_y;
                             if (dx != 0 || dy != 0)
@@ -5034,11 +5096,26 @@ struct GameSession::Impl {
                 }
             // skip the geometry work when the pair has no collision handler
             allocation_stage = "collision checks";
+            if (tick_collision_routes.size() != objects.size()) {
+                tick_collision_routes.resize(objects.size());
+                tick_collision_route_stamps.assign(objects.size(), 0);
+                tick_collision_route_generation = 0;
+            }
             for (const auto &i : snapshot)
-                if (i->alive && objects[static_cast<std::size_t>(i->object)].has_collision_events)
+                if (i->alive && objects[static_cast<std::size_t>(i->object)].has_collision_events) {
+                    if (++tick_collision_route_generation == 0) {
+                        std::fill(tick_collision_route_stamps.begin(), tick_collision_route_stamps.end(), 0);
+                        ++tick_collision_route_generation;
+                    }
                     for (const auto &j : snapshot)
                         if (j->alive && i != j) {
-                            const auto route = collision_event(i->object, j->object);
+                            const auto target_object = static_cast<std::size_t>(j->object);
+                            if (tick_collision_route_stamps[target_object] !=
+                                tick_collision_route_generation) {
+                                tick_collision_routes[target_object] = collision_event(i->object, j->object);
+                                tick_collision_route_stamps[target_object] = tick_collision_route_generation;
+                            }
+                            const auto route = tick_collision_routes[target_object];
                             if (route.source >= 0 && collides(*i, value_number(i->vars.at("x")),
                                                               value_number(i->vars.at("y")), *j)) {
                                 const double other_x = value_number(j->vars.at("x"));
@@ -5059,6 +5136,7 @@ struct GameSession::Impl {
                                 }
                             }
                         }
+                }
             allocation_stage = "end-step events";
             for (const auto &i : snapshot)
                 event(i, 3, 2);
@@ -5098,6 +5176,10 @@ struct GameSession::Impl {
                 }
             }
             allocation_stage = "room view setup";
+            if (profile_tick_timing) {
+                draw_start = ProfileClock::now();
+                last_logic_ms = std::chrono::duration<double, std::milli>(draw_start - profile_start).count();
+            }
             canvas.clear(rooms.at(static_cast<std::size_t>(current_room)).color);
             if (number(engine.at("view_enabled")) != 0 && number(engine.at("view_visible[0]")) != 0) {
                 const auto w = value_number(engine.at("view_wview[0]")),
@@ -5164,32 +5246,48 @@ struct GameSession::Impl {
             };
             std::size_t tile = 0;
             allocation_stage = "draw-list allocation";
-            draw_entries.clear();
-            if (draw_entries.capacity() < snapshot.size())
-                draw_entries.reserve(snapshot.size());
-            for (std::size_t index = 0; index < snapshot.size(); ++index) {
-                const auto &instance = snapshot[index];
-                draw_entries.push_back({value_number(instance->vars.at("depth")), index});
+            bool rebuild_draw_order = draw_entries.size() != snapshot.size();
+            bool resort_draw_order = false;
+            if (!rebuild_draw_order) {
+                for (auto &entry : draw_entries) {
+                    if (entry.order >= snapshot.size() || entry.instance != snapshot[entry.order].get()) {
+                        rebuild_draw_order = true;
+                        break;
+                    }
+                    const double depth = value_number(snapshot[entry.order]->vars.at("depth"));
+                    resort_draw_order |= entry.depth != depth;
+                    entry.depth = depth;
+                }
             }
-            std::sort(draw_entries.begin(), draw_entries.end(), [](const auto &a, const auto &b) {
-                return a.depth != b.depth ? a.depth > b.depth : a.order < b.order;
-            });
+            if (rebuild_draw_order) {
+                draw_entries.clear();
+                if (draw_entries.capacity() < snapshot.size())
+                    draw_entries.reserve(snapshot.size());
+                for (std::size_t index = 0; index < snapshot.size(); ++index) {
+                    const auto &instance = snapshot[index];
+                    draw_entries.push_back({value_number(instance->vars.at("depth")), index, instance.get()});
+                }
+                resort_draw_order = true;
+            }
+            if (resort_draw_order)
+                std::sort(draw_entries.begin(), draw_entries.end(), [](const auto &a, const auto &b) {
+                    return a.depth != b.depth ? a.depth > b.depth : a.order < b.order;
+                });
             allocation_stage = "instance draw calls";
             for (auto &entry : draw_entries) {
                 const auto &i = snapshot[entry.order];
                 if (i->alive && !i->deactivated && number(i->vars.at("visible"))) {
                     const int previous_shader = active_shader;
                     const auto layer_id = static_cast<int>(number(i->vars.at("layer")));
-                    const auto draw_layer = std::find_if(
-                        room.layers.begin(), room.layers.end(),
-                        [layer_id](const RoomLayer &layer) { return layer.id == layer_id; });
-                    const bool apply_layer_shader =
-                        draw_layer != room.layers.end() && draw_layer->shader >= 0;
+                    const auto layer = room.layer_indices.find(layer_id);
+                    const RoomLayer *draw_layer =
+                        layer == room.layer_indices.end() ? nullptr : &room.layers[layer->second];
+                    const bool apply_layer_shader = draw_layer && draw_layer->shader >= 0;
                     if (apply_layer_shader) {
                         active_shader = draw_layer->shader;
                         configure_shader(canvas);
                     }
-                    if (draw_layer != room.layers.end())
+                    if (draw_layer)
                         run_layer_script(draw_layer->begin_script, i);
                     while (tile < room.tiles.size() &&
                            room.tiles[tile].depth >= value_number(i->vars.at("depth")))
@@ -5229,7 +5327,7 @@ struct GameSession::Impl {
                                     std::fmod(std::fmod(next_index, count) + count, count);
                         }
                     }
-                    if (draw_layer != room.layers.end())
+                    if (draw_layer)
                         run_layer_script(draw_layer->end_script, i);
                     if (apply_layer_shader) {
                         active_shader = previous_shader;
@@ -5247,6 +5345,8 @@ struct GameSession::Impl {
             for (const auto &i : snapshot)
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
                     event(i, 8, 64);
+            if (profile_tick_timing)
+                last_draw_ms = std::chrono::duration<double, std::milli>(ProfileClock::now() - draw_start).count();
             std::erase_if(instances, [](const auto &i) { return !i->alive; });
             ++frame;
             engine["current_time"] = static_cast<double>(frame) * 1000.0 / value_number(engine["room_speed"]);
@@ -5265,6 +5365,26 @@ GameSession::GameSession(const std::filesystem::path &path,
 GameSession::~GameSession() = default;
 void GameSession::tick(const KeyboardState &h, const KeyboardState &p) {
     impl_->tick(h, p);
+}
+void GameSession::profile_tick(bool enabled) noexcept {
+    impl_->profile_tick_timing = enabled;
+    impl_->canvas.profile_text(enabled);
+#if REGML_PS2
+    ps2_gpu_profile(enabled);
+#endif
+}
+GameSession::TickProfile GameSession::take_tick_profile() noexcept {
+    TickProfile profile{impl_->last_logic_ms, impl_->last_draw_ms};
+    profile.text_ms = impl_->canvas.take_text_profile_ms();
+#if REGML_PS2
+    const auto gpu_profile = ps2_gpu_take_profile();
+    profile.image_ms = gpu_profile.image_ms;
+    profile.image_calls = gpu_profile.image_calls;
+    profile.image_quads = gpu_profile.image_quads;
+    profile.glyph_quads = gpu_profile.glyph_quads;
+    profile.texture_uploads = gpu_profile.texture_uploads;
+#endif
+    return profile;
 }
 void GameSession::text_input(std::string_view text) {
     auto *typed = std::get_if<std::string>(&impl_->engine.at("keyboard_string"));

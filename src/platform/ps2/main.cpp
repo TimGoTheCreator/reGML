@@ -26,6 +26,7 @@ int main(int argc, char **argv) {
             return std::filesystem::exists(path, error) && !error;
         };
         options.debug_overlay = exists(directory / regml::debug_overlay_marker);
+        options.uncapped = exists(directory / "regml-uncapped.enabled");
         if (exists(directory / "regml-input.txt"))
             options.input_script = directory / "regml-input.txt";
         if (exists(directory / "regml-trace.enabled"))

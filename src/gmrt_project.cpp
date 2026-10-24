@@ -1,8 +1,9 @@
 #include "gmrt_project.hpp"
 #include "error.hpp"
 #include <algorithm>
-#include <charconv>
+#include <cerrno>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <variant>
@@ -201,8 +202,11 @@ class JsonParser {
         }
         double value = 0;
         const auto text = input_.substr(start, position_ - start);
-        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
-        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
+        const std::string number_text(text);
+        char *parsed_end = nullptr;
+        errno = 0;
+        value = std::strtod(number_text.c_str(), &parsed_end);
+        if (errno == ERANGE || parsed_end != number_text.c_str() + number_text.size() || !std::isfinite(value))
             malformed("has a number outside the supported range");
         return JsonValue{value};
     }

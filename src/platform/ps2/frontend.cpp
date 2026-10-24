@@ -3,6 +3,7 @@
 #if REGML_PS2
 #include "error.hpp"
 #include "game.hpp"
+#include "gpu.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -74,7 +75,8 @@ void initialize_ps2_storage() {
         throw Error(ErrorKind::io, "PS2 fileXio initialization failed");
 }
 
-Ps2Frontend::Ps2Frontend(bool hidden, bool escape_quits, bool speed_controls) {
+Ps2Frontend::Ps2Frontend(bool hidden, bool escape_quits, bool speed_controls, bool uncapped)
+    : uncapped_(uncapped) {
     (void)hidden;
     (void)escape_quits;
     (void)speed_controls;
@@ -89,25 +91,13 @@ Ps2Frontend::Ps2Frontend(bool hidden, bool escape_quits, bool speed_controls) {
     gs->DoubleBuffering = GS_SETTING_ON;
     gs->PSM = GS_PSM_CT16;
     gs->PSMZ = GS_PSMZ_16;
+#if REGML_PS2_NTSC
+    gs->Mode = GS_MODE_NTSC;
+#else
     gs->Mode = gsKit_detect_signal();
+#endif
     gsKit_init_screen(gs);
     gsKit_mode_switch(gs, GS_ONESHOT);
-
-    auto *pixels = static_cast<std::uint16_t *>(memalign(64, kTextureBytes));
-    if (!pixels)
-        throw Error(ErrorKind::io, "PS2 framebuffer texture allocation failed");
-    texture_memory_ = pixels;
-    std::memset(pixels, 0, kTextureBytes);
-    texture_.Width = kTextureWidth;
-    texture_.Height = kTextureHeight;
-    texture_.PSM = GS_PSM_CT16;
-    texture_.TBW = kTextureWidth / 64;
-    texture_.Mem = static_cast<u32 *>(texture_memory_);
-    texture_.Filter = GS_FILTER_NEAREST;
-    texture_.Vram = gsKit_vram_alloc(gs, gsKit_texture_size(kTextureWidth, kTextureHeight, GS_PSM_CT16),
-                                     GSKIT_ALLOC_USERBUFFER);
-    if (texture_.Vram == GSKIT_ALLOC_ERROR)
-        throw Error(ErrorKind::io, "PS2 framebuffer texture VRAM allocation failed");
 
     if (SifLoadModule("rom0:SIO2MAN", 0, nullptr) < 0 || SifLoadModule("rom0:PADMAN", 0, nullptr) < 0 ||
         padInit(0) != 1 || padPortOpen(0, 0, pad_buffer_) == 0)
@@ -115,6 +105,7 @@ Ps2Frontend::Ps2Frontend(bool hidden, bool escape_quits, bool speed_controls) {
 }
 
 Ps2Frontend::~Ps2Frontend() {
+    ps2_gpu_shutdown();
     if (gs_)
         gsKit_deinit_global(gs_);
     std::free(texture_memory_);
@@ -160,12 +151,51 @@ KeyboardState Ps2Frontend::take_pressed() noexcept {
 void Ps2Frontend::tick_game(GameSession &session,
                             const KeyboardState *replay,
                             const KeyboardState *replay_pressed) {
+    if (!gpu_initialized_) {
+        ps2_gpu_initialize(gs_, session.canvas().width(), session.canvas().height());
+        session.canvas().gpu_target(true);
+        gpu_initialized_ = true;
+    }
+    ps2_gpu_begin();
     const auto pressed = take_pressed();
     session.tick(replay ? *replay : held_,
                  replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed);
 }
 
 void Ps2Frontend::present(const Canvas &canvas) {
+    if (canvas.gpu_target()) {
+        ps2_gpu_flush();
+        if (uncapped_) {
+            if (!gs_->FirstFrame && gs_->DoubleBuffering == GS_SETTING_ON) {
+                GS_SET_DISPFB2(gs_->ScreenBuffer[gs_->ActiveBuffer & 1] / 8192,
+                               gs_->Width / 64, gs_->PSM, 0, 0);
+                gs_->ActiveBuffer ^= 1;
+            }
+            gsKit_setactive(gs_);
+        } else {
+            gsKit_sync_flip(gs_);
+        }
+        ps2_gpu_presented();
+        return;
+    }
+
+    if (!texture_memory_) {
+        auto *pixels = static_cast<std::uint16_t *>(memalign(64, kTextureBytes));
+        if (!pixels)
+            throw Error(ErrorKind::io, "PS2 software framebuffer allocation failed");
+        texture_memory_ = pixels;
+        std::memset(pixels, 0, kTextureBytes);
+        texture_.Width = kTextureWidth;
+        texture_.Height = kTextureHeight;
+        texture_.PSM = GS_PSM_CT16;
+        texture_.TBW = kTextureWidth / 64;
+        texture_.Mem = static_cast<u32 *>(texture_memory_);
+        texture_.Filter = GS_FILTER_NEAREST;
+        texture_.Vram = gsKit_vram_alloc(gs_, gsKit_texture_size(kTextureWidth, kTextureHeight, GS_PSM_CT16),
+                                         GSKIT_ALLOC_USERBUFFER);
+        if (texture_.Vram == GSKIT_ALLOC_ERROR)
+            throw Error(ErrorKind::io, "PS2 software framebuffer VRAM allocation failed");
+    }
     auto *pixels = static_cast<std::uint16_t *>(texture_memory_);
     const auto source = canvas.pixels();
     const auto width = std::min(canvas.width(), kTextureWidth);

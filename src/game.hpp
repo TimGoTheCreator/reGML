@@ -13,6 +13,16 @@
 namespace regml {
 class GameSession {
   public:
+    struct TickProfile {
+        double logic_ms = 0;
+        double draw_ms = 0;
+        double image_ms = 0;
+        double text_ms = 0;
+        std::uint64_t image_calls = 0;
+        std::uint64_t image_quads = 0;
+        std::uint64_t glyph_quads = 0;
+        std::uint64_t texture_uploads = 0;
+    };
     struct InstanceState {
         int id;
         std::string object_name;
@@ -23,6 +33,8 @@ class GameSession {
                          const std::filesystem::path &save_directory = {});
     ~GameSession();
     void tick(const KeyboardState &held, const KeyboardState &pressed);
+    void profile_tick(bool enabled) noexcept;
+    TickProfile take_tick_profile() noexcept;
     void text_input(std::string_view text);
     Canvas &canvas();
     const Canvas &canvas() const;

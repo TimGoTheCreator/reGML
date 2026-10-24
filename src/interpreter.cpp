@@ -52,12 +52,20 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
         throw Error(ErrorKind::unsupported, "numeric VM requires bytecode 15, 16, or 17", program.origin);
     VmResult result;
     std::vector<Value> stack;
+    stack.reserve(std::min(options.max_stack_values, std::size_t{64}));
     std::size_t pc = 0;
-    while (pc != program.byte_length) {
-        const auto found = program.instruction_at(pc);
-        if (!found || *found >= program.instructions.size())
+    std::size_t instruction_index = 0;
+    if (pc != program.byte_length) {
+        const auto entry = program.instruction_at(pc);
+        if (!entry || *entry >= program.instructions.size())
             throw Error(ErrorKind::vm, "program counter is not an instruction boundary", program.origin + pc);
-        const auto &ins = program.instructions[*found];
+        instruction_index = *entry;
+    }
+    while (pc != program.byte_length) {
+        if (instruction_index >= program.instructions.size() ||
+            program.instructions[instruction_index].offset != pc)
+            throw Error(ErrorKind::vm, "program counter is not an instruction boundary", program.origin + pc);
+        const auto &ins = program.instructions[instruction_index];
         const auto absolute = program.origin + pc;
         if (result.instructions_executed >= options.instruction_budget)
             throw Error(ErrorKind::vm, "instruction budget exhausted", absolute);
@@ -67,22 +75,21 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
         auto push = [&](Value value) {
             if (stack.size() >= options.max_stack_values)
                 throw Error(ErrorKind::vm, "operand stack limit exceeded", absolute);
-            stack.push_back(value);
+            stack.push_back(std::move(value));
             result.peak_stack_values = std::max(result.peak_stack_values, stack.size());
         };
         auto pop = [&]() -> Value {
             if (stack.empty())
                 throw Error(ErrorKind::vm, "operand stack underflow", absolute);
-            auto value = stack.back();
+            auto value = std::move(stack.back());
             stack.pop_back();
             return value;
         };
         auto check_type = [&](const Value &value, DataType type) {
             if (type == DataType::variable)
                 return;
-            if (type == DataType::float32 && runtime_type(value) == DataType::real)
-                return;
-            if (runtime_type(value) != type)
+            const auto actual = runtime_type(value);
+            if (actual != type && !(type == DataType::float32 && actual == DataType::real))
                 throw Error(ErrorKind::unsupported, "numeric VM requires explicit matching scalar types",
                             absolute);
         };
@@ -376,6 +383,16 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
                         std::string(opcode_name(ins.opcode())) +
                             " is decoded but not executable by the numeric VM",
                         absolute);
+        }
+        if (next == pc + ins.size) {
+            if (next != program.byte_length)
+                ++instruction_index;
+        } else if (next != program.byte_length) {
+            const auto target = program.instruction_at(next);
+            if (!target || *target >= program.instructions.size())
+                throw Error(ErrorKind::vm, "program counter is not an instruction boundary",
+                            program.origin + next);
+            instruction_index = *target;
         }
         pc = next;
     }

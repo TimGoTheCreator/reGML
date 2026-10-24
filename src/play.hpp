@@ -6,6 +6,7 @@ struct PlayOptions {
     std::size_t frame_limit = 0;
     bool headless = false;
     bool hidden = false;
+    bool uncapped = false;
     bool speed_controls = false;
     bool debug_overlay = false;
     double speed_multiplier = 1.0;

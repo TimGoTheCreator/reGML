@@ -1,7 +1,9 @@
 #include "canvas.hpp"
+#include "platform/ps2/gpu.hpp"
 #include "platform/wii/gpu.hpp"
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <fstream>
 namespace regml {
@@ -13,7 +15,7 @@ void finite(double value) {
     if (!std::isfinite(value))
         throw Error(ErrorKind::vm, "drawing coordinate must be finite");
 }
-// 5x7 glyphs: one row per byte, with the leftmost pixel in the top bit
+// 5x7 glyphs ja
 std::array<unsigned, 7> glyph(char c) {
     if (c >= 'a' && c <= 'z')
         c = static_cast<char>(c - 'a' + 'A');
@@ -111,6 +113,9 @@ std::array<unsigned, 7> glyph(char c) {
     }
 }
 } // namespace
+std::array<unsigned, 7> font_bitmap(unsigned char character) {
+    return glyph(static_cast<char>(character));
+}
 Canvas::Canvas(int width, int height, bool main_screen)
     : logical_width_(width), logical_height_(height), width_(width), height_(height) {
 #if REGML_240P
@@ -127,13 +132,18 @@ Canvas::Canvas(int width, int height, bool main_screen)
     pixels_.resize(static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_), 0xff000000);
 }
 void Canvas::gpu_target(bool enabled) {
-#if REGML_WII
+#if REGML_WII || REGML_PS2
     if (enabled == gpu_)
         return;
     if (enabled) {
         std::vector<std::uint32_t>().swap(pixels_);
-    } else
+    } else {
         pixels_.resize(static_cast<std::size_t>(width_) * height_, 0xff000000);
+#if REGML_PS2
+        if (!ps2_gpu_readback(pixels_))
+            std::fill(pixels_.begin(), pixels_.end(), 0xff000000);
+#endif
+    }
     gpu_ = enabled;
 #else
     (void)enabled;
@@ -145,6 +155,9 @@ std::uint32_t Canvas::pixel(int x, int y) const {
 #if REGML_WII
     if (gpu_)
         return wii_gpu_pixel(x, y);
+#elif REGML_PS2
+    if (gpu_)
+        return ps2_gpu_pixel(x, y);
 #endif
     return pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) +
                    static_cast<std::size_t>(x)];
@@ -154,6 +167,11 @@ void Canvas::clear(std::uint32_t bgr) {
     if (gpu_) {
         wii_gpu_begin();
         wii_gpu_box(0, 0, width_, height_, 0xff000000 | to_rgb(bgr));
+        return;
+    }
+#elif REGML_PS2
+    if (gpu_) {
+        ps2_gpu_box(0, 0, width_, height_, 0xff000000 | to_rgb(bgr));
         return;
     }
 #endif
@@ -178,6 +196,15 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
         for (unsigned shift : {0U, 8U, 16U})
             rgb |= ((rgba >> shift & 255) * (tint >> shift & 255) / 255) << shift;
         wii_gpu_box(x, y, 1, 1, (a << 24) | rgb);
+        return;
+    }
+#elif REGML_PS2
+    if (gpu_) {
+        const unsigned a = static_cast<unsigned>((rgba >> 24) * std::clamp(opacity, 0.0, 1.0) + 0.5);
+        unsigned rgb = 0;
+        for (unsigned shift : {0U, 8U, 16U})
+            rgb |= ((rgba >> shift & 255) * (tint >> shift & 255) / 255) << shift;
+        ps2_gpu_box(x, y, 1, 1, (a << 24) | rgb);
         return;
     }
 #endif
@@ -248,6 +275,11 @@ void Canvas::rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tin
         wii_gpu_box(x, y, end - x, 1, (alpha << 24) | (red << 16) | (green << 8) | blue);
         return;
     }
+#elif REGML_PS2
+    if (gpu_) {
+        ps2_gpu_box(x, y, end - x, 1, (alpha << 24) | (red << 16) | (green << 8) | blue);
+        return;
+    }
 #endif
     auto *row = pixels_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width_);
     if (alpha == 255) {
@@ -280,6 +312,13 @@ void Canvas::blit_rgba(std::span<const std::uint32_t> source,
                        std::int8_t source_alpha_mode) noexcept {
     if (opacity <= 0)
         return;
+#if REGML_PS2
+    if (gpu_) {
+        ps2_gpu_image(source, source_width, source_x, source_y, width, height, destination_x, destination_y,
+                      width, height, 0, tint, opacity);
+        return;
+    }
+#endif
     const bool plain = tint == 0xffffff && opacity == 1;
     for (int row = 0; row < height; ++row) {
         const auto *src = source.data() +
@@ -358,6 +397,20 @@ void Canvas::draw_surface(const Canvas &source,
     if (gpu_) {
         wii_gpu_image(source.pixels_, source.width_, 0, 0, source.width_, source.height_, x, y,
                       source.width_ * sx, source.height_ * sy, angle, tint, opacity);
+        return;
+    }
+#elif REGML_PS2
+    if (gpu_) {
+        if (&source == this) {
+            std::vector<std::uint32_t> snapshot(static_cast<std::size_t>(width_) * height_);
+            if (!ps2_gpu_readback(snapshot))
+                return;
+            ps2_gpu_image(snapshot, source.width_, 0, 0, source.width_, source.height_, x, y,
+                          source.width_ * sx, source.height_ * sy, angle, to_rgb(tint), opacity);
+        } else {
+            ps2_gpu_image(source.pixels_, source.width_, 0, 0, source.width_, source.height_, x, y,
+                          source.width_ * sx, source.height_ * sy, angle, to_rgb(tint), opacity);
+        }
         return;
     }
 #endif
@@ -467,6 +520,11 @@ void Canvas::plot(int x, int y) {
         wii_gpu_box(x, y, 1, 1, (alpha_ << 24) | rgb_);
         return;
     }
+#elif REGML_PS2
+    if (gpu_) {
+        ps2_gpu_box(x, y, 1, 1, (alpha_ << 24) | rgb_);
+        return;
+    }
 #endif
     auto &dest =
         pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
@@ -506,11 +564,21 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
         wii_gpu_box(l, t, r - l, b - t, (alpha_ << 24) | rgb_);
         return;
     }
+#elif REGML_PS2
+    if (gpu_ && !outline) {
+        ps2_gpu_box(l, t, r - l, b - t, (alpha_ << 24) | rgb_);
+        return;
+    }
 #endif
     const auto span = [&](int y, int first, int last) {
 #if REGML_WII
         if (gpu_) {
             wii_gpu_box(first, y, last - first, 1, (alpha_ << 24) | rgb_);
+            return;
+        }
+#elif REGML_PS2
+        if (gpu_) {
+            ps2_gpu_box(first, y, last - first, 1, (alpha_ << 24) | rgb_);
             return;
         }
 #endif
@@ -554,6 +622,11 @@ void Canvas::circle(double x, double y, double radius, bool outline) {
 #if REGML_WII
     if (gpu_) {
         wii_gpu_circle(x, y, radius, outline, (alpha_ << 24) | rgb_);
+        return;
+    }
+#elif REGML_PS2
+    if (gpu_) {
+        ps2_gpu_circle(x, y, radius, outline, (alpha_ << 24) | rgb_);
         return;
     }
 #endif
@@ -601,6 +674,19 @@ void Canvas::line(double x1, double y1, double x2, double y2, double width) {
         wii_gpu_triangle(x1 + nx, y1 + ny, x2 - nx, y2 - ny, x1 - nx, y1 - ny, rgba);
         return;
     }
+#elif REGML_PS2
+    if (gpu_) {
+        const double dx = x2 - x1, dy = y2 - y1, length = std::hypot(dx, dy);
+        if (length == 0) {
+            ps2_gpu_box(x1, y1, width, width, (alpha_ << 24) | rgb_);
+            return;
+        }
+        const double nx = -dy / length * width / 2, ny = dx / length * width / 2;
+        const auto rgba = (alpha_ << 24) | rgb_;
+        ps2_gpu_triangle(x1 + nx, y1 + ny, x2 + nx, y2 + ny, x2 - nx, y2 - ny, rgba);
+        ps2_gpu_triangle(x1 + nx, y1 + ny, x2 - nx, y2 - ny, x1 - nx, y1 - ny, rgba);
+        return;
+    }
 #endif
     const double dx = x2 - x1, dy = y2 - y1;
     const auto steps = static_cast<std::size_t>(std::ceil(std::max(std::abs(dx), std::abs(dy))));
@@ -642,6 +728,11 @@ void Canvas::triangle(double x1, double y1, double x2, double y2, double x3, dou
         wii_gpu_triangle(x1, y1, x2, y2, x3, y3, (alpha_ << 24) | rgb_);
         return;
     }
+#elif REGML_PS2
+    if (gpu_) {
+        ps2_gpu_triangle(x1, y1, x2, y2, x3, y3, (alpha_ << 24) | rgb_);
+        return;
+    }
 #endif
     const double area = (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1);
     if (std::abs(area) < 1e-12)
@@ -667,14 +758,10 @@ void Canvas::triangle(double x1, double y1, double x2, double y2, double x3, dou
 void Canvas::text(double x, double y, std::string_view value) {
     text(x, y, value, 1, 1, 0, 0, 0);
 }
-void Canvas::text(double x,
-                  double y,
-                  std::string_view value,
-                  double sx,
-                  double sy,
-                  double angle,
-                  int halign,
-                  int valign) {
+void Canvas::text(
+    double x, double y, std::string_view value, double sx, double sy, double angle, int halign, int valign) {
+    const auto profile_start =
+        profile_text_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     finite(x);
     finite(y);
     finite(sx);
@@ -705,17 +792,48 @@ void Canvas::text(double x,
     const double cosine = std::cos(radians), sine = std::sin(radians);
     const double scale = coordinate_scale_;
     const double anchor_x = x * scale, anchor_y = y * scale;
-
     for (char c : value) {
         if (newline(c)) {
             pen_x = -width * halign / 2.0;
             pen_y += 9 * font_scale_;
             continue;
         }
-        const auto bitmap = glyph(c);
-        for (int row = 0; row < 7; ++row)
+#if REGML_PS2
+        if (gpu_) {
+            const double left = pen_x, right = pen_x + 5 * font_scale_;
+            const double top = pen_y, bottom = pen_y + 7 * font_scale_;
+            const auto transform_x = [&](double px, double py) {
+                return anchor_x + (px * sx * cosine + py * sy * sine) * scale;
+            };
+            const auto transform_y = [&](double px, double py) {
+                return anchor_y + (-px * sx * sine + py * sy * cosine) * scale;
+            };
+            const std::array<double, 8> corners = {transform_x(left, top),     transform_y(left, top),
+                                                   transform_x(right, top),    transform_y(right, top),
+                                                   transform_x(right, bottom), transform_y(right, bottom),
+                                                   transform_x(left, bottom),  transform_y(left, bottom)};
+            const double min_x = std::min({corners[0], corners[2], corners[4], corners[6]});
+            const double max_x = std::max({corners[0], corners[2], corners[4], corners[6]});
+            const double min_y = std::min({corners[1], corners[3], corners[5], corners[7]});
+            const double max_y = std::max({corners[1], corners[3], corners[5], corners[7]});
+            if (max_x > 0 && max_y > 0 && min_x < width_ && min_y < height_)
+                ps2_gpu_font_glyph(static_cast<unsigned char>(c), corners, (alpha_ << 24) | rgb_);
+            pen_x += 6 * font_scale_;
+            continue;
+        }
+#endif
+        const auto bitmap = font_bitmap(static_cast<unsigned char>(c));
+        struct GlyphRectangle {
+            int left, top, right, bottom;
+        };
+        std::array<GlyphRectangle, 21> rectangles{};
+        std::array<int, 3> active_rectangles{};
+        int rectangle_count = 0, active_count = 0;
+        for (int row = 0; row < 7; ++row) {
+            std::array<int, 3> next_active{};
+            int next_count = 0;
+            const auto bits = bitmap[static_cast<std::size_t>(row)];
             for (int column = 0; column < 5;) {
-                const auto bits = bitmap[static_cast<std::size_t>(row)];
                 while (column < 5 && (bits & (1U << static_cast<unsigned>(4 - column))) == 0)
                     ++column;
                 const int first = column;
@@ -724,51 +842,81 @@ void Canvas::text(double x,
                 if (first == column)
                     continue;
 
-                const double left = pen_x + first * font_scale_;
-                const double right = pen_x + column * font_scale_;
-                const double top = pen_y + row * font_scale_;
-                const double bottom = top + font_scale_;
-                if (sine == 0) {
-                    rectangle(x + left * sx,
-                              y + top * sy,
-                              x + right * sx,
-                              y + bottom * sy,
-                              false);
-                    continue;
-                }
-
-                const auto transform_x = [&](double px, double py) {
-                    return anchor_x + (px * sx * cosine + py * sy * sine) * scale;
-                };
-                const auto transform_y = [&](double px, double py) {
-                    return anchor_y + (-px * sx * sine + py * sy * cosine) * scale;
-                };
-                const double corners_x[] = {transform_x(left, top), transform_x(right, top),
-                                             transform_x(left, bottom), transform_x(right, bottom)};
-                const double corners_y[] = {transform_y(left, top), transform_y(right, top),
-                                             transform_y(left, bottom), transform_y(right, bottom)};
-                const double min_x = *std::min_element(std::begin(corners_x), std::end(corners_x));
-                const double max_x = *std::max_element(std::begin(corners_x), std::end(corners_x));
-                const double min_y = *std::min_element(std::begin(corners_y), std::end(corners_y));
-                const double max_y = *std::max_element(std::begin(corners_y), std::end(corners_y));
-                const int x0 = static_cast<int>(std::clamp(std::floor(min_x), 0.0, static_cast<double>(width_)));
-                const int x1 = static_cast<int>(std::clamp(std::ceil(max_x), 0.0, static_cast<double>(width_)));
-                const int y0 = static_cast<int>(std::clamp(std::floor(min_y), 0.0, static_cast<double>(height_)));
-                const int y1 = static_cast<int>(std::clamp(std::ceil(max_y), 0.0, static_cast<double>(height_)));
-                const double inverse_width = 1.0 / (sx * scale);
-                const double inverse_height = 1.0 / (sy * scale);
-                for (int py = y0; py < y1; ++py)
-                    for (int px = x0; px < x1; ++px) {
-                        const double dx = px + 0.5 - anchor_x;
-                        const double dy = py + 0.5 - anchor_y;
-                        const double local_x = (dx * cosine - dy * sine) * inverse_width;
-                        const double local_y = (dx * sine + dy * cosine) * inverse_height;
-                        if (local_x >= left && local_x < right && local_y >= top && local_y < bottom)
-                            plot(px, py);
+                int rectangle_index = -1;
+                for (int i = 0; i < active_count; ++i) {
+                    const int candidate = active_rectangles[static_cast<std::size_t>(i)];
+                    auto &active = rectangles[static_cast<std::size_t>(candidate)];
+                    if (active.left == first && active.right == column) {
+                        rectangle_index = candidate;
+                        active.bottom = row + 1;
+                        break;
                     }
+                }
+                if (rectangle_index < 0) {
+                    rectangle_index = rectangle_count++;
+                    rectangles[static_cast<std::size_t>(rectangle_index)] = {first, row, column, row + 1};
+                }
+                next_active[static_cast<std::size_t>(next_count++)] = rectangle_index;
             }
+            active_rectangles = next_active;
+            active_count = next_count;
+        }
+
+        for (int i = 0; i < rectangle_count; ++i) {
+            const auto &shape = rectangles[static_cast<std::size_t>(i)];
+            const double left = pen_x + shape.left * font_scale_;
+            const double right = pen_x + shape.right * font_scale_;
+            const double top = pen_y + shape.top * font_scale_;
+            const double bottom = pen_y + shape.bottom * font_scale_;
+            if (sine == 0) {
+                rectangle(x + left * sx, y + top * sy, x + right * sx, y + bottom * sy, false);
+                continue;
+            }
+
+            const auto transform_x = [&](double px, double py) {
+                return anchor_x + (px * sx * cosine + py * sy * sine) * scale;
+            };
+            const auto transform_y = [&](double px, double py) {
+                return anchor_y + (-px * sx * sine + py * sy * cosine) * scale;
+            };
+            const double corners_x[] = {transform_x(left, top), transform_x(right, top),
+                                        transform_x(left, bottom), transform_x(right, bottom)};
+            const double corners_y[] = {transform_y(left, top), transform_y(right, top),
+                                        transform_y(left, bottom), transform_y(right, bottom)};
+            const double min_x = *std::min_element(std::begin(corners_x), std::end(corners_x));
+            const double max_x = *std::max_element(std::begin(corners_x), std::end(corners_x));
+            const double min_y = *std::min_element(std::begin(corners_y), std::end(corners_y));
+            const double max_y = *std::max_element(std::begin(corners_y), std::end(corners_y));
+#if REGML_PS2
+            if (gpu_) {
+                if (max_x > 0 && max_y > 0 && min_x < width_ && min_y < height_)
+                    ps2_gpu_quad(corners_x[0], corners_y[0], corners_x[1], corners_y[1], corners_x[3],
+                                 corners_y[3], corners_x[2], corners_y[2], (alpha_ << 24) | rgb_);
+                continue;
+            }
+#endif
+            const int x0 = static_cast<int>(std::clamp(std::floor(min_x), 0.0, static_cast<double>(width_)));
+            const int x1 = static_cast<int>(std::clamp(std::ceil(max_x), 0.0, static_cast<double>(width_)));
+            const int y0 = static_cast<int>(std::clamp(std::floor(min_y), 0.0, static_cast<double>(height_)));
+            const int y1 = static_cast<int>(std::clamp(std::ceil(max_y), 0.0, static_cast<double>(height_)));
+            const double inverse_width = 1.0 / (sx * scale);
+            const double inverse_height = 1.0 / (sy * scale);
+            for (int py = y0; py < y1; ++py)
+                for (int px = x0; px < x1; ++px) {
+                    const double dx = px + 0.5 - anchor_x;
+                    const double dy = py + 0.5 - anchor_y;
+                    const double local_x = (dx * cosine - dy * sine) * inverse_width;
+                    const double local_y = (dx * sine + dy * cosine) * inverse_height;
+                    if (local_x >= left && local_x < right && local_y >= top && local_y < bottom)
+                        plot(px, py);
+                }
+        }
         pen_x += 6 * font_scale_;
     }
+    if (profile_text_)
+        text_profile_ms_ +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - profile_start)
+                .count();
 }
 void Canvas::debug_text_overlay(std::span<const std::string_view> lines) {
     CoordinateScale coordinates(coordinate_scale_);
@@ -817,6 +965,18 @@ std::uint64_t Canvas::hash() const noexcept {
         for (int y = 0; y < height_; ++y)
             for (int x = 0; x < width_; ++x) {
                 const auto rgba = wii_gpu_pixel(x, y);
+                for (unsigned shift : {0U, 8U, 16U, 24U}) {
+                    value ^= (rgba >> shift) & 255;
+                    value *= 1099511628211ULL;
+                }
+            }
+        return value;
+    }
+#elif REGML_PS2
+    if (gpu_) {
+        for (int y = 0; y < height_; ++y)
+            for (int x = 0; x < width_; ++x) {
+                const auto rgba = ps2_gpu_pixel(x, y);
                 for (unsigned shift : {0U, 8U, 16U, 24U}) {
                     value ^= (rgba >> shift) & 255;
                     value *= 1099511628211ULL;
