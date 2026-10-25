@@ -1,5 +1,9 @@
 # reGML
 
+![C++](https://img.shields.io/badge/C%2B%2B-c%2B%2B-blue)
+![fluffy boys](https://img.shields.io/badge/fluffy%20boys-ralsei-pink)
+
+
 A GameMaker bytecode runner and package inspector in C++
 
 Package inspection reads v14-v17 layouts
