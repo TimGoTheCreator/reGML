@@ -1,4 +1,5 @@
 #pragma once
+#include "bit_cast.hpp"
 #include "error.hpp"
 #include <bit>
 #include <cstdint>
@@ -52,15 +53,15 @@ class BinaryView {
         return value;
     }
     [[nodiscard]] std::int16_t i16(std::size_t offset) const {
-        return std::bit_cast<std::int16_t>(u16(offset));
+        return regml::bit_cast<std::int16_t>(u16(offset));
     }
     [[nodiscard]] std::int32_t i32(std::size_t offset) const {
-        return std::bit_cast<std::int32_t>(u32(offset));
+        return regml::bit_cast<std::int32_t>(u32(offset));
     }
     [[nodiscard]] std::int64_t i64(std::size_t offset) const {
-        return std::bit_cast<std::int64_t>(u64(offset));
+        return regml::bit_cast<std::int64_t>(u64(offset));
     }
-    [[nodiscard]] double f64(std::size_t offset) const { return std::bit_cast<double>(u64(offset)); }
+    [[nodiscard]] double f64(std::size_t offset) const { return regml::bit_cast<double>(u64(offset)); }
     [[nodiscard]] std::string_view text(std::size_t offset, std::size_t length) const {
         require(offset, length);
         if (length == 0)

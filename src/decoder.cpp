@@ -1,4 +1,5 @@
 #include "decoder.hpp"
+#include "bit_cast.hpp"
 #include <string>
 namespace regml {
 namespace {
@@ -166,7 +167,7 @@ Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
                 throw Error(ErrorKind::unsupported, "pushi with unexpected operand type",
                             code.origin() + offset);
             ins.set_immediate(
-                static_cast<std::int32_t>(std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word))));
+                static_cast<std::int32_t>(regml::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word))));
             break;
         case Opcode::push:
         case Opcode::push_local:
@@ -181,7 +182,7 @@ Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
                 break;
             case DataType::float32:
                 ins.size = 8;
-                ins.set_immediate(std::bit_cast<float>(code.u32(offset + 4)));
+                ins.set_immediate(regml::bit_cast<float>(code.u32(offset + 4)));
                 break;
             case DataType::int32:
                 ins.size = 8;

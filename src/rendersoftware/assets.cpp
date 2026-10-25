@@ -1,5 +1,6 @@
 ﻿#include "assets.hpp"
 #include "../gmrt_project.hpp"
+#include "bit_cast.hpp"
 #include "platform/ps2/gpu.hpp"
 #include "platform/wii/gpu.hpp"
 #include <algorithm>
@@ -502,7 +503,7 @@ GameAssets::GameAssets(const Package &package)
         Font font;
         const auto encoded_size = r.u32(8);
         const auto em_size = (encoded_size & 0x80000000U) != 0
-                                 ? -std::bit_cast<float>(encoded_size)
+                                 ? -regml::bit_cast<float>(encoded_size)
                                  : static_cast<float>(encoded_size);
         if (!std::isfinite(em_size) || em_size < 0 || em_size > 8192)
             throw Error(ErrorKind::malformed, "invalid font size", p + 8);
@@ -1395,7 +1396,7 @@ void GameAssets::blit(Canvas &canvas,
 #endif
     const auto &page = region_pixels(r, source_x, source_y);
 #if REGML_240P
-    if (canvas.render_scale() < 1 && (std::abs(sx) * r.tw < r.w || std::abs(sy) * r.th < r.h)) {
+    if (canvas.render_scale() < 1 && (std::fabs(sx) * r.tw < r.w || std::fabs(sy) * r.th < r.h)) {
         const double rad = angle * 3.141592653589793 / 180, cs = std::cos(rad), sn = std::sin(rad);
         const double w = r.tw * sx, h = r.th * sy;
         const double xx[] = {x, x + w * cs, x + h * sn, x + w * cs + h * sn};
@@ -1506,7 +1507,7 @@ void GameAssets::blit(Canvas &canvas,
             const double ty = (dy + 0.5 - y) / sy;
             scaled_y_[static_cast<std::size_t>(dy - top)] = source_y + static_cast<int>(ty * r.h / r.th);
         }
-        const bool spans = std::abs(sx) >= 2 && !(tint == 0xffffff && alpha == 1 && source_alpha_mode != 0);
+        const bool spans = std::fabs(sx) >= 2 && !(tint == 0xffffff && alpha == 1 && source_alpha_mode != 0);
         if (spans) {
             scaled_runs_.clear();
             for (int dx = left; dx < right;) {

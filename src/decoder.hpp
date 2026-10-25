@@ -1,4 +1,5 @@
 #pragma once
+#include "bit_cast.hpp"
 #include "binary_view.hpp"
 #include <algorithm>
 #include <limits>
@@ -93,23 +94,23 @@ struct Instruction {
         immediate_kind = ImmediateKind::int64;
     }
     void set_immediate(double value) noexcept {
-        immediate_bits = std::bit_cast<std::uint64_t>(value);
+        immediate_bits = regml::bit_cast<std::uint64_t>(value);
         immediate_kind = ImmediateKind::real64;
     }
     void set_immediate(float value) noexcept {
-        immediate_bits = std::bit_cast<std::uint32_t>(value);
+        immediate_bits = regml::bit_cast<std::uint32_t>(value);
         immediate_kind = ImmediateKind::real32;
     }
     [[nodiscard]] std::int32_t immediate_i32() const noexcept {
-        return std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(immediate_bits));
+        return regml::bit_cast<std::int32_t>(static_cast<std::uint32_t>(immediate_bits));
     }
     [[nodiscard]] std::int64_t immediate_i64() const noexcept {
-        return std::bit_cast<std::int64_t>(immediate_bits);
+        return regml::bit_cast<std::int64_t>(immediate_bits);
     }
     [[nodiscard]] double immediate_real() const noexcept {
         return immediate_kind == ImmediateKind::real32
-                   ? static_cast<double>(std::bit_cast<float>(static_cast<std::uint32_t>(immediate_bits)))
-                   : std::bit_cast<double>(immediate_bits);
+                   ? static_cast<double>(regml::bit_cast<float>(static_cast<std::uint32_t>(immediate_bits)))
+                   : regml::bit_cast<double>(immediate_bits);
     }
 };
 static_assert(sizeof(Instruction) == 24);

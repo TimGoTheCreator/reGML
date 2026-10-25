@@ -1,4 +1,5 @@
 #include "game.hpp"
+#include "bit_cast.hpp"
 #include "audio/sdl/audio.hpp"
 #include "gmrt_ir.hpp"
 #include "gmrt_project.hpp"
@@ -46,6 +47,18 @@ volatile std::uint32_t regml_ps2_active_code_name_length = 0;
 #endif
 namespace regml {
 namespace {
+template <class Map, class Key> auto heterogeneous_find(Map &map, const Key &key) {
+    const auto bucket_count = map.bucket_count();
+    if (bucket_count == 0)
+        return map.end();
+    const auto bucket = map.hash_function()(key) % bucket_count;
+    for (auto local = map.begin(bucket); local != map.end(bucket); ++local) {
+        if (map.key_eq()(local->first, key))
+            return map.find(local->first);
+    }
+    return map.end();
+}
+
 struct GameChangeRequested {};
 
 #if REGML_PS2
@@ -443,7 +456,7 @@ struct GameSession::Impl {
         DynamicMap() { this->max_load_factor(1.5f); }
 
         bool set(DynamicMapKeyView key, const Value &value, bool only_if_absent) {
-            if (const auto found = this->find(key); found != this->end()) {
+            if (const auto found = heterogeneous_find(*this, key); found != this->end()) {
                 if (!only_if_absent)
                     found->second = DynamicValue(value);
                 return false;
@@ -478,7 +491,7 @@ struct GameSession::Impl {
     int next_buffer = 1, next_async_request = 1;
     std::unordered_map<int, std::unique_ptr<std::fstream>> files;
     int next_file = 0;
-    std::filesystem::path save_dir = default_save_root(), ini_path;
+    std::filesystem::path save_dir, ini_path;
     std::map<std::string, std::map<std::string, std::string>> ini;
     bool ini_dirty = false;
     bool ini_opened = false;
@@ -582,7 +595,7 @@ struct GameSession::Impl {
         if (!save_directory.empty())
             save_dir = save_directory;
         else
-            save_dir /= save_profile(package, path);
+            save_dir = default_save_root() / save_profile(package, path);
         load_stage("world metadata", [&] {
             load_world();
             load_shaders();
@@ -741,7 +754,7 @@ struct GameSession::Impl {
             const unsigned shift = static_cast<unsigned>((2 - channel) * 8);
             color[channel] = ((gradient >> shift) & 255) * (1 - mix_amount) +
                              ((next_gradient >> shift) & 255) * mix_amount;
-            color[channel] += std::abs(-1.0 + fract(frag_x / width) * 2.0) * 127.5;
+            color[channel] += std::fabs(-1.0 + fract(frag_x / width) * 2.0) * 127.5;
         }
         const double bubble_x = fract(frag_x / width * 4.0 + time * 1.25);
         const double bubble_y = fract(frag_y / width * 4.0 + time * 1.20);
@@ -1030,9 +1043,9 @@ struct GameSession::Impl {
                 const auto points = record(p + 20, *chunk, static_cast<std::size_t>(count) * 12);
                 for (std::size_t j = 0; j < count; ++j) {
                     PathPoint point;
-                    point.x = std::bit_cast<float>(points.u32(j * 12));
-                    point.y = std::bit_cast<float>(points.u32(j * 12 + 4));
-                    point.speed = std::bit_cast<float>(points.u32(j * 12 + 8));
+                    point.x = regml::bit_cast<float>(points.u32(j * 12));
+                    point.y = regml::bit_cast<float>(points.u32(j * 12 + 4));
+                    point.speed = regml::bit_cast<float>(points.u32(j * 12 + 8));
                     if (!path.points.empty())
                         path.length +=
                             std::hypot(point.x - path.points.back().x, point.y - path.points.back().y);
@@ -1221,13 +1234,13 @@ struct GameSession::Impl {
             placement.object = ir.i32(8);
             placement.id = ir.i32(12);
             placement.create = ir.i32(16);
-            placement.sx = std::bit_cast<float>(ir.u32(20));
-            placement.sy = std::bit_cast<float>(ir.u32(24));
+            placement.sx = regml::bit_cast<float>(ir.u32(20));
+            placement.sy = regml::bit_cast<float>(ir.u32(24));
             if (linked.shared_code) {
-                placement.image_speed = std::bit_cast<float>(ir.u32(28));
+                placement.image_speed = regml::bit_cast<float>(ir.u32(28));
                 placement.image_index = ir.i32(32);
                 placement.color = ir.u32(36);
-                placement.rotation = std::bit_cast<float>(ir.u32(40));
+                placement.rotation = regml::bit_cast<float>(ir.u32(40));
                 placement.precreate = ir.i32(44);
             } else
                 placement.precreate = ir.i32(36);
@@ -1248,12 +1261,12 @@ struct GameSession::Impl {
                 layer.id = static_cast<int>(header.u32(4));
                 layer.type = static_cast<int>(header.u32(8));
                 layer.depth = header.i32(12);
-                layer.x = std::bit_cast<float>(header.u32(16));
-                layer.y = std::bit_cast<float>(header.u32(20));
+                layer.x = regml::bit_cast<float>(header.u32(16));
+                layer.y = regml::bit_cast<float>(header.u32(20));
                 layer.origin_x = layer.x;
                 layer.origin_y = layer.y;
-                layer.hspeed = std::bit_cast<float>(header.u32(24));
-                layer.vspeed = std::bit_cast<float>(header.u32(28));
+                layer.hspeed = regml::bit_cast<float>(header.u32(24));
+                layer.vspeed = regml::bit_cast<float>(header.u32(28));
                 layer.visible = header.u32(32) != 0;
                 const auto effect_count = header.u32(44);
                 if (effect_count > 4096)
@@ -1286,13 +1299,13 @@ struct GameSession::Impl {
                             sprite.sprite = sprite_record.i32(4);
                             sprite.x = sprite_record.i32(8);
                             sprite.y = sprite_record.i32(12);
-                            sprite.sx = std::bit_cast<float>(sprite_record.u32(16));
-                            sprite.sy = std::bit_cast<float>(sprite_record.u32(20));
+                            sprite.sx = regml::bit_cast<float>(sprite_record.u32(16));
+                            sprite.sy = regml::bit_cast<float>(sprite_record.u32(20));
                             sprite.color = sprite_record.u32(24);
-                            sprite.speed = std::bit_cast<float>(sprite_record.u32(28));
+                            sprite.speed = regml::bit_cast<float>(sprite_record.u32(28));
                             sprite.speed_type = sprite_record.i32(32);
-                            sprite.frame = std::bit_cast<float>(sprite_record.u32(36));
-                            sprite.rotation = std::bit_cast<float>(sprite_record.u32(40));
+                            sprite.frame = regml::bit_cast<float>(sprite_record.u32(36));
+                            sprite.rotation = regml::bit_cast<float>(sprite_record.u32(40));
                             layer.sprites.push_back(sprite);
                         }
                     }
@@ -1307,8 +1320,8 @@ struct GameSession::Impl {
                     background.vtiled = data.u32(16) != 0;
                     background.stretch = data.u32(20) != 0;
                     background.color = data.u32(24);
-                    background.frame = std::bit_cast<float>(data.u32(28));
-                    background.speed = std::bit_cast<float>(data.u32(32));
+                    background.frame = regml::bit_cast<float>(data.u32(28));
+                    background.speed = regml::bit_cast<float>(data.u32(32));
                     background.speed_type = data.i32(36);
                     layer.backgrounds.push_back(background);
                 } else if (layer.type == 4) {
@@ -1372,8 +1385,8 @@ struct GameSession::Impl {
             tile.width = t.i32(20);
             tile.height = t.i32(24);
             tile.depth = t.i32(28);
-            tile.sx = std::bit_cast<float>(t.u32(36));
-            tile.sy = std::bit_cast<float>(t.u32(40));
+            tile.sx = regml::bit_cast<float>(t.u32(36));
+            tile.sy = regml::bit_cast<float>(t.u32(40));
             tile.color = t.u32(44);
             room.tiles.push_back(tile);
         }
@@ -1683,7 +1696,7 @@ struct GameSession::Impl {
             const auto prefetch_frame = [&](double value) {
                 if (!std::isfinite(value))
                     return;
-                const PrefetchKey key{sprite, std::bit_cast<std::uint64_t>(value)};
+                const PrefetchKey key{sprite, regml::bit_cast<std::uint64_t>(value)};
                 if (prefetched.insert(key).second)
                     assets.prefetch(sprite, value);
             };
@@ -2217,7 +2230,7 @@ struct GameSession::Impl {
                     const auto id = static_cast<std::size_t>(ins.symbol_id);
                     const auto kind = (ins.reference_value() >> 24) & 0xf8;
                     const int encoded_scope =
-                        std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
+                        regml::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
                     if (ins.symbol_id != Instruction::no_symbol && kind == 0xa0) {
                         auto &cached = scratch.variable_cache[id % scratch.variable_cache.size()];
                         if (cached.generation == variable_cache_generation && cached.symbol == id &&
@@ -2308,10 +2321,10 @@ struct GameSession::Impl {
                         const auto &spr = assets.sprite(id);
                         if (name == "sprite_width")
                             return static_cast<double>(spr.width) *
-                                   std::abs(value_number(found->vars.at("image_xscale")));
+                                   std::fabs(value_number(found->vars.at("image_xscale")));
                         if (name == "sprite_height")
                             return static_cast<double>(spr.height) *
-                                   std::abs(value_number(found->vars.at("image_yscale")));
+                                   std::fabs(value_number(found->vars.at("image_yscale")));
                         if (name == "sprite_xoffset")
                             return static_cast<double>(spr.ox);
                         if (name == "sprite_yoffset")
@@ -2752,7 +2765,7 @@ struct GameSession::Impl {
                         push(static_cast<std::int32_t>(number(left) ^ number(right)));
                         break;
                     case Opcode::shl:
-                        push(std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(number(left))
+                        push(regml::bit_cast<std::int32_t>(static_cast<std::uint32_t>(number(left))
                                                          << (static_cast<unsigned>(number(right)) & 31)));
                         break;
                     case Opcode::shr:
@@ -2897,7 +2910,7 @@ struct GameSession::Impl {
                     break;
                 }
                 case Opcode::extended: {
-                    const auto sub = std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
+                    const auto sub = regml::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
                     if (sub == -11) {
                         if (ins.immediate_kind != Instruction::ImmediateKind::int32)
                             throw Error(ErrorKind::malformed, "pushref has no 32-bit reference");
@@ -3500,7 +3513,7 @@ struct GameSession::Impl {
             return std::int32_t{-1};
         if (gmrt_project && name == "external_call")
             return 0.0;
-        if (const auto it = script_names.find(name); it != script_names.end()) {
+        if (const auto it = heterogeneous_find(script_names, name); it != script_names.end()) {
             return execute(it->second, self, args, other, struct_self);
         }
         if (name == "script_execute") {
@@ -3934,8 +3947,8 @@ struct GameSession::Impl {
             std::string key_storage;
             const DynamicMapKeyView key{value_is_string(args[1]), text_view(1, key_storage)};
             if (name == "ds_map_exists")
-                return map.contains(key);
-            const auto it = map.find(key);
+                return heterogeneous_find(map, key) != map.end();
+            const auto it = heterogeneous_find(map, key);
             return it == map.end() ? Value{std::monostate{}} : it->second.to_value();
         }
         if (name == "ds_map_destroy") {
@@ -4278,9 +4291,9 @@ struct GameSession::Impl {
                 if (type == 11)
                     encoded.push_back(0);
             } else if (type == 8)
-                write_integer(std::bit_cast<std::uint32_t>(static_cast<float>(value_number(value))), 4);
+                write_integer(regml::bit_cast<std::uint32_t>(static_cast<float>(value_number(value))), 4);
             else if (type == 9)
-                write_integer(std::bit_cast<std::uint64_t>(value_number(value)), 8);
+                write_integer(regml::bit_cast<std::uint64_t>(value_number(value)), 8);
             else {
                 const std::size_t width = (type == 1 || type == 2 || type == 10)  ? 1
                                           : (type == 3 || type == 4 || type == 7) ? 2
@@ -4322,9 +4335,9 @@ struct GameSession::Impl {
                 return value;
             }
             if (type == 8)
-                return static_cast<double>(std::bit_cast<float>(static_cast<std::uint32_t>(read_integer(4))));
+                return static_cast<double>(regml::bit_cast<float>(static_cast<std::uint32_t>(read_integer(4))));
             if (type == 9)
-                return std::bit_cast<double>(read_integer(8));
+                return regml::bit_cast<double>(read_integer(8));
             const std::size_t width = (type == 1 || type == 2 || type == 10)  ? 1
                                       : (type == 3 || type == 4 || type == 7) ? 2
                                       : (type == 5 || type == 6)              ? 4
@@ -5541,8 +5554,8 @@ struct GameSession::Impl {
                 return std::monostate{};
             const Canvas source = surfaces.at(id);
             const double sx = n(3), sy = n(4);
-            const double tile_width = source.width() * std::abs(sx);
-            const double tile_height = source.height() * std::abs(sy);
+            const double tile_width = source.width() * std::fabs(sx);
+            const double tile_height = source.height() * std::fabs(sy);
             if (!std::isfinite(tile_width + tile_height) || tile_width <= 0 || tile_height <= 0)
                 return std::monostate{};
             const double x = n(1), y = n(2);
@@ -5634,7 +5647,7 @@ struct GameSession::Impl {
                 draw_color = average_color_arguments(extended ? 6 : 4, 2);
                 canvas.color(draw_color);
             }
-            const double width = std::abs(n(2) - n(0)), height = std::abs(n(3) - n(1));
+            const double width = std::fabs(n(2) - n(0)), height = std::fabs(n(3) - n(1));
             const double radius_x = extended ? n(4) : std::min(10.0, width / 4);
             const double radius_y = extended ? n(5) : std::min(10.0, height / 4);
             canvas.round_rectangle(n(0), n(1), n(2), n(3), radius_x, radius_y, outline);
@@ -5784,8 +5797,8 @@ struct GameSession::Impl {
             const int sprite = static_cast<int>(n(0));
             const auto &info = assets.sprite(sprite);
             const double frame_index = n(1), x = n(2), y = n(3), sx = n(4), sy = n(5);
-            const double tile_width = info.width * std::abs(sx);
-            const double tile_height = info.height * std::abs(sy);
+            const double tile_width = info.width * std::fabs(sx);
+            const double tile_height = info.height * std::fabs(sy);
             if (!std::isfinite(tile_width + tile_height + x + y) || tile_width <= 0 || tile_height <= 0)
                 return std::monostate{};
             const double width = canvas.logical_width(), height = canvas.logical_height();
@@ -6067,7 +6080,7 @@ struct GameSession::Impl {
             const double hue = std::fmod(std::fmod(n(0), 256.0) + 256.0, 256.0) * 6 / 256;
             const double saturation = std::clamp(n(1), 0.0, 255.0) / 255;
             const double value = std::clamp(n(2), 0.0, 255.0) / 255;
-            const double chroma = value * saturation, x = chroma * (1 - std::abs(std::fmod(hue, 2.0) - 1));
+            const double chroma = value * saturation, x = chroma * (1 - std::fabs(std::fmod(hue, 2.0) - 1));
             double r = 0, g = 0, b = 0;
             if (hue < 1) {
                 r = chroma;
@@ -6484,7 +6497,7 @@ struct GameSession::Impl {
         if (name == "power")
             return std::pow(n(0), n(1));
         if (name == "abs")
-            return std::abs(n(0));
+            return std::fabs(n(0));
         if (name == "sign") {
             const double value = n(0);
             return std::int32_t{value > 0 ? 1 : value < 0 ? -1 : 0};
@@ -6775,7 +6788,7 @@ struct GameSession::Impl {
                             };
                             const auto before = sample(distance);
                             distance += value_number(i->vars.at("path_speed")) * before.speed / 100 /
-                                        std::max(std::abs(scale), 0.000001);
+                                        std::max(std::fabs(scale), 0.000001);
                             const bool ended = distance < 0 || distance >= path.length;
                             const int action = number(i->vars.at("path_endaction"));
                             double continuation_x = 0, continuation_y = 0;
@@ -6882,9 +6895,9 @@ struct GameSession::Impl {
                                     // movement twice
                                     const double pushed_x = value_number(j->vars.at("x")) - other_x;
                                     const double pushed_y = value_number(j->vars.at("y")) - other_y;
-                                    if (other_step_x != 0 && std::abs(pushed_x - other_step_x) < 1e-9)
+                                    if (other_step_x != 0 && std::fabs(pushed_x - other_step_x) < 1e-9)
                                         j->vars["x"] = value_number(j->vars.at("x")) - other_step_x;
-                                    if (other_step_y != 0 && std::abs(pushed_y - other_step_y) < 1e-9)
+                                    if (other_step_y != 0 && std::fabs(pushed_y - other_step_y) < 1e-9)
                                         j->vars["y"] = value_number(j->vars.at("y")) - other_step_y;
                                 }
                             }
@@ -6945,9 +6958,9 @@ struct GameSession::Impl {
                 double port_height = value_number(engine.at("view_hport[0]"));
                 const double screen_width = canvas.logical_width();
                 const double screen_height = canvas.logical_height();
-                if (port_x == 0 && port_y == 0 && std::abs(port_width - screen_width) < 0.5 &&
+                if (port_x == 0 && port_y == 0 && std::fabs(port_width - screen_width) < 0.5 &&
                     port_height < screen_height &&
-                    std::abs(w / h - screen_width / screen_height) < 0.001) {
+                    std::fabs(w / h - screen_width / screen_height) < 0.001) {
                     port_height = screen_height;
                     engine["view_hport[0]"] = port_height;
                 }
@@ -7049,12 +7062,12 @@ struct GameSession::Impl {
                             y -= step_y;
                     const int columns = background.htiled
                                             ? std::clamp(static_cast<int>(std::ceil((room.width - x) /
-                                                                                     std::abs(step_x))),
+                                                                                     std::fabs(step_x))),
                                                          1, 256)
                                             : 1;
                     const int rows = background.vtiled
                                          ? std::clamp(static_cast<int>(std::ceil((room.height - y) /
-                                                                                std::abs(step_y))),
+                                                                                std::fabs(step_y))),
                                                       1, 256)
                                          : 1;
                     const auto tint = background.color & 0xffffffU;

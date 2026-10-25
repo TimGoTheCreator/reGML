@@ -196,7 +196,7 @@ class VariableStore : public std::unordered_map<std::string_view, Value, Variabl
         static std::unordered_set<std::string, VariableStoreHash, std::equal_to<>> keys;
         static std::mutex keys_mutex;
         const std::lock_guard lock(keys_mutex);
-        const auto found = keys.find(key);
+        const auto found = keys.find(std::string(key));
         return found == keys.end() ? *keys.emplace(key).first : *found;
     }
 

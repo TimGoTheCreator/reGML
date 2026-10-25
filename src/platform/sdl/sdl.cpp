@@ -49,7 +49,10 @@ class FrameProfileLog {
         file_.open(path, std::ios::trunc);
         if (!file_)
             throw Error(ErrorKind::io, "frame profile cannot be opened");
-        file_ << "frame,room,samples,frame_ms,tick_ms,present_ms,logic_ms,draw_ms,image_ms,text_ms,image_calls,image_quads,glyph_quads,texture_uploads,max_tick_ms,max_present_ms,instructions_per_frame,draw_event_ms,draw_builtin_ms,draw_text_builtin_ms,draw_image_builtin_ms,draw_primitive_builtin_ms,draw_other_builtin_ms,max_draw_builtin_call_ms,slowest_draw_builtin\n";
+        file_ << "frame,room,samples,frame_ms,tick_ms,present_ms,logic_ms,draw_ms,image_ms,text_ms,image_"
+                 "calls,image_quads,glyph_quads,texture_uploads,max_tick_ms,max_present_ms,instructions_per_"
+                 "frame,draw_event_ms,draw_builtin_ms,draw_text_builtin_ms,draw_image_builtin_ms,draw_"
+                 "primitive_builtin_ms,draw_other_builtin_ms,max_draw_builtin_call_ms,slowest_draw_builtin\n";
         file_ << std::fixed << std::setprecision(3);
     }
     ~FrameProfileLog() { flush(); }
@@ -105,9 +108,8 @@ class FrameProfileLog {
         file_ << frame_ << ',' << std::quoted(room_) << ',' << samples_ << ',' << frame_ms_ / count << ','
               << tick_ms_ / count << ',' << present_ms_ / count << ',' << logic_ms_ / count << ','
               << draw_ms_ / count << ',' << image_ms_ / count << ',' << text_ms_ / count << ','
-              << image_calls_ / count << ',' << image_quads_ / count << ','
-              << glyph_quads_ / count << ',' << texture_uploads_ / count << ','
-              << max_tick_ms_ << ',' << max_present_ms_ << ','
+              << image_calls_ / count << ',' << image_quads_ / count << ',' << glyph_quads_ / count << ','
+              << texture_uploads_ / count << ',' << max_tick_ms_ << ',' << max_present_ms_ << ','
               << static_cast<double>(instructions_) / count << ',' << draw_event_ms_ / count << ','
               << draw_builtin_ms_ / count << ',' << draw_text_builtin_ms_ / count << ','
               << draw_image_builtin_ms_ / count << ',' << draw_primitive_builtin_ms_ / count << ','
@@ -118,7 +120,8 @@ class FrameProfileLog {
         frame_ms_ = tick_ms_ = present_ms_ = logic_ms_ = draw_ms_ = max_tick_ms_ = max_present_ms_ = 0;
         draw_event_ms_ = 0;
         draw_builtin_ms_ = 0;
-        draw_text_builtin_ms_ = draw_image_builtin_ms_ = draw_primitive_builtin_ms_ = draw_other_builtin_ms_ = 0;
+        draw_text_builtin_ms_ = draw_image_builtin_ms_ = draw_primitive_builtin_ms_ = draw_other_builtin_ms_ =
+            0;
         max_draw_builtin_call_ms_ = 0;
         slowest_draw_builtin_.clear();
         image_ms_ = 0;
@@ -215,20 +218,38 @@ class VideoWindow {
         if (!texture_)
             throw Error(ErrorKind::io, std::string("framebuffer texture: ") + SDL_GetError());
         sdl_ok(SDL_SetTextureBlendMode(texture_.get(), SDL_BLENDMODE_NONE), "texture blend mode");
+#if REGML_PS4
+        if (SDL_InitSubSystem(SDL_INIT_JOYSTICK) >= 0) {
+            joystick_subsystem_ = true;
+            SDL_JoystickEventState(SDL_ENABLE);
+            for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+                joystick_ = SDL_JoystickOpen(i);
+                if (joystick_)
+                    break;
+            }
+        }
+#else
         if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) >= 0) {
             controller_subsystem_ = true;
         }
-        for (int i = 0; controller_subsystem_ && i < SDL_NumJoysticks(); ++i) {
-            if (SDL_IsGameController(i)) {
+        for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+            if (controller_subsystem_ && SDL_IsGameController(i)) {
                 controller_ = SDL_GameControllerOpen(i);
                 if (controller_)
                     break;
             }
         }
+#endif
     }
     ~VideoWindow() {
         if (controller_)
             SDL_GameControllerClose(controller_);
+#if REGML_PS4
+        if (joystick_)
+            SDL_JoystickClose(joystick_);
+        if (joystick_subsystem_)
+            SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
+#endif
         if (controller_subsystem_)
             SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
     }
@@ -252,17 +273,23 @@ class VideoWindow {
                 }
             }
             if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-                held_.fill(false);
-                pressed_.fill(false);
+                keyboard_held_.fill(false);
+                keyboard_pressed_.fill(false);
+                controller_buttons_held_.fill(false);
+                controller_buttons_pressed_.fill(false);
+                controller_axes_held_.fill(false);
+                controller_axes_pressed_.fill(false);
+                joystick_buttons_held_.fill(false);
+                joystick_buttons_pressed_.fill(false);
+                joystick_hat_held_.fill(false);
+                joystick_hat_pressed_.fill(false);
+                joystick_axes_held_.fill(false);
+                joystick_axes_pressed_.fill(false);
             }
             if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
                 const auto key = gml_key(event.key.keysym.sym);
-                if (key >= 0) {
-                    const auto index = static_cast<std::size_t>(key);
-                    held_[index] = event.type == SDL_KEYDOWN;
-                    if (event.type == SDL_KEYDOWN && !event.key.repeat)
-                        pressed_[index] = true;
-                }
+                update_source_key(keyboard_held_, keyboard_pressed_, key, event.type == SDL_KEYDOWN,
+                                  !event.key.repeat);
             }
             if (controller_subsystem_ && event.type == SDL_CONTROLLERDEVICEADDED && !controller_ &&
                 SDL_IsGameController(event.cdevice.which))
@@ -271,22 +298,44 @@ class VideoWindow {
                 SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller_)) == event.cdevice.which) {
                 SDL_GameControllerClose(controller_);
                 controller_ = nullptr;
-                held_.fill(false);
-                pressed_.fill(false);
+                controller_buttons_held_.fill(false);
+                controller_buttons_pressed_.fill(false);
+                controller_axes_held_.fill(false);
+                controller_axes_pressed_.fill(false);
             }
             if (event.type == SDL_CONTROLLERBUTTONDOWN || event.type == SDL_CONTROLLERBUTTONUP) {
                 const auto key = gml_button(static_cast<SDL_GameControllerButton>(event.cbutton.button));
-                if (key >= 0) {
-                    const auto index = static_cast<std::size_t>(key);
-                    held_[index] = event.type == SDL_CONTROLLERBUTTONDOWN;
-                    if (event.type == SDL_CONTROLLERBUTTONDOWN)
-                        pressed_[index] = true;
-                }
+                update_source_key(controller_buttons_held_, controller_buttons_pressed_, key,
+                                  event.type == SDL_CONTROLLERBUTTONDOWN);
                 if (event.type == SDL_CONTROLLERBUTTONDOWN &&
                     event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)
                     return false;
             }
+            if (event.type == SDL_CONTROLLERAXISMOTION) {
+                update_controller_axis(static_cast<SDL_GameControllerAxis>(event.caxis.axis),
+                                       event.caxis.value, controller_axes_held_, controller_axes_pressed_);
+            }
+#if REGML_PS4
+            if (event.type == SDL_JOYDEVICEADDED && joystick_subsystem_ && !joystick_)
+                joystick_ = SDL_JoystickOpen(event.jdevice.which);
+            if (event.type == SDL_JOYDEVICEREMOVED && joystick_ &&
+                SDL_JoystickInstanceID(joystick_) == event.jdevice.which) {
+                SDL_JoystickClose(joystick_);
+                joystick_ = nullptr;
+                joystick_buttons_held_.fill(false);
+                joystick_buttons_pressed_.fill(false);
+                joystick_hat_held_.fill(false);
+                joystick_hat_pressed_.fill(false);
+                joystick_axes_held_.fill(false);
+                joystick_axes_pressed_.fill(false);
+            }
+#endif
         }
+#if REGML_PS4
+        if (joystick_)
+            poll_joystick_state();
+#endif
+        rebuild_input_state();
         return true;
     }
     void present(const Canvas &canvas) {
@@ -445,12 +494,111 @@ class VideoWindow {
     void tick_game(GameSession &session,
                    const KeyboardState *replay,
                    const KeyboardState *replay_pressed = nullptr) {
-        session.tick(replay ? *replay : held_, replay ? (replay_pressed ? *replay_pressed : KeyboardState{})
-                                                       : pressed_);
+        session.tick(replay ? *replay : held_,
+                     replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed_);
         pressed_.fill(false);
     }
 
   private:
+    void update_source_key(KeyboardState &source_held,
+                           KeyboardState &source_pressed,
+                           int key,
+                           bool down,
+                           bool detect_press = true) {
+        if (key < 0 || key >= static_cast<int>(source_held.size()))
+            return;
+        const auto index = static_cast<std::size_t>(key);
+        if (down && detect_press && !source_held[index])
+            source_pressed[index] = true;
+        source_held[index] = down;
+    }
+    void update_axis_pair(int negative_key,
+                          int positive_key,
+                          Sint16 value,
+                          KeyboardState &source_held,
+                          KeyboardState &source_pressed) {
+        constexpr Sint16 deadzone = 8000;
+        update_source_key(source_held, source_pressed, negative_key, value < -deadzone);
+        update_source_key(source_held, source_pressed, positive_key, value > deadzone);
+    }
+    void update_controller_axis(SDL_GameControllerAxis axis,
+                                Sint16 value,
+                                KeyboardState &source_held,
+                                KeyboardState &source_pressed) {
+        if (axis == SDL_CONTROLLER_AXIS_LEFTX)
+            update_axis_pair(37, 39, value, source_held, source_pressed);
+        else if (axis == SDL_CONTROLLER_AXIS_LEFTY)
+            update_axis_pair(38, 40, value, source_held, source_pressed);
+    }
+#if REGML_PS4
+    static int gml_joystick_button(Uint8 button) {
+        switch (button) {
+        case 0:
+            return 'Z';
+        case 1:
+            return 'X';
+        case 2:
+        case 3:
+            return 'C';
+        case 8:
+            return 13;
+        case 12:
+            return 38;
+        case 13:
+            return 40;
+        case 14:
+            return 37;
+        case 15:
+            return 39;
+        default:
+            return -1;
+        }
+    }
+    void poll_joystick_state() {
+        SDL_JoystickUpdate();
+
+        KeyboardState button_state{};
+        for (int button = 0; button < SDL_JoystickNumButtons(joystick_); ++button) {
+            if (!SDL_JoystickGetButton(joystick_, button))
+                continue;
+            const auto key = gml_joystick_button(static_cast<Uint8>(button));
+            if (key >= 0 && key < static_cast<int>(button_state.size()))
+                button_state[static_cast<std::size_t>(key)] = true;
+        }
+        for (std::size_t key = 0; key < button_state.size(); ++key)
+            update_source_key(joystick_buttons_held_, joystick_buttons_pressed_, static_cast<int>(key),
+                              button_state[key]);
+
+        const auto hat =
+            SDL_JoystickNumHats(joystick_) > 0 ? SDL_JoystickGetHat(joystick_, 0) : SDL_HAT_CENTERED;
+        update_source_key(joystick_hat_held_, joystick_hat_pressed_, 37, (hat & SDL_HAT_LEFT) != 0);
+        update_source_key(joystick_hat_held_, joystick_hat_pressed_, 38, (hat & SDL_HAT_UP) != 0);
+        update_source_key(joystick_hat_held_, joystick_hat_pressed_, 39, (hat & SDL_HAT_RIGHT) != 0);
+        update_source_key(joystick_hat_held_, joystick_hat_pressed_, 40, (hat & SDL_HAT_DOWN) != 0);
+
+        const int axis_count = SDL_JoystickNumAxes(joystick_);
+        update_axis_pair(37, 39, axis_count > 0 ? SDL_JoystickGetAxis(joystick_, 0) : 0, joystick_axes_held_,
+                         joystick_axes_pressed_);
+        update_axis_pair(38, 40, axis_count > 1 ? SDL_JoystickGetAxis(joystick_, 1) : 0, joystick_axes_held_,
+                         joystick_axes_pressed_);
+    }
+#endif
+    void rebuild_input_state() {
+        for (std::size_t i = 0; i < held_.size(); ++i) {
+            const bool was_held = held_[i];
+            held_[i] = keyboard_held_[i] || controller_buttons_held_[i] || controller_axes_held_[i] ||
+                       joystick_buttons_held_[i] || joystick_hat_held_[i] || joystick_axes_held_[i];
+            pressed_[i] = keyboard_pressed_[i] || controller_buttons_pressed_[i] ||
+                          controller_axes_pressed_[i] || joystick_buttons_pressed_[i] ||
+                          joystick_hat_pressed_[i] || joystick_axes_pressed_[i] || (held_[i] && !was_held);
+        }
+        keyboard_pressed_.fill(false);
+        controller_buttons_pressed_.fill(false);
+        controller_axes_pressed_.fill(false);
+        joystick_buttons_pressed_.fill(false);
+        joystick_hat_pressed_.fill(false);
+        joystick_axes_pressed_.fill(false);
+    }
     static int gml_button(SDL_GameControllerButton button) {
         switch (button) {
         case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
@@ -480,8 +628,18 @@ class VideoWindow {
     std::unique_ptr<SDL_Renderer, RendererDelete> renderer_;
     std::unique_ptr<SDL_Texture, TextureDelete> texture_;
     SDL_GameController *controller_ = nullptr;
+#if REGML_PS4
+    SDL_Joystick *joystick_ = nullptr;
+    bool joystick_subsystem_ = false;
+#endif
     bool controller_subsystem_ = false;
     KeyboardState held_{}, pressed_{};
+    KeyboardState keyboard_held_{}, keyboard_pressed_{};
+    KeyboardState controller_buttons_held_{}, controller_buttons_pressed_{};
+    KeyboardState controller_axes_held_{}, controller_axes_pressed_{};
+    KeyboardState joystick_buttons_held_{}, joystick_buttons_pressed_{};
+    KeyboardState joystick_hat_held_{}, joystick_hat_pressed_{};
+    KeyboardState joystick_axes_held_{}, joystick_axes_pressed_{};
     bool escape_quits_ = true;
     bool speed_controls_ = false;
 };
@@ -842,8 +1000,8 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
                 const auto tick_profile = session.take_tick_profile();
                 profile.sample(session.frames(), session.room_name(),
                                session.instructions() - instructions_begin, ms(Clock::now() - frame_begin),
-                               ms(tick_end - tick_begin), ms(present_end - tick_end),
-                               tick_profile.logic_ms, tick_profile.draw_ms, tick_profile);
+                               ms(tick_end - tick_begin), ms(present_end - tick_end), tick_profile.logic_ms,
+                               tick_profile.draw_ms, tick_profile);
             }
         }
 #if REGML_PS2

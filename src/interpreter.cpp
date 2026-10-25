@@ -25,7 +25,7 @@ bool compare(double left, double right, std::uint8_t kind, std::size_t offset) {
 }
 } // namespace
 bool compare_numbers(double left, double right, std::uint8_t kind, double epsilon) {
-    const bool equal = left == right || std::abs(left - right) <= epsilon;
+    const bool equal = left == right || std::fabs(left - right) <= epsilon;
     switch (kind) {
     case 1:
         return !equal && left < right;

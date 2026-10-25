@@ -679,7 +679,7 @@ void Canvas::circle(double x, double y, double radius, bool outline) {
     finite(x);
     finite(y);
     finite(radius);
-    if (radius < 0 || radius > 8192 || std::abs(x) > 1e9 || std::abs(y) > 1e9)
+    if (radius < 0 || radius > 8192 || std::fabs(x) > 1e9 || std::fabs(y) > 1e9)
         throw Error(ErrorKind::unsupported, "circle is outside supported coordinate/radius limits");
 #if REGML_WII
     if (gpu_) {
@@ -717,7 +717,7 @@ void Canvas::ellipse(double x1, double y1, double x2, double y2, bool outline) {
     finite(y1);
     finite(x2);
     finite(y2);
-    if (std::max({std::abs(x1), std::abs(y1), std::abs(x2), std::abs(y2)}) > 1e9)
+    if (std::max({std::fabs(x1), std::fabs(y1), std::fabs(x2), std::fabs(y2)}) > 1e9)
         throw Error(ErrorKind::unsupported, "ellipse is outside supported coordinate limits");
     const double left_edge = std::min(x1, x2), right_edge = std::max(x1, x2);
     const double top_edge = std::min(y1, y2), bottom_edge = std::max(y1, y2);
@@ -777,7 +777,7 @@ void Canvas::round_rectangle(double x1,
     finite(y2);
     finite(x_radius);
     finite(y_radius);
-    if (std::max({std::abs(x1), std::abs(y1), std::abs(x2), std::abs(y2), x_radius, y_radius}) > 1e9)
+    if (std::max({std::fabs(x1), std::fabs(y1), std::fabs(x2), std::fabs(y2), x_radius, y_radius}) > 1e9)
         throw Error(ErrorKind::unsupported, "rounded rectangle is outside supported limits");
     const double left_edge = std::min(x1, x2), right_edge = std::max(x1, x2);
     const double top_edge = std::min(y1, y2), bottom_edge = std::max(y1, y2);
@@ -810,12 +810,12 @@ void Canvas::round_rectangle(double x1,
         const double ry = std::max(0.0, y_radius - inset);
         const double half_w = std::max(0.0, half_width - inset);
         const double half_h = std::max(0.0, half_height - inset);
-        if (std::abs(px - center_x) > half_w || std::abs(py - center_y) > half_h)
+        if (std::fabs(px - center_x) > half_w || std::fabs(py - center_y) > half_h)
             return false;
         if (rx == 0 || ry == 0)
             return true;
-        const double corner_x = std::max(0.0, std::abs(px - center_x) - (half_w - rx));
-        const double corner_y = std::max(0.0, std::abs(py - center_y) - (half_h - ry));
+        const double corner_x = std::max(0.0, std::fabs(px - center_x) - (half_w - rx));
+        const double corner_y = std::max(0.0, std::fabs(py - center_y) - (half_h - ry));
         const double dx = corner_x / rx, dy = corner_y / ry;
         return dx * dx + dy * dy <= 1;
     };
@@ -840,7 +840,7 @@ void Canvas::line(double x1, double y1, double x2, double y2, double width) {
     finite(y2);
     finite(width);
     if (width <= 0 || width > 2048 ||
-        std::max({std::abs(x1), std::abs(y1), std::abs(x2), std::abs(y2)}) > 1e9)
+        std::max({std::fabs(x1), std::fabs(y1), std::fabs(x2), std::fabs(y2)}) > 1e9)
         throw Error(ErrorKind::unsupported, "line is outside supported limits");
 #if REGML_WII
     if (gpu_) {
@@ -870,7 +870,7 @@ void Canvas::line(double x1, double y1, double x2, double y2, double width) {
     }
 #endif
     const double dx = x2 - x1, dy = y2 - y1;
-    const auto steps = static_cast<std::size_t>(std::ceil(std::max(std::abs(dx), std::abs(dy))));
+    const auto steps = static_cast<std::size_t>(std::ceil(std::max(std::fabs(dx), std::fabs(dy))));
     if (steps > 1'000'000)
         throw Error(ErrorKind::unsupported, "line exceeds rasterization limit");
     const double radius = (width - 1) / 2;
@@ -916,7 +916,7 @@ void Canvas::triangle(double x1, double y1, double x2, double y2, double x3, dou
     }
 #endif
     const double area = (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1);
-    if (std::abs(area) < 1e-12)
+    if (std::fabs(area) < 1e-12)
         return;
     const int left =
         static_cast<int>(std::clamp(std::floor(std::min({x1, x2, x3})), 0.0, static_cast<double>(width_)));
@@ -948,7 +948,7 @@ void Canvas::text(
     finite(sx);
     finite(sy);
     finite(angle);
-    if (std::abs(x) > 1e9 || std::abs(y) > 1e9 || value.size() > 4096)
+    if (std::fabs(x) > 1e9 || std::fabs(y) > 1e9 || value.size() > 4096)
         throw Error(ErrorKind::unsupported, "text exceeds fixture drawing limits");
     if (sx == 0 || sy == 0)
         return;

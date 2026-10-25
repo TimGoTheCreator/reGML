@@ -26,10 +26,17 @@ option(REGML_MINIAUDIO "Use the experimental miniaudio output backend on desktop
 option(REGML_OPENAL "Use OpenAL for desktop audio output" OFF)
 option(REGML_WIIU "Build a Wii U homebrew RPX with devkitPro wut" OFF)
 option(REGML_WII "Build a Nintendo Wii homebrew DOL with devkitPro libogc" OFF)
+option(REGML_PS4 "Build a PlayStation 4 homebrew ELF and eboot.bin with OpenOrbis" OFF)
 set(REGML_UNDERTALE_DATA "" CACHE FILEPATH "Optional Undertale data.win path for audio integration testing")
 
-if(REGML_WIIU AND REGML_WII)
-    message(FATAL_ERROR "REGML_WIIU and REGML_WII are separate targets")
+set(REGML_CONSOLE_TARGETS 0)
+foreach(_target REGML_WIIU REGML_WII REGML_PS4 PS2)
+    if(${_target})
+        math(EXPR REGML_CONSOLE_TARGETS "${REGML_CONSOLE_TARGETS} + 1")
+    endif()
+endforeach()
+if(REGML_CONSOLE_TARGETS GREATER 1)
+    message(FATAL_ERROR "Choose only one console target (REGML_WIIU, REGML_WII, REGML_PS4, or PS2)")
 endif()
 
 if(ANDROID)
@@ -39,20 +46,26 @@ endif()
 if(EMSCRIPTEN)
     set(REGML_WEB ON CACHE BOOL "Build the Emscripten web runner" FORCE)
 endif()
+if(REGML_PS4 AND REGML_ANDROID)
+    message(FATAL_ERROR "REGML_PS4 and REGML_ANDROID are separate targets")
+endif()
+if(REGML_PS4 AND NOT CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR "Configure REGML_PS4 with cmake/toolchains/ps4-openorbis.cmake")
+endif()
 if(REGML_WEB AND NOT EMSCRIPTEN)
     message(FATAL_ERROR "REGML_WEB requires the Emscripten toolchain (emcmake)")
 endif()
-if(REGML_WEB AND (REGML_ANDROID OR REGML_WIIU OR REGML_WII OR PS2))
+if(REGML_WEB AND (REGML_ANDROID OR REGML_WIIU OR REGML_WII OR REGML_PS4 OR PS2))
     message(FATAL_ERROR "REGML_WEB cannot be combined with another platform target")
 endif()
 
-if(REGML_MINIAUDIO AND (REGML_WIIU OR REGML_WII))
+if(REGML_MINIAUDIO AND (REGML_WIIU OR REGML_WII OR REGML_PS4))
     message(FATAL_ERROR "REGML_MINIAUDIO is experimental and currently desktop-only")
 endif()
 if(REGML_MINIAUDIO AND NOT REGML_SDL2 AND NOT REGML_ANDROID)
     message(FATAL_ERROR "REGML_MINIAUDIO currently requires the SDL2 frontend")
 endif()
-if(REGML_OPENAL AND (REGML_WIIU OR REGML_WII))
+if(REGML_OPENAL AND (REGML_WIIU OR REGML_WII OR REGML_PS4))
     message(FATAL_ERROR "REGML_OPENAL is currently desktop-only")
 endif()
 if(REGML_OPENAL AND NOT REGML_SDL2)
@@ -68,6 +81,8 @@ elseif(REGML_WII)
     set(REGML_SDL2 OFF CACHE BOOL "Enable SDL2 windowed frontend" FORCE)
 elseif(REGML_WIIU)
     set(REGML_SDL2 ON CACHE BOOL "Enable SDL2 windowed frontend" FORCE)
+elseif(REGML_PS4 AND NOT REGML_SDL2)
+    message(FATAL_ERROR "REGML_PS4 requires the SDL2 frontend")
 endif()
 
 if(REGML_ANDROID)
@@ -101,6 +116,50 @@ if(REGML_ANDROID)
     set(OGG_VERSION_STRING 1.3.5)
     FetchContent_MakeAvailable(regml_vorbis)
     target_include_directories(vorbis PUBLIC "${regml_ogg_BINARY_DIR}/include")
+elseif(REGML_PS4)
+    set(REGML_PS4_SDL2_ROOT "$ENV{OO_PS4_TOOLCHAIN}" CACHE PATH "OpenOrbis SDL-PS4 install prefix")
+    set(REGML_PS4_DEPS_ROOT "$ENV{REGML_PS4_DEPS_ROOT}" CACHE PATH
+        "Install prefix for PS4 builds of libpng, zlib, Vorbis, Ogg, and optional BZip2")
+    if(REGML_PS4_SDL2_ROOT)
+        list(APPEND CMAKE_FIND_ROOT_PATH "${REGML_PS4_SDL2_ROOT}")
+    endif()
+    if(REGML_PS4_DEPS_ROOT)
+        list(APPEND CMAKE_FIND_ROOT_PATH "${REGML_PS4_DEPS_ROOT}")
+    endif()
+
+    find_path(REGML_PS4_SDL2_INCLUDE_DIR NAMES SDL2/SDL.h
+        HINTS "${REGML_PS4_SDL2_ROOT}/include" REQUIRED)
+    find_library(REGML_PS4_SDL2_LIBRARY NAMES SDL2
+        HINTS "${REGML_PS4_SDL2_ROOT}/lib" REQUIRED)
+    add_library(regml_ps4_sdl2 UNKNOWN IMPORTED)
+    set_target_properties(regml_ps4_sdl2 PROPERTIES
+        IMPORTED_LOCATION "${REGML_PS4_SDL2_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${REGML_PS4_SDL2_INCLUDE_DIR}")
+
+    find_path(REGML_PS4_PNG_INCLUDE_DIR NAMES png.h
+        HINTS "${REGML_PS4_DEPS_ROOT}/include" REQUIRED)
+    find_path(REGML_PS4_VORBIS_INCLUDE_DIR NAMES vorbis/vorbisfile.h
+        HINTS "${REGML_PS4_DEPS_ROOT}/include" REQUIRED)
+    foreach(_library IN ITEMS PNG ZLIB VORBISFILE VORBIS OGG)
+        if(_library STREQUAL "PNG")
+            set(_names png png16)
+        elseif(_library STREQUAL "ZLIB")
+            set(_names z zlib)
+        elseif(_library STREQUAL "VORBISFILE")
+            set(_names vorbisfile)
+        elseif(_library STREQUAL "VORBIS")
+            set(_names vorbis)
+        else()
+            set(_names ogg)
+        endif()
+        find_library(REGML_PS4_${_library}_LIBRARY NAMES ${_names}
+            HINTS "${REGML_PS4_DEPS_ROOT}/lib" REQUIRED)
+        add_library(regml_ps4_${_library} UNKNOWN IMPORTED)
+        set_target_properties(regml_ps4_${_library} PROPERTIES
+            IMPORTED_LOCATION "${REGML_PS4_${_library}_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES
+                "${REGML_PS4_PNG_INCLUDE_DIR};${REGML_PS4_VORBIS_INCLUDE_DIR}")
+    endforeach()
 elseif(REGML_WIIU OR REGML_WII)
     # Console portlibs are static, so include their private link dependencies too.
     set(PKG_CONFIG_ARGN --static)
@@ -137,7 +196,7 @@ else()
     )
 endif()
 
-if(REGML_SDL2 AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_ANDROID AND NOT PS2 AND NOT REGML_WEB)
+if(REGML_SDL2 AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_PS4 AND NOT REGML_ANDROID AND NOT PS2 AND NOT REGML_WEB)
     find_package(SDL2 REQUIRED)
 endif()
 
@@ -209,6 +268,19 @@ if(PS2)
         message(WARNING "PS2SDK BZip2 port not found; BZ2-QOI textures are unavailable")
         target_compile_definitions(${REGML_TARGET} PRIVATE REGML_HAS_BZIP2=0)
     endif()
+elseif(REGML_PS4)
+    find_path(REGML_PS4_BZIP2_INCLUDE_DIR NAMES bzlib.h
+        HINTS "${REGML_PS4_DEPS_ROOT}/include")
+    find_library(REGML_PS4_BZIP2_LIBRARY NAMES bz2
+        HINTS "${REGML_PS4_DEPS_ROOT}/lib")
+    if(REGML_PS4_BZIP2_INCLUDE_DIR AND REGML_PS4_BZIP2_LIBRARY)
+        target_include_directories(${REGML_TARGET} SYSTEM PRIVATE "${REGML_PS4_BZIP2_INCLUDE_DIR}")
+        target_compile_definitions(${REGML_TARGET} PRIVATE REGML_HAS_BZIP2=1)
+        target_link_libraries(${REGML_TARGET} PUBLIC "${REGML_PS4_BZIP2_LIBRARY}")
+    else()
+        message(WARNING "PS4 BZip2 port not found; BZ2-QOI textures are unavailable")
+        target_compile_definitions(${REGML_TARGET} PRIVATE REGML_HAS_BZIP2=0)
+    endif()
 else()
     if(NOT REGML_ANDROID AND NOT REGML_WEB AND NOT REGML_WIIU AND NOT REGML_WII)
         find_package(BZip2 QUIET)
@@ -268,6 +340,15 @@ elseif(REGML_WIIU OR REGML_WII)
     if(REGML_WIIU)
         target_link_libraries(${REGML_TARGET} PUBLIC PkgConfig::REGML_SDL2)
     endif()
+elseif(REGML_PS4)
+    target_link_libraries(${REGML_TARGET} PUBLIC
+        regml_ps4_sdl2
+        regml_ps4_PNG
+        regml_ps4_ZLIB
+        regml_ps4_VORBISFILE
+        regml_ps4_VORBIS
+        regml_ps4_OGG
+    )
 elseif(PS2)
     target_include_directories(${REGML_TARGET} SYSTEM PUBLIC "${REGML_PS2_GSKIT_INCLUDE}")
     target_link_libraries(${REGML_TARGET} PUBLIC
@@ -298,6 +379,8 @@ elseif(REGML_WII)
     target_compile_definitions(${REGML_TARGET} PUBLIC REGML_WITH_SDL2=0)
 elseif(REGML_WEB)
     target_compile_definitions(${REGML_TARGET} PUBLIC REGML_WITH_SDL2=1 REGML_WEB=1)
+elseif(REGML_PS4)
+    target_compile_definitions(${REGML_TARGET} PUBLIC REGML_WITH_SDL2=1 REGML_PS4=1 SDL_MAIN_HANDLED)
 elseif(REGML_SDL2)
     target_compile_definitions(${REGML_TARGET} PUBLIC REGML_WITH_SDL2=1)
     if(REGML_WIIU)
@@ -315,6 +398,8 @@ endif()
 
 if(REGML_ANDROID)
     # The Android Activity loads the shared library through JNI.
+elseif(REGML_PS4)
+    add_executable(regml src/platform/ps4/main.cpp)
 elseif(REGML_WIIU)
     add_executable(regml src/platform/wiiu/main.cpp)
 elseif(REGML_WII)
@@ -357,6 +442,26 @@ if(PS2)
     endforeach()
     target_include_directories(regml PRIVATE "${REGML_PS2_IRX_DIR}")
 endif()
+if(REGML_PS4)
+    set_target_properties(regml PROPERTIES SUFFIX ".elf")
+    find_program(REGML_PS4_CREATE_FSELF NAMES create-fself create-fself.exe
+        HINTS "$ENV{OO_PS4_TOOLCHAIN}/bin/windows" "$ENV{OO_PS4_TOOLCHAIN}/bin/linux"
+              "$ENV{OO_PS4_TOOLCHAIN}/bin/macos" REQUIRED)
+    set(REGML_PS4_EBOOT "${CMAKE_CURRENT_BINARY_DIR}/eboot.bin")
+    set(REGML_PS4_OELF "${CMAKE_CURRENT_BINARY_DIR}/regml.oelf")
+    add_custom_command(
+        OUTPUT "${REGML_PS4_EBOOT}" "${REGML_PS4_OELF}"
+        COMMAND "${REGML_PS4_CREATE_FSELF}"
+                "-in=$<TARGET_FILE:regml>"
+                "-out=${REGML_PS4_OELF}"
+                --eboot eboot.bin
+                --paid 0x3800000000000011
+        DEPENDS regml
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        COMMENT "Converting the OpenOrbis ELF into eboot.bin"
+        VERBATIM)
+    add_custom_target(regml_eboot ALL DEPENDS "${REGML_PS4_EBOOT}" "${REGML_PS4_OELF}")
+endif()
 if(REGML_WIIU)
     target_compile_options(regml_engine PRIVATE $<$<CONFIG:Release>:-O3> $<$<CONFIG:Release>:-flto>)
     target_compile_options(regml PRIVATE $<$<CONFIG:Release>:-O3> $<$<CONFIG:Release>:-flto>)
@@ -389,7 +494,7 @@ if(PS2)
 endif()
 
 include(CTest)
-if(BUILD_TESTING AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_ANDROID AND NOT PS2 AND NOT REGML_WEB)
+if(BUILD_TESTING AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_PS4 AND NOT REGML_ANDROID AND NOT PS2 AND NOT REGML_WEB)
     add_executable(regml_tests tests/core_tests.cpp)
     target_link_libraries(regml_tests PRIVATE regml_engine)
     add_executable(regml_audio_test tests/audio_integration.cpp)

@@ -52,6 +52,20 @@ cmake --build build/web
 
 Upload `index.html`, `index.js`, and `index.wasm` from `build/web` as a web game on GX.games. When it opens, choose the folder containing `data.win` and the game's external files. Save data is kept in the browser.
 
+## PlayStation 4
+
+The PS4 target uses OpenOrbis and its SDL2 port. Install OpenOrbis, clang, lld, and Ninja. Put PS4 builds of libpng 1.6, zlib, libvorbisfile, Vorbis, and Ogg in `REGML_PS4_DEPS_ROOT`. Add BZip2 there for games that use BZ2-QOI textures. Set `OO_PS4_TOOLCHAIN` to the OpenOrbis folder. `REGML_PS4_SDL2_ROOT` can point to a separate SDL-PS4 install; it defaults to `OO_PS4_TOOLCHAIN`.
+
+```powershell
+cmake -S . -B build/ps4 -G Ninja `
+  --toolchain cmake/toolchains/ps4-openorbis.cmake `
+  -DREGML_PS4=ON -DREGML_SDL2=ON `
+  -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build/ps4
+```
+
+This creates `build/ps4/regml.elf`, `build/ps4/regml.oelf`, and `build/ps4/eboot.bin`. The game package is loaded from `/app0/data.win`; save files go under `/data/reGML/saves`. The build creates the executable payload; it does not create a `.pkg` installer.
+
 ## Run
 
 ```sh

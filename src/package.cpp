@@ -1,4 +1,5 @@
 #include "package.hpp"
+#include "bit_cast.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -166,7 +167,7 @@ void Package::parse_info(const Chunk &c) {
             if (room_count <= (data.size() - 132) / 4) {
                 const auto fps_offset = 132 + room_count * 4 + 5 * sizeof(std::uint64_t);
                 if (fps_offset <= data.size() && data.size() - fps_offset >= sizeof(float)) {
-                    const auto game_speed = std::bit_cast<float>(data.u32(fps_offset));
+                    const auto game_speed = regml::bit_cast<float>(data.u32(fps_offset));
                     if (std::isfinite(game_speed) && game_speed >= 1.0f && game_speed <= 1000.0f)
                         info.game_speed = game_speed;
                 }

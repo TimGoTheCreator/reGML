@@ -1,4 +1,5 @@
 #include "audio.hpp"
+#include "bit_cast.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -452,7 +453,7 @@ GameAudio::GameAudio(const Package &package, std::filesystem::path directory)
             sound.name = package.string_pointer(d.u32(0));
             sound.flags = d.u32(4);
             sound.filename = package.string_pointer(d.u32(12));
-            sound.gain = std::bit_cast<float>(d.u32(20));
+            sound.gain = regml::bit_cast<float>(d.u32(20));
             const auto group = d.i32(28), audio_id = d.i32(32);
             sound.group = group;
             sound.audio_id = audio_id;

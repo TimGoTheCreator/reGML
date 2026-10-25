@@ -1,4 +1,5 @@
 #include "gmrt_vm.hpp"
+#include "bit_cast.hpp"
 #include "gmrt_wad.hpp"
 #include "interpreter.hpp"
 #include "linker.hpp"
@@ -92,7 +93,7 @@ void print_instruction(const regml::Instruction &ins, std::size_t origin, bool r
         if (ins.opcode() == regml::Opcode::cmp)
             std::cout << " comparison=" << static_cast<unsigned>(ins.comparison());
         if (ins.opcode() == regml::Opcode::extended)
-            std::cout << " subopcode=" << std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
+            std::cout << " subopcode=" << regml::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
     }
     std::cout << '\n';
 }
