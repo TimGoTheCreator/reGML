@@ -1,6 +1,6 @@
 # reGML
 
-![C++](https://img.shields.io/badge/C%2B%2B-c%2B%2B-blue)
+![Language](https://img.shields.io/badge/Language-C%2B%2B-blue)
 ![fluffy boys](https://img.shields.io/badge/fluffy%20boys-ralsei-pink)
 
 
