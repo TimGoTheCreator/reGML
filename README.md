@@ -186,3 +186,14 @@ Asriel encounter running in reGML on desktop
 Undertale with the Wii U build in Cemu
 
 <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/wiiu.png" alt="Undertale running in reGML's Wii U build in Cemu" width="680">
+
+### Some facts
+
+The idea for reGML came from a simple thought: if GameMaker runs on a VM, then in theory, you can reimplement it and port any GameMaker game to any platform. 
+
+Before this version, I actually tried making other runners (also named reGML, but blindly coded by codex). so, it failed miserably. quick lesson that "vibe coding" simply does not work if you don't know what you're doing. The AI gets stuck, generates trash, and leaves you with a broken mess. If you think AI is going to replace developers, you're either lying or you don't know what actual code looks like.
+
+So hadn't i given up. I started using codex proper with a more "usable" approach, aka, actually nudging it. i still used (and still do) use it to generate code but debug it and atleast try to see what's wrong and why doesn't it launch?
+well, thats when it started working.
+
+current reGML isn't the "best" either. I know just enough C++ to be dangerous (who doesn't love a good `std::bad_alloc` on the PS2?), so some architectural decisions are questionable at best, harmful at worst. 
