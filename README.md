@@ -193,6 +193,8 @@ The idea for reGML came from a simple thought: if GameMaker runs on a VM, then i
 
 Before this version, I actually tried making other runners (also named reGML, but blindly coded by codex). so, it failed miserably. quick lesson that "vibe coding" simply does not work if you don't know what you're doing. The AI gets stuck, generates trash, and leaves you with a broken mess. If you think AI is going to replace developers, you're either lying or you don't know what actual code looks like.
 
+heh, maybe if you just give it a prompt and say "make it work fast no error pls", it might work, well, you know what they say, the [infinite monkey theorem](https://en.wikipedia.org/wiki/Infinite_monkey_theorem)
+
 So hadn't i given up. I started using codex proper with a more "usable" approach, aka, actually nudging it. i still used (and still do) use it to generate code but debug it and atleast try to see what's wrong and why doesn't it launch?
 well, thats when it started working.
 
