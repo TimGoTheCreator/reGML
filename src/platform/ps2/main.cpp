@@ -1,11 +1,37 @@
 #include "lookup.hpp"
 #include "platform/ps2/frontend.hpp"
 #include "play.hpp"
+#include <cxxabi.h>
+#include <cstdint>
 #include <filesystem>
-#include <fstream>
+#include <exception>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 
+extern "C" {
+extern volatile std::uint32_t regml_ps2_active_pc;
+extern volatile std::uint32_t regml_ps2_active_opcode;
+extern volatile std::uint32_t regml_ps2_active_symbol;
+extern const char *regml_ps2_active_code_name;
+extern volatile std::uint32_t regml_ps2_active_code_name_length;
+}
+
 int main(int argc, char **argv) {
+    std::set_terminate([] {
+        if (auto *log = std::fopen("host:reGML/regml-terminate.log", "a")) {
+            std::setvbuf(log, nullptr, _IONBF, 0);
+            const auto *type = abi::__cxa_current_exception_type();
+            std::fprintf(log, "terminate type=%s code=%.*s pc=%u opcode=%u symbol=%u\n",
+                         type ? type->name() : "none",
+                         static_cast<int>(regml_ps2_active_code_name_length), regml_ps2_active_code_name,
+                         static_cast<unsigned>(regml_ps2_active_pc),
+                         static_cast<unsigned>(regml_ps2_active_opcode),
+                         static_cast<unsigned>(regml_ps2_active_symbol));
+            std::fclose(log);
+        }
+        std::_Exit(1);
+    });
     try {
         regml::initialize_ps2_storage();
         std::filesystem::path package;
@@ -39,9 +65,14 @@ int main(int argc, char **argv) {
                   << "\nVM instructions: " << report.instructions << "\nRoom: " << report.room << '\n';
         return 0;
     } catch (const std::exception &error) {
-        std::cerr << "reGML PS2 error: " << error.what() << '\n';
-        std::ofstream host_log("host:regml-error.txt");
-        host_log << "reGML PS2 error: " << error.what() << '\n';
+        std::fputs("reGML PS2 error: ", stderr);
+        std::fputs(error.what(), stderr);
+        std::fputc('\n', stderr);
+        if (auto *log = std::fopen("host:reGML/regml-error.log", "a")) {
+            std::setvbuf(log, nullptr, _IONBF, 0);
+            std::fprintf(log, "main: %s\n", error.what());
+            std::fclose(log);
+        }
         return 1;
     }
 }

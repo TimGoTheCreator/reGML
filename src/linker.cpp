@@ -139,14 +139,11 @@ LinkedPackage link_legacy_package(const Package &package,
                     throw Error(ErrorKind::malformed, "string immediate is out of range",
                                 program.origin + ins.offset + 4);
             }
-            if (result.shared_code) {
-                Program skeleton;
-                skeleton.origin = program.origin;
-                skeleton.byte_length = program.byte_length;
-                skeleton.bytecode_version = version;
-                result.programs.push_back(std::move(skeleton));
-            } else
-                result.programs.push_back(std::move(program));
+            Program skeleton;
+            skeleton.origin = program.origin;
+            skeleton.byte_length = program.byte_length;
+            skeleton.bytecode_version = version;
+            result.programs.push_back(std::move(skeleton));
         } else {
             result.programs.push_back(std::move(program));
         }
@@ -349,6 +346,11 @@ LinkedPackage link_legacy_package(const Package &package,
 }
 Program &LinkedPackage::program(const Package &package, std::size_t index) {
     const auto program_index = shared_code ? code_to_program.at(index) : index;
+    if (lazy_programs) {
+        recent_programs[recent_program_cursor] = program_index;
+        recent_program_cursor = (recent_program_cursor + 1) % recent_programs.size();
+        recent_program_count = std::min(recent_program_count + 1, recent_programs.size());
+    }
     auto &target = programs.at(program_index);
     if (!lazy_programs || !target.instructions.empty() || target.byte_length == 0)
         return target;
@@ -386,18 +388,53 @@ Program &LinkedPackage::program(const Package &package, std::size_t index) {
                              target.index_by_word.capacity() * sizeof(std::uint32_t);
     return target;
 }
-void LinkedPackage::release_programs() {
+void LinkedPackage::release_program(std::size_t program_index) {
+    if (!lazy_programs || program_index >= programs.size())
+        return;
+    auto &target = programs[program_index];
+    const auto bytes = target.instructions.capacity() * sizeof(Instruction) +
+                       target.index_by_word.capacity() * sizeof(std::uint32_t);
+    std::vector<Instruction>().swap(target.instructions);
+    std::vector<std::uint32_t>().swap(target.index_by_word);
+    decoded_program_bytes = bytes > decoded_program_bytes ? 0 : decoded_program_bytes - bytes;
+}
+void LinkedPackage::release_programs(std::span<const std::size_t> active_programs) {
     if (!lazy_programs)
         return;
 #if REGML_WII || REGML_LOW_MEMORY
     constexpr std::size_t retained_program_limit = 1024 * 1024;
     if (decoded_program_bytes <= retained_program_limit)
         return;
-#endif
-    for (auto &program : programs) {
-        std::vector<Instruction>().swap(program.instructions);
-        std::vector<std::uint32_t>().swap(program.index_by_word);
+    std::array<std::size_t, 192> retained{};
+    std::size_t retained_count = 0, retained_bytes = 0;
+    auto retain = [&](std::size_t index, bool required) {
+        if (index >= programs.size() ||
+            std::find(retained.begin(), retained.begin() + static_cast<std::ptrdiff_t>(retained_count), index) !=
+                retained.begin() + static_cast<std::ptrdiff_t>(retained_count))
+            return;
+        const auto &program = programs[index];
+        const auto bytes = program.instructions.capacity() * sizeof(Instruction) +
+                           program.index_by_word.capacity() * sizeof(std::uint32_t);
+        if (!bytes || (!required && (retained_bytes >= retained_program_limit ||
+                                     bytes > retained_program_limit - retained_bytes)))
+            return;
+        retained[retained_count++] = index;
+        retained_bytes += bytes;
+    };
+    for (const auto index : active_programs)
+        retain(index, true);
+    for (std::size_t age = 0; age < recent_program_count; ++age) {
+        const auto slot = (recent_program_cursor + recent_programs.size() - 1 - age) % recent_programs.size();
+        retain(recent_programs[slot], false);
     }
-    decoded_program_bytes = 0;
+    std::sort(retained.begin(), retained.begin() + static_cast<std::ptrdiff_t>(retained_count));
+    for (std::size_t i = 0; i < programs.size(); ++i)
+        if (!programs[i].instructions.empty() &&
+            !std::binary_search(retained.begin(), retained.begin() + static_cast<std::ptrdiff_t>(retained_count), i))
+            release_program(i);
+#else
+    for (std::size_t i = 0; i < programs.size(); ++i)
+        release_program(i);
+#endif
 }
 } // namespace regml

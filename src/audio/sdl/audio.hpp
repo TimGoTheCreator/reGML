@@ -7,6 +7,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 namespace regml {
 class GameAudio {
   public:
@@ -67,6 +68,7 @@ class GameAudio {
     };
     struct Sound {
         std::string_view name;
+        std::uint32_t flags = 0;
         int audio_id = -1;
         std::string filename;
         double gain = 1;
@@ -90,12 +92,16 @@ class GameAudio {
     std::vector<std::size_t> embedded_;
     std::unordered_map<int, AudioGroup> audio_groups_;
     std::unordered_set<int> missing_audio_groups_;
-    std::unordered_map<int, Sound> sounds_;
+    std::vector<Sound> sounds_;
+    std::unordered_map<int, Sound> stream_sounds_;
     std::unordered_map<int, Voice> voices_;
     std::unordered_set<int> streams_;
     std::unordered_map<int, GroupGain> group_gains_;
     mutable std::mutex voices_mutex_;
     int next_stream_ = 100000, next_voice_ = 1000000, channels_ = 128;
+    Sound *find_sound(int id) noexcept;
+    const Sound *find_sound(int id) const noexcept;
+    Sound &sound_at(int id);
     const AudioGroup *load_audio_group(int group);
     std::optional<AudioData> audio_data(const Sound &sound);
     Clip *load(int id);

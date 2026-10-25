@@ -1,5 +1,6 @@
 #pragma once
 #include "decoder.hpp"
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -10,6 +11,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 namespace regml {
 struct ArrayValue;
 struct PackageString {
@@ -72,7 +74,96 @@ struct ArrayValue {
         }
         return *this;
     }
-    std::unordered_map<std::int32_t, Value> elements;
+    class Elements {
+      public:
+        Value *find(std::int32_t index) noexcept {
+            if (index >= 0 && static_cast<std::size_t>(index) < dense_.size()) {
+                const auto position = static_cast<std::size_t>(index);
+                return present_[position] != 0 ? &dense_[position] : nullptr;
+            }
+            const auto found = sparse_.find(index);
+            return found == sparse_.end() ? nullptr : &found->second;
+        }
+        const Value *find(std::int32_t index) const noexcept {
+            if (index >= 0 && static_cast<std::size_t>(index) < dense_.size()) {
+                const auto position = static_cast<std::size_t>(index);
+                return present_[position] != 0 ? &dense_[position] : nullptr;
+            }
+            const auto found = sparse_.find(index);
+            return found == sparse_.end() ? nullptr : &found->second;
+        }
+        Value &operator[](std::int32_t index) {
+            if (dense_candidate(index)) {
+                const auto position = static_cast<std::size_t>(index);
+                if (position >= dense_.size()) {
+                    dense_.resize(position + 1);
+                    present_.resize(position + 1);
+                }
+                if (present_[position] == 0) {
+                    present_[position] = 1;
+                    ++dense_count_;
+                }
+                return dense_[position];
+            }
+            return sparse_[index];
+        }
+        Value &at(std::int32_t index) {
+            if (auto *value = find(index))
+                return *value;
+            throw std::out_of_range("array element not found");
+        }
+        const Value &at(std::int32_t index) const {
+            if (const auto *value = find(index))
+                return *value;
+            throw std::out_of_range("array element not found");
+        }
+        void emplace(std::int32_t index, const Value &value) {
+            if (!find(index))
+                (*this)[index] = value;
+        }
+        bool contains(std::int32_t index) const noexcept { return find(index) != nullptr; }
+        std::size_t size() const noexcept { return dense_count_ + sparse_.size(); }
+        void erase(std::int32_t index) {
+            if (index >= 0 && static_cast<std::size_t>(index) < dense_.size()) {
+                const auto position = static_cast<std::size_t>(index);
+                if (present_[position] != 0) {
+                    dense_[position] = std::monostate{};
+                    present_[position] = 0;
+                    --dense_count_;
+                }
+                return;
+            }
+            sparse_.erase(index);
+        }
+        void reserve_dense(std::size_t count) {
+            const auto reserved = std::min(count, dense_index_limit_);
+            dense_.reserve(reserved);
+            present_.reserve(reserved);
+        }
+        template <class Function> void for_each(Function &&function) const {
+            for (std::size_t i = 0; i < dense_.size(); ++i)
+                if (present_[i])
+                    function(static_cast<std::int32_t>(i), dense_[i]);
+            for (const auto &[index, value] : sparse_)
+                function(index, value);
+        }
+
+      private:
+#if REGML_PS2 || REGML_WII || REGML_LOW_MEMORY
+        static constexpr std::size_t dense_index_limit_ = 262144;
+#else
+        static constexpr std::size_t dense_index_limit_ = 1'000'000;
+#endif
+        std::vector<Value> dense_;
+        std::vector<std::uint8_t> present_;
+        std::unordered_map<std::int32_t, Value> sparse_;
+        std::size_t dense_count_ = 0;
+
+        bool dense_candidate(std::int32_t index) const noexcept {
+            return index >= 0 && static_cast<std::size_t>(index) < dense_index_limit_ &&
+                   static_cast<std::size_t>(index) <= dense_.size() + 1024;
+        }
+    } elements;
     std::unordered_map<std::int32_t, std::int32_t> row_lengths;
 
   private:

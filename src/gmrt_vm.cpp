@@ -138,6 +138,7 @@ class GmrtInterpreter {
             return std::make_shared<StructValue>();
         if (name == "@@GML_NewArray@@") {
             ArrayPtr array(new ArrayValue());
+            array->elements.reserve_dense(arguments.size());
             for (std::size_t i = 0; i < arguments.size(); ++i)
                 array->elements.emplace(static_cast<std::int32_t>(i), arguments[i]);
             return array;
@@ -157,6 +158,7 @@ class GmrtInterpreter {
             const auto count = static_cast<std::size_t>(length);
             const Value initial = arguments.size() == 2 ? arguments[1] : Value(std::monostate{});
             ArrayPtr array(new ArrayValue());
+            array->elements.reserve_dense(count);
             for (std::size_t i = 0; i < count; ++i)
                 array->elements.emplace(static_cast<std::int32_t>(i), initial);
             return array;
@@ -168,11 +170,10 @@ class GmrtInterpreter {
             if (!array || !*array)
                 return 0;
             std::int32_t length = 0;
-            for (const auto &[index, value] : (*array)->elements) {
-                (void)value;
+            (*array)->elements.for_each([&](std::int32_t index, const Value &) {
                 if (index >= 0 && index < std::numeric_limits<std::int32_t>::max())
                     length = std::max(length, index + 1);
-            }
+            });
             return length;
         }
         if (const auto function = find_function(name, current_module)) {
@@ -529,8 +530,8 @@ class GmrtInterpreter {
                     if (!array || !*array)
                         unsupported(instruction, "GMIR indexed read needs an array value");
                     const auto index = integer(reg(3), instruction);
-                    const auto found = (*array)->elements.find(index);
-                    reg(0) = found == (*array)->elements.end() ? Value(std::monostate{}) : found->second;
+                    const auto *found = (*array)->elements.find(index);
+                    reg(0) = found ? *found : Value(std::monostate{});
                     break;
                 }
                 case 42: { // ISETG

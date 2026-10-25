@@ -9,7 +9,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(REGML_240P "Render the main screen at half resolution (320x240 for 640x480 games)" OFF)
+if(PS2)
+    set(REGML_240P_DEFAULT ON)
+else()
+    set(REGML_240P_DEFAULT OFF)
+endif()
+option(REGML_240P "Render the main screen at half resolution (320x240 for 640x480 games)" ${REGML_240P_DEFAULT})
+unset(REGML_240P_DEFAULT)
 option(REGML_PS2_NTSC "Force NTSC video mode on PS2 instead of using the console signal" OFF)
 option(REGML_LOW_MEMORY "Use lazy bytecode and smaller caches for low-memory targets" OFF)
 
@@ -111,6 +117,7 @@ elseif(PS2)
     find_library(REGML_PS2_VORBISFILE NAMES vorbisfile REQUIRED)
     find_library(REGML_PS2_VORBIS NAMES vorbis REQUIRED)
     find_library(REGML_PS2_OGG NAMES ogg REQUIRED)
+    find_library(REGML_PS2_AUDSRV NAMES audsrv HINTS "$ENV{PS2SDK}/ee/lib" REQUIRED)
     find_path(REGML_PS2_GSKIT_INCLUDE NAMES gsKit.h HINTS "$ENV{GSKIT}/include" REQUIRED)
     find_library(REGML_PS2_GSKIT NAMES gskit HINTS "$ENV{GSKIT}/lib" REQUIRED)
     find_library(REGML_PS2_DMAKIT NAMES dmakit HINTS "$ENV{GSKIT}/lib" REQUIRED)
@@ -144,6 +151,9 @@ file(GLOB REGML_ENGINE_SOURCES
 )
 file(GLOB REGML_AUDIO_SOURCES CONFIGURE_DEPENDS "src/audio/sdl/*.cpp")
 list(APPEND REGML_ENGINE_SOURCES ${REGML_AUDIO_SOURCES})
+if(PS2)
+    list(APPEND REGML_ENGINE_SOURCES "src/audio/ps2/output.cpp")
+endif()
 if(REGML_ANDROID)
     list(FILTER REGML_ENGINE_SOURCES EXCLUDE REGEX "/platform/sdl/sdl\\.cpp$")
     list(APPEND REGML_ENGINE_SOURCES
@@ -266,6 +276,7 @@ elseif(PS2)
         ${REGML_PS2_VORBISFILE}
         ${REGML_PS2_VORBIS}
         ${REGML_PS2_OGG}
+        ${REGML_PS2_AUDSRV}
         ${REGML_PS2_GSKIT}
         ${REGML_PS2_DMAKIT}
         ${REGML_PS2_PAD}
@@ -333,7 +344,7 @@ if(PS2)
     find_program(REGML_PS2_BIN2C bin2c HINTS "$ENV{PS2SDK}/bin" REQUIRED)
     set(REGML_PS2_IRX_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/ps2")
     file(MAKE_DIRECTORY "${REGML_PS2_IRX_DIR}")
-    foreach(_module IN ITEMS iomanX fileXio usbd usbmass_bd)
+    foreach(_module IN ITEMS iomanX fileXio usbd usbmass_bd audsrv)
         add_custom_command(
             OUTPUT "${REGML_PS2_IRX_DIR}/${_module}.c"
             COMMAND "${REGML_PS2_BIN2C}" "$ENV{PS2SDK}/iop/irx/${_module}.irx"

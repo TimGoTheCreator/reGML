@@ -727,6 +727,14 @@ void Canvas::ellipse(double x1, double y1, double x2, double y2, bool outline) {
     const double radius_y = (bottom_edge - top_edge) / 2;
     if (radius_x <= 0 || radius_y <= 0)
         return;
+#if REGML_PS2
+    if (gpu_) {
+        if (!alpha_test_enabled_ || alpha_ > alpha_test_ref_)
+            ps2_gpu_ellipse(left_edge, top_edge, right_edge, bottom_edge, outline,
+                            (alpha_ << 24) | rgb_);
+        return;
+    }
+#endif
     const int left = static_cast<int>(std::clamp(std::floor(left_edge), 0.0, static_cast<double>(width_)));
     const int right = static_cast<int>(std::clamp(std::ceil(right_edge), 0.0, static_cast<double>(width_)));
     const int top = static_cast<int>(std::clamp(std::floor(top_edge), 0.0, static_cast<double>(height_)));
@@ -783,6 +791,14 @@ void Canvas::round_rectangle(double x1,
         rectangle(x1, y1, x2, y2, outline);
         return;
     }
+#if REGML_PS2
+    if (gpu_) {
+        if (!alpha_test_enabled_ || alpha_ > alpha_test_ref_)
+            ps2_gpu_round_rectangle(left_edge, top_edge, right_edge, bottom_edge, x_radius, y_radius,
+                                    outline, (alpha_ << 24) | rgb_);
+        return;
+    }
+#endif
     const double center_x = (left_edge + right_edge) / 2;
     const double center_y = (top_edge + bottom_edge) / 2;
     const int left = static_cast<int>(std::clamp(std::floor(left_edge), 0.0, static_cast<double>(width_)));
@@ -957,6 +973,18 @@ void Canvas::text(
     const double cosine = std::cos(radians), sine = std::sin(radians);
     const double scale = coordinate_scale_;
     const double anchor_x = x * scale, anchor_y = y * scale;
+#if REGML_PS2
+    const bool ps2_text_atlas = gpu_ && ps2_gpu_text_atlas_ready();
+    std::array<Ps2TextGlyph, 64> ps2_text_batch{};
+    std::size_t ps2_text_count = 0;
+    const auto flush_ps2_text = [&] {
+        if (ps2_text_count) {
+            ps2_gpu_text_glyphs(std::span<const Ps2TextGlyph>(ps2_text_batch.data(), ps2_text_count),
+                                (alpha_ << 24) | rgb_, angle != 0 || sx <= 0 || sy <= 0);
+            ps2_text_count = 0;
+        }
+    };
+#endif
     for (char c : value) {
         if (newline(c)) {
             pen_x = -width * halign / 2.0;
@@ -964,9 +992,13 @@ void Canvas::text(
             continue;
         }
 #if REGML_PS2
-        if (gpu_) {
+        if (ps2_text_atlas) {
             const double left = pen_x, right = pen_x + 5 * font_scale_;
             const double top = pen_y, bottom = pen_y + 7 * font_scale_;
+            if (c == ' ') {
+                pen_x += 6 * font_scale_;
+                continue;
+            }
             const auto transform_x = [&](double px, double py) {
                 return anchor_x + (px * sx * cosine + py * sy * sine) * scale;
             };
@@ -981,8 +1013,14 @@ void Canvas::text(
             const double max_x = std::max({corners[0], corners[2], corners[4], corners[6]});
             const double min_y = std::min({corners[1], corners[3], corners[5], corners[7]});
             const double max_y = std::max({corners[1], corners[3], corners[5], corners[7]});
-            if (max_x > 0 && max_y > 0 && min_x < width_ && min_y < height_)
-                ps2_gpu_font_glyph(static_cast<unsigned char>(c), corners, (alpha_ << 24) | rgb_);
+            if (max_x > 0 && max_y > 0 && min_x < width_ && min_y < height_) {
+                auto &glyph = ps2_text_batch[ps2_text_count++];
+                glyph.character = static_cast<unsigned char>(c);
+                for (std::size_t i = 0; i < corners.size(); ++i)
+                    glyph.corners[i] = static_cast<float>(corners[i]);
+                if (ps2_text_count == ps2_text_batch.size())
+                    flush_ps2_text();
+            }
             pen_x += 6 * font_scale_;
             continue;
         }
@@ -1078,6 +1116,9 @@ void Canvas::text(
         }
         pen_x += 6 * font_scale_;
     }
+#if REGML_PS2
+    flush_ps2_text();
+#endif
     if (profile_text_)
         text_profile_ms_ +=
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - profile_start)

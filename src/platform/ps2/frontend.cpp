@@ -4,6 +4,7 @@
 #include "error.hpp"
 #include "game.hpp"
 #include "gpu.hpp"
+#include <audsrv.h>
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -30,6 +31,8 @@ extern unsigned char usbd_irx[];
 extern unsigned int size_usbd_irx;
 extern unsigned char usbmass_bd_irx[];
 extern unsigned int size_usbmass_bd_irx;
+extern unsigned char audsrv_irx[];
+extern unsigned int size_audsrv_irx;
 }
 
 namespace regml {
@@ -73,6 +76,9 @@ void initialize_ps2_storage() {
     load_irx(usbmass_bd_irx, size_usbmass_bd_irx, "USB mass storage", false);
     if (fileXioInit() < 0)
         throw Error(ErrorKind::io, "PS2 fileXio initialization failed");
+    if (SifLoadModule("rom0:LIBSD", 0, nullptr) < 0)
+        throw Error(ErrorKind::io, "PS2 sound module failed to load");
+    load_irx(audsrv_irx, size_audsrv_irx, "AUDSRV");
 }
 
 Ps2Frontend::Ps2Frontend(bool hidden, bool escape_quits, bool speed_controls, bool uncapped)
@@ -200,16 +206,16 @@ void Ps2Frontend::present(const Canvas &canvas) {
     const auto source = canvas.pixels();
     const auto width = std::min(canvas.width(), kTextureWidth);
     const auto height = std::min(canvas.height(), kTextureHeight);
-    for (int y = 0; y < kTextureHeight; ++y) {
+    for (int y = 0; y < height; ++y) {
         auto *row = pixels + static_cast<std::size_t>(y) * kTextureWidth;
-        if (y < height) {
-            const auto *src = source.data() + static_cast<std::size_t>(y) * canvas.width();
-            for (int x = 0; x < width; ++x)
-                row[x] = rgba5551(src[x]);
-            std::fill(row + width, row + kTextureWidth, 0);
-        } else {
-            std::fill(row, row + kTextureWidth, 0);
-        }
+        const auto *src = source.data() + static_cast<std::size_t>(y) * canvas.width();
+        for (int x = 0; x < width; ++x)
+            row[x] = rgba5551(src[x]);
+        std::fill(row + width, row + kTextureWidth, 0);
+    }
+    for (int y = height; y < kTextureHeight; ++y) {
+        auto *row = pixels + static_cast<std::size_t>(y) * kTextureWidth;
+        std::fill(row, row + kTextureWidth, 0);
     }
 
     gsKit_texture_upload(gs_, &texture_);

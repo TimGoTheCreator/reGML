@@ -1,6 +1,9 @@
 #pragma once
 #include "canvas.hpp"
 #include "package.hpp"
+#if REGML_PS2
+#include "platform/ps2/gpu.hpp"
+#endif
 #include <array>
 #include <bitset>
 #include <cstdint>
@@ -52,6 +55,7 @@ class GameAssets {
                                                                    std::uint32_t tile,
                                                                    std::uint64_t elapsed_us = 0) const;
     void prefetch(int id);
+    void prefetch(int id, double frame);
     void draw_background(Canvas &canvas, int id, double x, double y);
     void draw_background_stretched(Canvas &canvas, int id, double x, double y, double width, double height);
     void draw_background_part_ext(Canvas &canvas,
@@ -119,6 +123,7 @@ class GameAssets {
                    double sy = 1,
                    double angle = 0);
     double text_width(int font, std::string_view text) const;
+    double text_character_width(int font, unsigned char character) const noexcept;
     double text_height(int font) const;
     int add_sprite_font(int sprite, std::string_view string_map, bool proportional, int separation);
     void view(double x, double y, double sx, double sy, double px, double py);
@@ -173,6 +178,7 @@ class GameAssets {
     static constexpr std::size_t max_dynamic_sprites_ = 4096;
     static constexpr std::size_t max_dynamic_sprite_bytes_ = 16ULL * 1024 * 1024;
     const Package &package_;
+    std::uint32_t cache_generation_ = 0;
     double view_x_ = 0, view_y_ = 0, view_sx_ = 1, view_sy_ = 1, port_x_ = 0, port_y_ = 0;
     std::vector<Sprite> sprites_;
     std::vector<std::uint32_t> sprite_frame_regions_;
@@ -180,6 +186,8 @@ class GameAssets {
     std::vector<Page> pages_;
     Page scratch_page_;
     int scratch_page_id_ = -1;
+    std::array<int, 5> scratch_region_key_{};
+    bool scratch_region_valid_ = false;
     std::vector<RegionEntry> regions_;
     std::vector<const Region *> background_regions_;
     std::vector<Tileset> tilesets_;
@@ -188,7 +196,10 @@ class GameAssets {
     std::size_t dynamic_sprite_count_ = 0;
     std::size_t dynamic_sprite_bytes_ = 0;
     std::vector<std::size_t> backgrounds_;
-#if REGML_WII
+#if REGML_PS2
+    static constexpr std::size_t page_cache_limit_ = 1ULL * 1024 * 1024;
+    static constexpr std::size_t region_cache_limit_ = 1ULL * 1024 * 1024;
+#elif REGML_WII
     static constexpr std::size_t page_cache_limit_ = 4ULL * 1024 * 1024;
     static constexpr std::size_t region_cache_limit_ = 1ULL * 1024 * 1024;
 #elif REGML_LOW_MEMORY
@@ -220,6 +231,7 @@ class GameAssets {
     std::vector<ScaledRun> scaled_runs_;
     [[nodiscard]] std::uint32_t find_region_index(std::size_t pointer) const noexcept;
     [[nodiscard]] const Region *find_region(std::size_t pointer) const noexcept;
+    std::uint64_t image_cache_key(const Region &region) const noexcept;
     Page &load_page(int id);
     void release_scratch_page() noexcept;
     void blit(Canvas &canvas,

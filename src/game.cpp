@@ -36,15 +36,24 @@
 #if REGML_PS2
 #include <cstdio>
 #include <malloc.h>
+extern "C" {
+volatile std::uint32_t regml_ps2_active_pc = 0;
+volatile std::uint32_t regml_ps2_active_opcode = 0;
+volatile std::uint32_t regml_ps2_active_symbol = 0;
+const char *regml_ps2_active_code_name = "";
+volatile std::uint32_t regml_ps2_active_code_name_length = 0;
+}
 #endif
 namespace regml {
 namespace {
 struct GameChangeRequested {};
 
 #if REGML_PS2
-void ps2_memory_trace(std::string_view stage, std::size_t position = 0) {
+void ps2_memory_trace(std::string_view stage, std::size_t position = 0, std::size_t map_entries = 0) {
     static const bool enabled = [] {
         auto *marker = std::fopen("host:reGML/regml-trace.enabled", "r");
+        if (!marker)
+            marker = std::fopen("host:reGML/regml-profile.enabled", "r");
         if (!marker)
             return false;
         std::fclose(marker);
@@ -54,9 +63,27 @@ void ps2_memory_trace(std::string_view stage, std::size_t position = 0) {
         return;
     const auto memory = mallinfo();
     if (auto *log = std::fopen("host:reGML/regml-load.log", "a")) {
-        std::fprintf(log, "%.*s at %u heap=%u free=%u arena=%u\n", static_cast<int>(stage.size()),
+        std::fprintf(log, "%.*s at %u heap=%u free=%u arena=%u maps=%u\n", static_cast<int>(stage.size()),
                      stage.data(), static_cast<unsigned>(position), static_cast<unsigned>(memory.uordblks),
-                     static_cast<unsigned>(memory.fordblks), static_cast<unsigned>(memory.arena));
+                     static_cast<unsigned>(memory.fordblks), static_cast<unsigned>(memory.arena),
+                     static_cast<unsigned>(map_entries));
+        std::fclose(log);
+    }
+}
+void ps2_error_trace(std::string_view stage, std::size_t position, std::string_view message) {
+    if (auto *log = std::fopen("host:reGML/regml-error.log", "a")) {
+        std::fprintf(log, "%.*s at %u: %.*s\n", static_cast<int>(stage.size()), stage.data(),
+                     static_cast<unsigned>(position), static_cast<int>(message.size()), message.data());
+        std::fclose(log);
+    }
+}
+void ps2_oom_trace(const char *stage, std::size_t frame, std::size_t map_entries) {
+    const auto memory = mallinfo();
+    if (auto *log = std::fopen("host:reGML/regml-error.log", "a")) {
+        std::fprintf(log, "out of memory during %s frame=%u heap=%u free=%u arena=%u maps=%u\n", stage,
+                     static_cast<unsigned>(frame), static_cast<unsigned>(memory.uordblks),
+                     static_cast<unsigned>(memory.fordblks), static_cast<unsigned>(memory.arena),
+                     static_cast<unsigned>(map_entries));
         std::fclose(log);
     }
 }
@@ -324,7 +351,112 @@ struct GameSession::Impl {
     KeyboardState held{}, pressed{}, previous_held{}, released{};
     // ds maps can have any game data as keys, so they need their own storage
     // instead of sharing the bytecode name pool
-    using DynamicMap = std::unordered_map<std::string, Value, VariableStoreHash, std::equal_to<>>;
+    struct DynamicValue {
+        using Storage = std::variant<std::int32_t, double, bool, PackageString, std::monostate, ArrayPtr,
+                                     FunctionReference, CallablePtr, StructPtr, std::shared_ptr<std::string>>;
+        Storage stored = std::monostate{};
+
+        DynamicValue() = default;
+        explicit DynamicValue(const Value &value) {
+            std::visit(
+                [&](const auto &item) {
+                    using T = std::decay_t<decltype(item)>;
+                    if constexpr (std::is_same_v<T, std::string>)
+                        stored = std::make_shared<std::string>(item);
+                    else
+                        stored = item;
+                },
+                value);
+        }
+
+        Value to_value() const {
+            return std::visit(
+                [](const auto &item) -> Value {
+                    using T = std::decay_t<decltype(item)>;
+                    if constexpr (std::is_same_v<T, std::shared_ptr<std::string>>)
+                        return *item;
+                    else
+                        return item;
+                },
+                stored);
+        }
+    };
+    struct DynamicMapKeyView {
+        bool string_key;
+        std::string_view value;
+    };
+    struct DynamicMapHash {
+        using is_transparent = void;
+
+        static constexpr std::size_t offset_basis() noexcept {
+            if constexpr (sizeof(std::size_t) == 8)
+                return static_cast<std::size_t>(14695981039346656037ULL);
+            else
+                return static_cast<std::size_t>(2166136261U);
+        }
+
+        static constexpr std::size_t prime() noexcept {
+            if constexpr (sizeof(std::size_t) == 8)
+                return static_cast<std::size_t>(1099511628211ULL);
+            else
+                return static_cast<std::size_t>(16777619U);
+        }
+
+        static std::size_t append(std::size_t hash, std::string_view value) noexcept {
+            for (const auto ch : value) {
+                hash ^= static_cast<unsigned char>(ch);
+                hash *= prime();
+            }
+            return hash;
+        }
+
+        std::size_t operator()(std::string_view value) const noexcept {
+            return append(offset_basis(), value);
+        }
+
+        std::size_t operator()(DynamicMapKeyView key) const noexcept {
+            auto hash = append(offset_basis(), key.string_key ? "s:" : "n:");
+            return append(hash, key.value);
+        }
+    };
+    struct DynamicMapEqual {
+        using is_transparent = void;
+
+        bool operator()(std::string_view left, std::string_view right) const noexcept {
+            return left == right;
+        }
+
+        bool operator()(std::string_view stored, DynamicMapKeyView query) const noexcept {
+            return stored.size() == query.value.size() + 2 &&
+                   stored[0] == (query.string_key ? 's' : 'n') && stored[1] == ':' &&
+                   stored.substr(2) == query.value;
+        }
+
+        bool operator()(DynamicMapKeyView query, std::string_view stored) const noexcept {
+            return (*this)(stored, query);
+        }
+    };
+    struct DynamicMap
+        : std::unordered_map<std::string, DynamicValue, DynamicMapHash, DynamicMapEqual> {
+        using Base = std::unordered_map<std::string, DynamicValue, DynamicMapHash, DynamicMapEqual>;
+
+        DynamicMap() { this->max_load_factor(1.5f); }
+
+        bool set(DynamicMapKeyView key, const Value &value, bool only_if_absent) {
+            if (const auto found = this->find(key); found != this->end()) {
+                if (!only_if_absent)
+                    found->second = DynamicValue(value);
+                return false;
+            }
+
+            std::string stored_key;
+            stored_key.reserve(key.value.size() + 2);
+            stored_key.append(key.string_key ? "s:" : "n:");
+            stored_key.append(key.value);
+            this->emplace(std::move(stored_key), DynamicValue(value));
+            return true;
+        }
+    };
     std::unordered_map<int, DynamicMap> maps;
     std::unordered_map<int, std::vector<Value>> lists;
     struct PriorityItem {
@@ -359,8 +491,15 @@ struct GameSession::Impl {
     double comparison_epsilon = 0.00001;
     int draw_font = -1, halign = 0, valign = 0;
     std::size_t frame = 0, instruction_count = 0, depth = 0, event_budget = 0;
+    bool graphics_prefetch_pending = false;
+    std::array<std::size_t, 128> active_program_stack{};
     bool profile_tick_timing = false;
     double last_logic_ms = 0, last_draw_ms = 0;
+    double last_draw_event_ms = 0, last_draw_builtin_ms = 0;
+    std::array<double, 4> last_draw_builtin_categories{};
+    double max_draw_builtin_call_ms = 0;
+    std::string_view slowest_draw_builtin;
+    std::size_t draw_event_depth = 0;
     int current_code = -1;
     std::size_t current_vm_address = 0;
     int current_room = -1, pending_room = -1, next_id = 200000;
@@ -371,9 +510,19 @@ struct GameSession::Impl {
     };
     std::vector<EventFrame> event_stack;
     struct VmScratch {
+        VariableStore locals;
+        struct VariableCacheEntry {
+            VariableStore *store = nullptr;
+            Value *value = nullptr;
+            std::uint32_t symbol = Instruction::no_symbol;
+            std::uint32_t generation = 0;
+            std::uint32_t engine_size = 0;
+        };
         std::vector<Value> stack, arguments;
         std::vector<InstancePtr> targets;
         std::vector<DataType> stack_types;
+        std::array<VariableCacheEntry, 64> variable_cache{};
+        std::uint32_t variable_cache_generation = 0;
         struct Environment {
             InstancePtr saved, saved_other;
             std::vector<InstancePtr> choices;
@@ -649,8 +798,8 @@ struct GameSession::Impl {
                                                             0);
             values.reserve(static_cast<std::size_t>(length));
             for (int i = 0; i < length; ++i) {
-                const auto item = (*array)->elements.find(offset + i);
-                values.push_back(item == (*array)->elements.end() ? 0 : value_number(item->second));
+                const auto *item = (*array)->elements.find(offset + i);
+                values.push_back(item ? value_number(*item) : 0);
             }
             return;
         }
@@ -1458,6 +1607,31 @@ struct GameSession::Impl {
         return remember({});
     }
     void event(InstancePtr inst, int type, int subtype, int object = -1, InstancePtr other = {}) {
+        const bool profile_draw_event = profile_tick_timing && type == 8;
+        const auto draw_event_start = profile_draw_event ? std::chrono::steady_clock::now()
+                                                         : std::chrono::steady_clock::time_point{};
+        struct DrawEventProfileGuard {
+            double &total;
+            std::size_t &depth;
+            bool enabled;
+            std::chrono::steady_clock::time_point start;
+            DrawEventProfileGuard(double &total_value,
+                                  std::size_t &depth_value,
+                                  bool is_enabled,
+                                  std::chrono::steady_clock::time_point start_value)
+                : total(total_value), depth(depth_value), enabled(is_enabled), start(start_value) {
+                if (enabled)
+                    ++depth;
+            }
+            ~DrawEventProfileGuard() {
+                if (enabled) {
+                    --depth;
+                    total += std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - start)
+                                 .count();
+                }
+            }
+        } draw_event_profile_guard{last_draw_event_ms, draw_event_depth, profile_draw_event, draw_event_start};
         if (!inst->alive || inst->deactivated)
             return;
         const int start = object < 0 ? inst->object : object;
@@ -1483,6 +1657,56 @@ struct GameSession::Impl {
         } guard{event_stack};
         for (const auto entry : event_code->code)
             execute(entry, inst, {}, other);
+    }
+    void prefetch_room_graphics() {
+#if REGML_PS2
+        if (current_room < 0 || static_cast<std::size_t>(current_room) >= rooms.size())
+            return;
+        const auto &room = rooms[static_cast<std::size_t>(current_room)];
+        struct PrefetchKey {
+            int sprite;
+            std::uint64_t frame;
+            bool operator==(const PrefetchKey &) const = default;
+        };
+        struct PrefetchHash {
+            std::size_t operator()(const PrefetchKey &key) const noexcept {
+                const auto sprite = std::hash<int>{}(key.sprite);
+                const auto frame = std::hash<std::uint64_t>{}(key.frame);
+                return sprite ^ (frame + 0x9e3779b9U + (sprite << 6) + (sprite >> 2));
+            }
+        };
+        std::unordered_set<PrefetchKey, PrefetchHash> prefetched;
+        prefetched.reserve(instances.size() + room.layers.size());
+        auto prefetch_sprite = [&](int sprite, double frame, double speed) {
+            if (!assets.sprite_exists(sprite))
+                return;
+            const auto prefetch_frame = [&](double value) {
+                if (!std::isfinite(value))
+                    return;
+                const PrefetchKey key{sprite, std::bit_cast<std::uint64_t>(value)};
+                if (prefetched.insert(key).second)
+                    assets.prefetch(sprite, value);
+            };
+            prefetch_frame(frame);
+            if (speed != 0)
+                prefetch_frame(frame + speed);
+        };
+        for (const auto &i : instances) {
+            if (!i->alive || number(i->vars.at("visible")) == 0)
+                continue;
+            prefetch_sprite(number(i->vars.at("sprite_index")), value_number(i->vars.at("image_index")),
+                            value_number(i->vars.at("image_speed")));
+        }
+        for (const auto &layer : room.layers) {
+            if (!layer.visible)
+                continue;
+            for (const auto &sprite : layer.sprites)
+                prefetch_sprite(sprite.sprite, sprite.frame, sprite.speed);
+            for (const auto &background : layer.backgrounds)
+                if (background.visible)
+                    prefetch_sprite(background.sprite, background.frame, background.speed);
+        }
+#endif
     }
     void enter(int id) {
         if (id < 0 || static_cast<std::size_t>(id) >= rooms.size())
@@ -1590,6 +1814,7 @@ struct GameSession::Impl {
         }
         for (auto &i : snapshot)
             event(i, 7, 4);
+        graphics_prefetch_pending = true;
         std::cout << "Entered room " << id << ": " << room.name << " (" << instances.size() << " instances)"
                   << std::endl;
     }
@@ -1600,6 +1825,12 @@ struct GameSession::Impl {
                   StructPtr struct_self = {}) {
         if (code < 0)
             return std::monostate{};
+        current_code = code;
+#if REGML_PS2
+        const auto active_code_name = package.code_name(static_cast<std::size_t>(code));
+        regml_ps2_active_code_name = active_code_name.data();
+        regml_ps2_active_code_name_length = static_cast<std::uint32_t>(active_code_name.size());
+#endif
 #if REGML_WII
         if (frame == 0 && depth < 4)
             report_wii_memory(package.code_name(static_cast<std::size_t>(code)));
@@ -1607,10 +1838,23 @@ struct GameSession::Impl {
         if (depth >= 128)
             throw Error(ErrorKind::vm, "script call depth exceeded");
         ++depth;
+        const auto program_index = gmrt_project
+                                       ? std::numeric_limits<std::size_t>::max()
+                                       : (linked.shared_code ? linked.code_to_program.at(code)
+                                                             : static_cast<std::size_t>(code));
+        active_program_stack[depth - 1] = program_index;
         struct Guard {
-            std::size_t &d;
-            ~Guard() { --d; }
-        } guard{depth};
+            std::size_t &depth;
+            LinkedPackage &linked;
+            std::array<std::size_t, 128> &active_programs;
+            ~Guard() {
+                --depth;
+                if (depth == 0)
+                    linked.release_programs();
+                else if (linked.lazy_programs && linked.decoded_program_bytes > 1024 * 1024)
+                    linked.release_programs(std::span<const std::size_t>(active_programs.data(), depth));
+            }
+        } guard{depth, linked, active_program_stack};
         if (gmrt_project) {
             auto &target_scratch = vm_scratch[depth - 1].targets;
             struct TargetScratchGuard {
@@ -1852,31 +2096,17 @@ struct GameSession::Impl {
             return result.returned;
         }
         const auto &program = linked.program(package, static_cast<std::size_t>(code));
-        VariableStore locals;
-        if (!arguments.empty()) {
-            locals.reserve(arguments.size() * 2);
-            const auto &argument_names = argument_variable_names();
-            for (std::size_t i = 0; i < arguments.size(); ++i) {
-                if (i < argument_names.size()) {
-                    const auto &names = argument_names[i];
-                    locals.try_emplace(std::string_view(names[0]), arguments[i]);
-                    locals.try_emplace(std::string_view(names[1]), arguments[i]);
-                } else {
-                    locals["argument" + std::to_string(i)] = arguments[i];
-                    locals["argument[" + std::to_string(i) + "]"] = arguments[i];
-                }
-            }
-        }
+        if (program.byte_length == 0)
+            return std::monostate{};
         auto &scratch = vm_scratch[depth - 1];
-        auto &stack = scratch.stack;
-        auto &stack_types = scratch.stack_types;
-        if (stack.capacity() < 32)
-            stack.reserve(32);
-        if (stack_types.capacity() < 32)
-            stack_types.reserve(32);
+        auto &locals = scratch.locals;
+        locals.clear();
+        if (locals.bucket_count() < 16)
+            locals.reserve(16);
         struct ScratchGuard {
             VmScratch &scratch;
             ~ScratchGuard() {
+                scratch.locals.clear();
                 scratch.stack.clear();
                 scratch.stack_types.clear();
                 scratch.arguments.clear();
@@ -1892,6 +2122,31 @@ struct GameSession::Impl {
                 scratch.environment_count = 0;
             }
         } scratch_guard{scratch};
+        if (!arguments.empty()) {
+            locals.reserve(arguments.size() * 2);
+            const auto &argument_names = argument_variable_names();
+            for (std::size_t i = 0; i < arguments.size(); ++i) {
+                if (i < argument_names.size()) {
+                    const auto &names = argument_names[i];
+                    locals.try_emplace(std::string_view(names[0]), arguments[i]);
+                    locals.try_emplace(std::string_view(names[1]), arguments[i]);
+                } else {
+                    locals["argument" + std::to_string(i)] = arguments[i];
+                    locals["argument[" + std::to_string(i) + "]"] = arguments[i];
+                }
+            }
+        }
+        auto &stack = scratch.stack;
+        auto &stack_types = scratch.stack_types;
+        if (stack.capacity() < 32)
+            stack.reserve(32);
+        if (stack_types.capacity() < 32)
+            stack_types.reserve(32);
+        if (++scratch.variable_cache_generation == 0) {
+            scratch.variable_cache.fill({});
+            scratch.variable_cache_generation = 1;
+        }
+        const auto variable_cache_generation = scratch.variable_cache_generation;
         std::size_t pc = package.code().at(static_cast<std::size_t>(code)).entry_offset;
         const auto entry_instruction = program.instruction_at(pc);
         if (!entry_instruction)
@@ -1909,39 +2164,100 @@ struct GameSession::Impl {
             stack_types.pop_back();
             return std::pair<Value, DataType>{std::move(v), type};
         };
-        auto pop = [&]() { return pop_entry().first; };
+        auto pop = [&]() {
+            if (stack.empty())
+                throw Error(ErrorKind::vm, "native VM stack underflow", program.origin + pc);
+            auto value = std::move(stack.back());
+            stack.pop_back();
+            stack_types.pop_back();
+            return value;
+        };
         auto push = [&](Value v, std::optional<DataType> type = std::nullopt) {
             if (stack.size() >= 4096)
                 throw Error(ErrorKind::vm, "native VM stack limit", program.origin + pc);
             stack.push_back(std::move(v));
             stack_types.push_back(type.value_or(current_stack_type));
         };
+        std::size_t executed_in_code = 0;
+        struct InstructionCountGuard {
+            std::size_t &total;
+            std::size_t &executed;
+            ~InstructionCountGuard() { total += executed; }
+        } instruction_count_guard{instruction_count, executed_in_code};
+        std::size_t last_instruction_pc = pc;
         try {
             while (pc < program.byte_length) {
+                last_instruction_pc = pc;
                 if (++event_budget > 2'000'000)
                     throw Error(ErrorKind::vm, "event instruction budget exhausted", program.origin + pc);
-                ++instruction_count;
+                ++executed_in_code;
 #if REGML_PS2
-                if (frame == 0 && instruction_count % 10000 == 0)
-                    ps2_memory_trace(package.code_name(static_cast<std::size_t>(code)), pc);
+                if (frame == 0 && (instruction_count + executed_in_code) % 1000 == 0) {
+                    std::size_t map_entries = 0;
+                    for (const auto &[id, map] : maps) {
+                        (void)id;
+                        map_entries += map.size();
+                    }
+                    ps2_memory_trace(package.code_name(static_cast<std::size_t>(code)), pc, map_entries);
+                }
 #endif
                 const auto &ins = program.instructions[instruction_index];
-                current_stack_type = ins.opcode() == Opcode::call || ins.opcode() == Opcode::call_v ||
-                                             ins.opcode() == Opcode::extended
+                const auto opcode = ins.opcode();
+#if REGML_PS2
+                regml_ps2_active_pc = static_cast<std::uint32_t>(pc);
+                regml_ps2_active_opcode = static_cast<std::uint32_t>(opcode);
+                regml_ps2_active_symbol = ins.symbol_id;
+#endif
+                current_stack_type = opcode == Opcode::call || opcode == Opcode::call_v ||
+                                             opcode == Opcode::extended
                                           ? DataType::variable
                                           : ins.type1;
-                current_code = code;
-                current_vm_address = program.origin + pc;
                 std::size_t next = pc + ins.size;
                 auto variable = [&](bool writing, Value value = std::monostate{}) -> Value {
                     const auto id = static_cast<std::size_t>(ins.symbol_id);
+                    const auto kind = (ins.reference_value() >> 24) & 0xf8;
+                    const int encoded_scope =
+                        std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
+                    if (ins.symbol_id != Instruction::no_symbol && kind == 0xa0) {
+                        auto &cached = scratch.variable_cache[id % scratch.variable_cache.size()];
+                        if (cached.generation == variable_cache_generation && cached.symbol == id &&
+                            cached.value) {
+                            if (encoded_scope == -7 && cached.store == &locals) {
+                                if (writing) {
+                                    *cached.value = value;
+                                    return value;
+                                }
+                                return *cached.value;
+                            }
+                            if (!struct_self && self && (encoded_scope == -1 || encoded_scope == -6)) {
+                                if (cached.store == &self->vars && cached.engine_size == engine.size()) {
+                                    if (writing) {
+                                        *cached.value = value;
+                                        return value;
+                                    }
+                                    return *cached.value;
+                                }
+                                if (cached.store == &engine) {
+                                    if (writing) {
+                                        *cached.value = value;
+                                        return value;
+                                    }
+                                    return *cached.value;
+                                }
+                            }
+                        }
+                    }
                     const auto &symbol = linked.variables[id];
                     std::string indexed_name;
                     std::string_view name = symbol.name;
-                    const auto kind = (ins.reference_value() >> 24) & 0xf8;
-                    int scope = std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word));
+                    int scope = encoded_scope;
                     int array_index = -1;
                     StructPtr explicit_struct;
+                    const bool dynamic_local = name == "undefined" || name == "instance_count" ||
+                                               name.starts_with("bbox_") || name.starts_with("argument[") ||
+                                               name == "sprite_width" || name == "sprite_height" ||
+                                               name == "sprite_xoffset" || name == "sprite_yoffset" ||
+                                               name == "image_number";
                     if (kind == 0 || kind == 0x10 || kind == 0x90) {
                         array_index = number(pop());
                         if (array_index < 0 || array_index >= 32000 * 32000)
@@ -2013,10 +2329,10 @@ struct GameSession::Impl {
                     else if (scope == -5)
                         store = &globals;
                     else if (static_store)
-                        store = &static_variables[current_code];
+                        store = &static_variables[code];
                     else if (scope == -7 || name.starts_with("argument"))
                         store = &locals;
-                    else if (engine.contains(name) || (kind == 0xa0 && ins.opcode() == Opcode::push_builtin &&
+                    else if (engine.contains(name) || (kind == 0xa0 && opcode == Opcode::push_builtin &&
                                                        (!self || !self->vars.contains(name))))
                         store = &engine;
                     else if ((scope == -1 || scope == -6) && self)
@@ -2077,10 +2393,9 @@ struct GameSession::Impl {
                             if (kind == 0x90) {
                                 if (array->use_count() > 1)
                                     *array = ArrayPtr(new ArrayValue(**array));
-                                auto element = (*array)->elements.find(array_index);
-                                if (element == (*array)->elements.end() ||
-                                    !std::holds_alternative<ArrayPtr>(element->second) ||
-                                    !std::get<ArrayPtr>(element->second)) {
+                                auto *element = (*array)->elements.find(array_index);
+                                if (!element || !std::holds_alternative<ArrayPtr>(*element) ||
+                                    !std::get<ArrayPtr>(*element)) {
                                     (*array)->elements[array_index] = ArrayPtr(new ArrayValue);
                                     auto &length = (*array)->row_lengths[row];
                                     length = std::max<std::int32_t>(
@@ -2102,12 +2417,22 @@ struct GameSession::Impl {
                             const auto length = (*array)->row_lengths.find(row);
                             if (length == (*array)->row_lengths.end() || col >= length->second)
                                 return std::monostate{};
-                            const auto element = (*array)->elements.find(array_index);
-                            return element == (*array)->elements.end() ? Value{std::int32_t{0}}
-                                                                       : element->second;
+                            const auto *element = (*array)->elements.find(array_index);
+                            return element ? *element : Value{std::int32_t{0}};
                         }
+                        const bool cacheable =
+                            !multi_target && !explicit_struct &&
+                            (store != &engine || (name != "event_type" && name != "event_number"));
+                        auto &cached = scratch.variable_cache[id % scratch.variable_cache.size()];
+                        const bool cache_hit = cacheable && cached.generation == variable_cache_generation &&
+                                               cached.symbol == id && cached.store == store && cached.value;
                         if (writing) {
-                            (*store)[name] = value;
+                            Value &destination = cache_hit ? *cached.value : (*store)[name];
+                            destination = value;
+                            if (cacheable)
+                                cached = {store, &destination, static_cast<std::uint32_t>(id),
+                                          variable_cache_generation,
+                                          static_cast<std::uint32_t>(engine.size())};
                             if (store == &engine && name == "room")
                                 pending_room = number(value);
                             if (!struct_store && !static_store && store != &engine && store != &globals &&
@@ -2132,13 +2457,22 @@ struct GameSession::Impl {
                         }
                         if (name == "instance_count")
                             return static_cast<std::int32_t>(instances.size());
-                        const auto it = store->find(name);
-                        if (it == store->end() &&
-                            (name.starts_with("u_") || name.starts_with("tex_")))
+                        Value *found_value = cache_hit ? cached.value : nullptr;
+                        if (!found_value) {
+                            const auto it = store->find(name);
+                            if (it != store->end()) {
+                                found_value = &it->second;
+                                if (cacheable)
+                                    cached = {store, found_value, static_cast<std::uint32_t>(id),
+                                              variable_cache_generation,
+                                              static_cast<std::uint32_t>(engine.size())};
+                            }
+                        }
+                        if (!found_value && (name.starts_with("u_") || name.starts_with("tex_")))
                             return std::int32_t{-1};
-                        if (it == store->end())
+                        if (!found_value)
                             throw Error(ErrorKind::vm, "uninitialized variable: " + std::string(name));
-                        return it->second;
+                        return *found_value;
                     };
                     if (multi_target) {
                         bool found = false;
@@ -2154,7 +2488,7 @@ struct GameSession::Impl {
                     }
                     return access(store);
                 };
-                switch (ins.opcode()) {
+                switch (opcode) {
                 case Opcode::push_i:
                 case Opcode::push:
                 case Opcode::push_local:
@@ -2318,7 +2652,7 @@ struct GameSession::Impl {
                 case Opcode::shl:
                 case Opcode::shr: {
                     const auto right = pop(), left = pop();
-                    if (ins.opcode() == Opcode::cmp &&
+                    if (opcode == Opcode::cmp &&
                         (std::holds_alternative<std::monostate>(left) ||
                          std::holds_alternative<std::monostate>(right))) {
                         const bool equal = std::holds_alternative<std::monostate>(left) &&
@@ -2334,14 +2668,14 @@ struct GameSession::Impl {
                     if (value_is_string(left) && value_is_string(right)) {
                         const auto a = value_string_view(left);
                         const auto b = value_string_view(right);
-                        if (ins.opcode() == Opcode::add) {
+                        if (opcode == Opcode::add) {
                             if (a.size() + b.size() > 1'048'576)
                                 throw Error(ErrorKind::vm, "string limit");
                             std::string result;
                             result.reserve(a.size() + b.size());
                             result.append(a).append(b);
                             push(std::move(result));
-                        } else if (ins.opcode() == Opcode::cmp) {
+                        } else if (opcode == Opcode::cmp) {
                             const int c = a.compare(b);
                             push(ins.comparison() == 1   ? c < 0
                                  : ins.comparison() == 2 ? c <= 0
@@ -2353,7 +2687,7 @@ struct GameSession::Impl {
                             throw Error(ErrorKind::unsupported, "string arithmetic");
                         break;
                     }
-                    if (ins.opcode() == Opcode::cmp &&
+                    if (opcode == Opcode::cmp &&
                         (ins.comparison() == 3 || ins.comparison() == 4)) {
                         const auto is_numeric = [](const Value &value) {
                             return std::holds_alternative<std::int32_t>(value) ||
@@ -2380,7 +2714,7 @@ struct GameSession::Impl {
                         break;
                     }
                     const double a = value_number(left), b = value_number(right);
-                    switch (ins.opcode()) {
+                    switch (opcode) {
                     case Opcode::add:
                         push(a + b);
                         break;
@@ -2450,6 +2784,10 @@ struct GameSession::Impl {
                     for (std::size_t i = 0; i < count; ++i)
                         args.push_back(pop());
                     auto result = call(name, args, self, other, struct_self);
+#if REGML_PS2
+                    regml_ps2_active_code_name = active_code_name.data();
+                    regml_ps2_active_code_name_length = static_cast<std::uint32_t>(active_code_name.size());
+#endif
                     args.clear();
                     push(std::move(result));
                     break;
@@ -2479,6 +2817,10 @@ struct GameSession::Impl {
                     } else {
                         throw Error(ErrorKind::unsupported, "CALLV requires a function value", program.origin + pc);
                     }
+#if REGML_PS2
+                    regml_ps2_active_code_name = active_code_name.data();
+                    regml_ps2_active_code_name_length = static_cast<std::uint32_t>(active_code_name.size());
+#endif
                     args.clear();
                     push(std::move(result));
                     break;
@@ -2493,7 +2835,7 @@ struct GameSession::Impl {
                 case Opcode::branch_true:
                 case Opcode::branch_false: {
                     const bool condition = value_number(pop()) > 0.5;
-                    if (condition == (ins.opcode() == Opcode::branch_true))
+                    if (condition == (opcode == Opcode::branch_true))
                         next = ins.branch_target_value();
                     break;
                 }
@@ -2579,13 +2921,12 @@ struct GameSession::Impl {
                             }
                             throw Error(ErrorKind::vm, "invalid multi-dimensional array access");
                         }
-                        auto found = (*array)->elements.find(index);
+                        auto *found = (*array)->elements.find(index);
                         if (sub == -2) {
-                            push(found == (*array)->elements.end() ? Value{std::monostate{}} : found->second);
+                            push(found ? *found : Value{std::monostate{}});
                         } else {
-                            if (found == (*array)->elements.end() ||
-                                !std::holds_alternative<ArrayPtr>(found->second) ||
-                                !std::get<ArrayPtr>(found->second)) {
+                            if (!found || !std::holds_alternative<ArrayPtr>(*found) ||
+                                !std::get<ArrayPtr>(*found)) {
                                 (*array)->elements[index] = ArrayPtr(new ArrayValue);
                                 auto &length = (*array)->row_lengths[index / 32000];
                                 length = std::max<std::int32_t>(
@@ -2613,7 +2954,7 @@ struct GameSession::Impl {
                 }
                 default:
                     throw Error(ErrorKind::unsupported,
-                                "native opcode pending: " + std::string(opcode_name(ins.opcode())));
+                                "native opcode pending: " + std::string(opcode_name(opcode)));
                 }
                 if (next != pc + ins.size && next != program.byte_length) {
                     const auto target = program.instruction_at(next);
@@ -2626,16 +2967,37 @@ struct GameSession::Impl {
                 }
                 pc = next;
             }
+            current_code = code;
+            current_vm_address = program.origin + last_instruction_pc;
         } catch (const Error &e) {
+            if (!e.offset() || (*e.offset() >= program.origin &&
+                                *e.offset() < program.origin + program.byte_length))
+                current_code = code;
+            current_vm_address = e.offset().value_or(program.origin + pc);
+#if REGML_PS2
+            ps2_error_trace(package.code_name(static_cast<std::size_t>(code)), pc, e.what());
+#endif
             throw Error(e.kind(),
                         std::string(e.what()) + " in " +
                             std::string(package.code_name(static_cast<std::size_t>(code))),
                         e.offset().value_or(program.origin + pc));
         } catch (const std::bad_alloc &) {
+            current_code = code;
+            current_vm_address = program.origin + pc;
+#if REGML_PS2
+            std::size_t map_entries = 0;
+            for (const auto &[id, map] : maps) {
+                (void)id;
+                map_entries += map.size();
+            }
+            ps2_memory_trace("bad_alloc", pc, map_entries);
+#endif
             throw Error(ErrorKind::io,
                         "out of memory in " + std::string(package.code_name(static_cast<std::size_t>(code))),
                         program.origin + pc);
         } catch (const std::out_of_range &e) {
+            current_code = code;
+            current_vm_address = program.origin + pc;
             throw Error(ErrorKind::vm,
                         std::string("host lookup failed: ") + e.what() + " in " +
                             std::string(package.code_name(static_cast<std::size_t>(code))),
@@ -2683,6 +3045,47 @@ struct GameSession::Impl {
                InstancePtr self,
                InstancePtr other,
                StructPtr struct_self = {}) {
+        int draw_builtin_category = -1;
+        if (profile_tick_timing && draw_event_depth != 0) {
+            if (name.starts_with("draw_text"))
+                draw_builtin_category = 0;
+            else if (name.starts_with("draw_sprite") || name.starts_with("draw_background") ||
+                     name.starts_with("draw_surface") || name.starts_with("draw_tile") ||
+                     name == "draw_self")
+                draw_builtin_category = 1;
+            else if (name.starts_with("draw_"))
+                draw_builtin_category = 2;
+            else if (name.starts_with("surface_"))
+                draw_builtin_category = 3;
+        }
+        const bool profile_draw_builtin = draw_builtin_category >= 0;
+        const auto draw_builtin_start = profile_draw_builtin ? std::chrono::steady_clock::now()
+                                                             : std::chrono::steady_clock::time_point{};
+        struct DrawBuiltinProfileGuard {
+            double &total;
+            std::array<double, 4> &categories;
+            double &maximum;
+            std::string_view &slowest_name;
+            int category;
+            bool enabled;
+            std::chrono::steady_clock::time_point start;
+            std::string_view name;
+            ~DrawBuiltinProfileGuard() {
+                if (enabled) {
+                    const double elapsed = std::chrono::duration<double, std::milli>(
+                                               std::chrono::steady_clock::now() - start)
+                                               .count();
+                    total += elapsed;
+                    categories[static_cast<std::size_t>(category)] += elapsed;
+                    if (elapsed > maximum) {
+                        maximum = elapsed;
+                        slowest_name = name;
+                    }
+                }
+            }
+        } draw_builtin_profile_guard{last_draw_builtin_ms, last_draw_builtin_categories,
+                                     max_draw_builtin_call_ms, slowest_draw_builtin, draw_builtin_category,
+                                     profile_draw_builtin, draw_builtin_start, name};
         auto n = [&](std::size_t i) {
             if (i >= args.size())
                 throw Error(ErrorKind::vm, "missing built-in argument");
@@ -2697,6 +3100,14 @@ struct GameSession::Impl {
             if (i >= args.size())
                 throw Error(ErrorKind::vm, "missing built-in argument");
             return value_text(args[i]);
+        };
+        auto text_view = [&](std::size_t i, std::string &storage) -> std::string_view {
+            if (i >= args.size())
+                throw Error(ErrorKind::vm, "missing built-in argument");
+            if (value_is_string(args[i]))
+                return value_string_view(args[i]);
+            storage = value_text(args[i]);
+            return storage;
         };
         if (name == "game_change") {
             std::string request;
@@ -2989,6 +3400,7 @@ struct GameSession::Impl {
             if (args.size() > 32000)
                 throw Error(ErrorKind::vm, "array literal exceeds the one-dimensional array limit");
             ArrayPtr array(new ArrayValue);
+            array->elements.reserve_dense(args.size());
             for (std::size_t i = 0; i < args.size(); ++i)
                 array->elements[static_cast<std::int32_t>(i)] = args[i];
             array->row_lengths[0] = static_cast<std::int32_t>(args.size());
@@ -3234,6 +3646,7 @@ struct GameSession::Impl {
                 throw Error(ErrorKind::vm, "array_create length must be between 0 and 32000");
             ArrayPtr result(new ArrayValue);
             result->row_lengths[0] = length;
+            result->elements.reserve_dense(static_cast<std::size_t>(length));
             const Value initial = args.size() > 1 ? args[1] : Value{std::int32_t{0}};
             for (int i = 0; i < length; ++i)
                 result->elements.emplace(i, initial);
@@ -3246,11 +3659,10 @@ struct GameSession::Impl {
             if (const auto found = (*array)->row_lengths.find(0); found != (*array)->row_lengths.end())
                 return found->second;
             std::int32_t length = 0;
-            for (const auto &[index, value] : (*array)->elements) {
-                (void)value;
+            (*array)->elements.for_each([&](std::int32_t index, const Value &) {
                 if (index >= 0 && index < 32000)
-                    length = std::max<std::int32_t>(length, static_cast<std::int32_t>(index + 1));
-            }
+                    length = std::max<std::int32_t>(length, index + 1);
+            });
             return length;
         }
         if (name == "array_get") {
@@ -3260,8 +3672,8 @@ struct GameSession::Impl {
             const int index = number(args[1]);
             if (!array || !*array || index < 0 || index >= 32000 * 32000)
                 return std::monostate{};
-            const auto found = (*array)->elements.find(index);
-            return found == (*array)->elements.end() ? Value{std::monostate{}} : found->second;
+            const auto *found = (*array)->elements.find(index);
+            return found ? *found : Value{std::monostate{}};
         }
         if (name == "array_set") {
             if (args.size() < 3)
@@ -3289,12 +3701,10 @@ struct GameSession::Impl {
             auto &elements = (*array)->elements;
             auto &length = (*array)->row_lengths[0];
             if (length == 0) {
-                for (const auto &[index, value] : elements) {
-                    (void)value;
+                elements.for_each([&](std::int32_t index, const Value &) {
                     if (index >= 0 && index < 32000)
-                        length = std::max<std::int32_t>(
-                            length, static_cast<std::int32_t>(index + 1));
-                }
+                        length = std::max<std::int32_t>(length, index + 1);
+                });
             }
             if (args.size() - 1 > static_cast<std::size_t>(32000 - length))
                 throw Error(ErrorKind::vm, "array_push exceeds the one-dimensional array limit");
@@ -3311,11 +3721,10 @@ struct GameSession::Impl {
             auto &elements = (*array)->elements;
             auto &length = (*array)->row_lengths[0];
             if (length == 0)
-                for (const auto &[element_index, value] : elements) {
-                    (void)value;
+                elements.for_each([&](std::int32_t element_index, const Value &) {
                     if (element_index >= 0 && element_index < 32000)
                         length = std::max(length, element_index + 1);
-                }
+                });
             const int index = number(args[1]);
             const int count = number(args[2]);
             if (index < 0 || count < 0)
@@ -3325,11 +3734,11 @@ struct GameSession::Impl {
             const int removed = static_cast<int>(std::min<std::int64_t>(count, length - index));
             const int new_length = length - removed;
             for (int destination = index; destination < new_length; ++destination) {
-                const auto source = elements.find(destination + removed);
-                if (source == elements.end())
+                const auto *source = elements.find(destination + removed);
+                if (!source)
                     elements.erase(destination);
                 else {
-                    const Value value = source->second;
+                    const Value value = *source;
                     elements[destination] = value;
                 }
             }
@@ -3356,6 +3765,8 @@ struct GameSession::Impl {
             const std::string source = text(0), delimiter = text(1);
             const int max_splits = args.size() > 2 ? number(n(2)) : -1;
             ArrayPtr result(new ArrayValue);
+            if (max_splits >= 0)
+                result->elements.reserve_dense(static_cast<std::size_t>(max_splits) + 1);
             int count = 0;
             std::size_t start = 0;
             while ((max_splits < 0 || count < max_splits) && !delimiter.empty()) {
@@ -3504,25 +3915,28 @@ struct GameSession::Impl {
         }
         if (name == "ds_map_create") {
             const int id = next_ds++;
-            maps[id] = {};
+            maps.try_emplace(id);
             return std::int32_t{id};
         }
         if (name == "ds_map_set" || name == "ds_map_replace" || name == "ds_map_add" ||
             name == "ds_map_set_post") {
             auto &map = maps.at(static_cast<int>(n(0)));
-            const auto key = (value_is_string(args[1]) ? "s:" : "n:") + text(1);
-            if (name == "ds_map_add" && map.contains(key))
-                return false;
-            map[key] = args[2];
+            const bool string_key = value_is_string(args[1]);
+            std::string key_storage;
+            const auto key_value = text_view(1, key_storage);
+            const bool inserted = map.set({string_key, key_value}, args[2], name == "ds_map_add");
+            if (name == "ds_map_add")
+                return inserted;
             return true;
         }
         if (name == "ds_map_exists" || name == "ds_map_find_value") {
             const auto &map = maps.at(static_cast<int>(n(0)));
-            const auto key = (value_is_string(args[1]) ? "s:" : "n:") + text(1);
+            std::string key_storage;
+            const DynamicMapKeyView key{value_is_string(args[1]), text_view(1, key_storage)};
             if (name == "ds_map_exists")
                 return map.contains(key);
             const auto it = map.find(key);
-            return it == map.end() ? Value{std::monostate{}} : it->second;
+            return it == map.end() ? Value{std::monostate{}} : it->second.to_value();
         }
         if (name == "ds_map_destroy") {
             maps.erase(static_cast<int>(n(0)));
@@ -3541,7 +3955,7 @@ struct GameSession::Impl {
             keys.reserve(map.size());
             for (const auto &[key, value] : map) {
                 (void)value;
-                keys.push_back(key);
+                keys.emplace_back(key);
             }
             std::sort(keys.begin(), keys.end());
             ArrayPtr result(new ArrayValue);
@@ -3567,7 +3981,7 @@ struct GameSession::Impl {
             keys.reserve(map.size());
             for (const auto &[key, value] : map) {
                 (void)value;
-                keys.push_back(key);
+                keys.emplace_back(key);
             }
             std::sort(keys.begin(), keys.end());
             auto key_value = [](const std::string &key) -> Value {
@@ -3613,14 +4027,15 @@ struct GameSession::Impl {
                 first = false;
                 json += quote(key.size() >= 2 ? std::string_view(key).substr(2) : std::string_view(key));
                 json += ':';
-                if (value_is_string(value))
-                    json += quote(value_string_view(value));
-                else if (const auto *boolean = std::get_if<bool>(&value))
+                const auto decoded = value.to_value();
+                if (value_is_string(decoded))
+                    json += quote(value_string_view(decoded));
+                else if (const auto *boolean = std::get_if<bool>(&decoded))
                     json += *boolean ? "true" : "false";
-                else if (std::holds_alternative<std::monostate>(value))
+                else if (std::holds_alternative<std::monostate>(decoded))
                     json += "null";
                 else
-                    json += value_text(value);
+                    json += value_text(decoded);
             }
             return json + '}';
         }
@@ -3687,7 +4102,7 @@ struct GameSession::Impl {
                         }
                     }
                 }
-                map["s:" + key] = std::move(value);
+                map.set({true, key}, value, false);
                 whitespace();
                 if (i >= json.size() || json[i++] != ',')
                     break;
@@ -4970,26 +5385,32 @@ struct GameSession::Impl {
         if (name == "draw_get_valign")
             return std::int32_t{valign};
         if (name == "draw_text") {
-            assets.draw_text(canvas, draw_font, n(0), n(1), text(2), draw_color, draw_alpha, halign, valign);
+            std::string storage;
+            assets.draw_text(canvas, draw_font, n(0), n(1), text_view(2, storage), draw_color, draw_alpha,
+                             halign, valign);
             return std::monostate{};
         }
         if (name == "draw_text_color" || name == "draw_text_colour") {
             const unsigned color = static_cast<unsigned>((n(3) + n(4) + n(5) + n(6)) / 4);
-            assets.draw_text(canvas, draw_font, n(0), n(1), text(2), color, n(7), halign, valign);
+            std::string storage;
+            assets.draw_text(canvas, draw_font, n(0), n(1), text_view(2, storage), color, n(7), halign, valign);
             return std::monostate{};
         }
         if (name == "draw_text_transformed") {
-            assets.draw_text(canvas, draw_font, n(0), n(1), text(2), draw_color, draw_alpha, halign, valign,
-                             n(3), n(4), n(5));
-            return std::monostate{};
-        }
-        if (name == "draw_text_transformed_color") {
-            assets.draw_text(canvas, draw_font, n(0), n(1), text(2), static_cast<unsigned>(n(6)), draw_alpha,
+            std::string storage;
+            assets.draw_text(canvas, draw_font, n(0), n(1), text_view(2, storage), draw_color, draw_alpha,
                              halign, valign, n(3), n(4), n(5));
             return std::monostate{};
         }
+        if (name == "draw_text_transformed_color") {
+            std::string storage;
+            assets.draw_text(canvas, draw_font, n(0), n(1), text_view(2, storage), static_cast<unsigned>(n(6)),
+                             draw_alpha, halign, valign, n(3), n(4), n(5));
+            return std::monostate{};
+        }
         if (name == "draw_text_ext" || name == "draw_text_ext_transformed") {
-            const auto value = text(2);
+            std::string storage;
+            const auto value = text_view(2, storage);
             const bool transformed = name == "draw_text_ext_transformed";
             const double line_height = n(3) < 0 ? assets.text_height(draw_font) : n(3);
             const double max_width = n(4);
@@ -4999,32 +5420,36 @@ struct GameSession::Impl {
             const double radians = angle * 3.14159265358979323846 / 180.0;
             const double cs = angle == 0 ? 1 : std::cos(radians);
             const double sn = angle == 0 ? 0 : std::sin(radians);
-            std::string line;
+            std::size_t line_start = 0;
             double line_width = 0;
             std::size_t line_number = 0;
-            auto draw_line = [&] {
+            auto draw_line = [&](std::size_t line_end) {
                 const double line_offset = line_height * static_cast<double>(line_number);
                 const double x = n(0) + (transformed ? line_offset * sy * sn : 0);
                 const double y = n(1) + (transformed ? line_offset * sy * cs : line_offset);
-                assets.draw_text(canvas, draw_font, x, y, line, draw_color, draw_alpha, halign, valign,
-                                 sx, sy, angle);
-                line.clear();
+                assets.draw_text(canvas, draw_font, x, y, value.substr(line_start, line_end - line_start),
+                                 draw_color, draw_alpha, halign, valign, sx, sy, angle);
+                line_start = line_end;
                 line_width = 0;
                 ++line_number;
             };
-            for (const char ch : value) {
-                const double char_width =
-                    ch == '\n' || ch == '#' ? 0 : assets.text_width(draw_font, {&ch, 1});
+            for (std::size_t index = 0; index < value.size(); ++index) {
+                const char ch = value[index];
+                const double char_width = ch == '\n' || ch == '#'
+                                              ? 0
+                                              : assets.text_character_width(
+                                                    draw_font, static_cast<unsigned char>(ch));
                 if ((ch == ' ' && max_width > 0 && line_width + char_width > max_width) || ch == '\n' ||
                     ch == '#') {
-                    draw_line();
-                    if (ch == '\n' || ch == '#')
+                    draw_line(index);
+                    if (ch == '\n' || ch == '#') {
+                        line_start = index + 1;
                         continue;
+                    }
                 }
-                line += ch;
                 line_width += char_width;
             }
-            draw_line();
+            draw_line(value.size());
             return std::monostate{};
         }
         if (name == "surface_create") {
@@ -5272,9 +5697,9 @@ struct GameSession::Impl {
             if (!args.empty()) {
                 if (const auto *array = std::get_if<ArrayPtr>(&args[0]); array && *array) {
                     for (std::size_t i = 0; i < enabled.size(); ++i) {
-                        const auto value = (*array)->elements.find(static_cast<std::int32_t>(i));
-                        if (value != (*array)->elements.end())
-                            enabled[i] = value_number(value->second) != 0;
+                        const auto *value = (*array)->elements.find(static_cast<std::int32_t>(i));
+                        if (value)
+                            enabled[i] = value_number(*value) != 0;
                     }
                 } else {
                     for (std::size_t i = 0; i < std::min(enabled.size(), args.size()); ++i)
@@ -6234,6 +6659,12 @@ struct GameSession::Impl {
         const auto profile_start = profile_tick_timing ? ProfileClock::now() : ProfileClock::time_point{};
         auto draw_start = ProfileClock::time_point{};
         last_logic_ms = last_draw_ms = 0;
+        last_draw_event_ms = 0;
+        last_draw_builtin_ms = 0;
+        last_draw_builtin_categories.fill(0);
+        max_draw_builtin_call_ms = 0;
+        slowest_draw_builtin = {};
+        draw_event_depth = 0;
         const char *allocation_stage = "audio service";
         try {
             audio.service();
@@ -6251,6 +6682,13 @@ struct GameSession::Impl {
             allocation_stage = "room entry";
             for (int transitions = 0; pending_room >= 0 && transitions < 16; ++transitions)
                 enter(pending_room);
+#if REGML_PS2
+            if (graphics_prefetch_pending) {
+                allocation_stage = "room graphics prefetch";
+                prefetch_room_graphics();
+                graphics_prefetch_pending = false;
+            }
+#endif
             frame_instances.assign(instances.begin(), instances.end());
             struct SnapshotGuard {
                 std::vector<InstancePtr> &instances;
@@ -6798,10 +7236,30 @@ struct GameSession::Impl {
             std::erase_if(instances, [](const auto &i) { return !i->alive; });
             ++frame;
             engine["current_time"] = static_cast<double>(frame) * 1000.0 / value_number(engine["room_speed"]);
+#if REGML_PS2
+            if (frame % 60 == 0) {
+                std::size_t map_entries = 0;
+                for (const auto &[id, map] : maps) {
+                    (void)id;
+                    map_entries += map.size();
+                }
+                ps2_memory_trace("frame", frame, map_entries);
+            }
+#endif
         } catch (const GameChangeRequested &) {
             return;
         } catch (const std::bad_alloc &) {
+#if REGML_PS2
+            std::size_t map_entries = 0;
+            for (const auto &[id, map] : maps) {
+                (void)id;
+                map_entries += map.size();
+            }
+            ps2_oom_trace(allocation_stage, frame, map_entries);
+            throw Error(ErrorKind::io, "out of memory");
+#else
             throw Error(ErrorKind::io, "out of memory during " + std::string(allocation_stage));
+#endif
         } catch (const std::exception &error) {
             throw Error(ErrorKind::vm,
                         "host error during " + std::string(allocation_stage) + ": " + error.what());
@@ -6838,6 +7296,14 @@ void GameSession::profile_tick(bool enabled) noexcept {
 }
 GameSession::TickProfile GameSession::take_tick_profile() noexcept {
     TickProfile profile{impl_->last_logic_ms, impl_->last_draw_ms};
+    profile.draw_event_ms = impl_->last_draw_event_ms;
+    profile.draw_builtin_ms = impl_->last_draw_builtin_ms;
+    profile.draw_text_builtin_ms = impl_->last_draw_builtin_categories[0];
+    profile.draw_image_builtin_ms = impl_->last_draw_builtin_categories[1];
+    profile.draw_primitive_builtin_ms = impl_->last_draw_builtin_categories[2];
+    profile.draw_other_builtin_ms = impl_->last_draw_builtin_categories[3];
+    profile.max_draw_builtin_call_ms = impl_->max_draw_builtin_call_ms;
+    profile.slowest_draw_builtin = impl_->slowest_draw_builtin;
     profile.text_ms = impl_->canvas.take_text_profile_ms();
 #if REGML_PS2
     const auto gpu_profile = ps2_gpu_take_profile();

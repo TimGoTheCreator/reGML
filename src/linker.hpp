@@ -1,6 +1,8 @@
 #pragma once
 #include "decoder.hpp"
 #include "package.hpp"
+#include <array>
+#include <span>
 #include <string>
 #include <unordered_map>
 namespace regml {
@@ -28,8 +30,11 @@ struct LinkedPackage {
     std::vector<ProgramReferenceRange> program_reference_ranges;
     bool lazy_programs = false;
     std::size_t decoded_program_bytes = 0;
+    std::array<std::size_t, 64> recent_programs{};
+    std::size_t recent_program_count = 0, recent_program_cursor = 0;
     Program &program(const Package &package, std::size_t index);
-    void release_programs();
+    void release_program(std::size_t program_index);
+    void release_programs(std::span<const std::size_t> active_programs = {});
     std::vector<PackageSymbol> variables, functions;
     // chain words store addresses, not symbol IDs
     std::unordered_map<std::size_t, std::size_t> variable_at, function_at;

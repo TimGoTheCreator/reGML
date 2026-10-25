@@ -6,6 +6,9 @@
 #elif REGML_OPENAL
 #include "audio/openal/output.hpp"
 #endif
+#if REGML_PS2
+#include "audio/ps2/output.hpp"
+#endif
 #if REGML_WII
 #include "platform/wii/host.hpp"
 #include "platform/wii/renderer.hpp"
@@ -46,7 +49,7 @@ class FrameProfileLog {
         file_.open(path, std::ios::trunc);
         if (!file_)
             throw Error(ErrorKind::io, "frame profile cannot be opened");
-        file_ << "frame,room,samples,frame_ms,tick_ms,present_ms,logic_ms,draw_ms,image_ms,text_ms,image_calls,image_quads,glyph_quads,texture_uploads,max_tick_ms,max_present_ms,instructions_per_frame\n";
+        file_ << "frame,room,samples,frame_ms,tick_ms,present_ms,logic_ms,draw_ms,image_ms,text_ms,image_calls,image_quads,glyph_quads,texture_uploads,max_tick_ms,max_present_ms,instructions_per_frame,draw_event_ms,draw_builtin_ms,draw_text_builtin_ms,draw_image_builtin_ms,draw_primitive_builtin_ms,draw_other_builtin_ms,max_draw_builtin_call_ms,slowest_draw_builtin\n";
         file_ << std::fixed << std::setprecision(3);
     }
     ~FrameProfileLog() { flush(); }
@@ -72,6 +75,16 @@ class FrameProfileLog {
         present_ms_ += present_ms;
         logic_ms_ += logic_ms;
         draw_ms_ += draw_ms;
+        draw_event_ms_ += tick_profile.draw_event_ms;
+        draw_builtin_ms_ += tick_profile.draw_builtin_ms;
+        draw_text_builtin_ms_ += tick_profile.draw_text_builtin_ms;
+        draw_image_builtin_ms_ += tick_profile.draw_image_builtin_ms;
+        draw_primitive_builtin_ms_ += tick_profile.draw_primitive_builtin_ms;
+        draw_other_builtin_ms_ += tick_profile.draw_other_builtin_ms;
+        if (tick_profile.max_draw_builtin_call_ms > max_draw_builtin_call_ms_) {
+            max_draw_builtin_call_ms_ = tick_profile.max_draw_builtin_call_ms;
+            slowest_draw_builtin_ = tick_profile.slowest_draw_builtin;
+        }
         image_ms_ += tick_profile.image_ms;
         text_ms_ += tick_profile.text_ms;
         image_calls_ += tick_profile.image_calls;
@@ -94,11 +107,20 @@ class FrameProfileLog {
               << draw_ms_ / count << ',' << image_ms_ / count << ',' << text_ms_ / count << ','
               << image_calls_ / count << ',' << image_quads_ / count << ','
               << glyph_quads_ / count << ',' << texture_uploads_ / count << ','
-              << max_tick_ms_ << ','
-              << max_present_ms_ << ',' << static_cast<double>(instructions_) / count << '\n';
+              << max_tick_ms_ << ',' << max_present_ms_ << ','
+              << static_cast<double>(instructions_) / count << ',' << draw_event_ms_ / count << ','
+              << draw_builtin_ms_ / count << ',' << draw_text_builtin_ms_ / count << ','
+              << draw_image_builtin_ms_ / count << ',' << draw_primitive_builtin_ms_ / count << ','
+              << draw_other_builtin_ms_ / count << ',' << max_draw_builtin_call_ms_ << ','
+              << std::quoted(slowest_draw_builtin_) << '\n';
         file_.flush();
         samples_ = instructions_ = 0;
         frame_ms_ = tick_ms_ = present_ms_ = logic_ms_ = draw_ms_ = max_tick_ms_ = max_present_ms_ = 0;
+        draw_event_ms_ = 0;
+        draw_builtin_ms_ = 0;
+        draw_text_builtin_ms_ = draw_image_builtin_ms_ = draw_primitive_builtin_ms_ = draw_other_builtin_ms_ = 0;
+        max_draw_builtin_call_ms_ = 0;
+        slowest_draw_builtin_.clear();
         image_ms_ = 0;
         text_ms_ = 0;
         image_calls_ = 0;
@@ -109,6 +131,12 @@ class FrameProfileLog {
     std::size_t frame_ = 0, samples_ = 0, instructions_ = 0;
     double frame_ms_ = 0, tick_ms_ = 0, present_ms_ = 0, logic_ms_ = 0, draw_ms_ = 0, max_tick_ms_ = 0,
            max_present_ms_ = 0, image_ms_ = 0, text_ms_ = 0;
+    double draw_event_ms_ = 0;
+    double draw_builtin_ms_ = 0;
+    double draw_text_builtin_ms_ = 0, draw_image_builtin_ms_ = 0, draw_primitive_builtin_ms_ = 0,
+           draw_other_builtin_ms_ = 0;
+    double max_draw_builtin_call_ms_ = 0;
+    std::string slowest_draw_builtin_;
     std::uint64_t image_calls_ = 0, image_quads_ = 0, glyph_quads_ = 0, texture_uploads_ = 0;
 };
 #if REGML_WITH_SDL2
@@ -647,10 +675,14 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
     try {
         game = std::make_unique<GameSession>(package, options.seed, options.save_directory);
     } catch (const Error &error) {
+#if !REGML_PS2
         show_reGML_error(error);
+#endif
         throw;
     } catch (const std::exception &error) {
+#if !REGML_PS2
         show_error("reGML Error", error.what());
+#endif
         throw;
     }
     GameSession &session = *game;
@@ -723,6 +755,8 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
         trace_stage("audio.begin", &session);
 #if !REGML_PS2
         AudioDevice audio(session, options.speed_multiplier);
+#else
+        Ps2AudioOutput audio(session);
 #endif
         trace_stage("audio.end", &session);
         auto next = std::chrono::steady_clock::now();
@@ -774,10 +808,14 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
                 }
 #endif
             } catch (const Error &error) {
+#if !REGML_PS2
                 show_reGML_error(error);
+#endif
                 throw;
             } catch (const std::exception &error) {
+#if !REGML_PS2
                 show_error("reGML Error", error.what());
+#endif
                 throw;
             }
             trace_stage("delay", &session);

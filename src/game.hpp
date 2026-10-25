@@ -19,6 +19,14 @@ class GameSession {
     struct TickProfile {
         double logic_ms = 0;
         double draw_ms = 0;
+        double draw_event_ms = 0;
+        double draw_builtin_ms = 0;
+        double draw_text_builtin_ms = 0;
+        double draw_image_builtin_ms = 0;
+        double draw_primitive_builtin_ms = 0;
+        double draw_other_builtin_ms = 0;
+        double max_draw_builtin_call_ms = 0;
+        std::string_view slowest_draw_builtin;
         double image_ms = 0;
         double text_ms = 0;
         std::uint64_t image_calls = 0;
