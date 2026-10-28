@@ -250,7 +250,18 @@ jobs:
           architecture: x86-64
           version: '6.4.2'
       - name: Install dependencies
-        run: sudo pkg install -y cmake ninja pkgconf png libvorbis sdl2 ccache
+        run: |
+          # The Avalon repository can be unavailable; use DragonFly's AUTO mirror.
+          sudo mkdir -p /usr/local/etc/pkg/repos
+          sudo tee /usr/local/etc/pkg/repos/df-latest.conf >/dev/null <<'EOF'
+          AUTO: {
+            url: "https://pkg.dragonflybsd.org/pkg/${ABI}/LATEST"
+            mirror_type: "HTTP"
+            enabled: yes
+          }
+          EOF
+          sudo pkg update -f
+          sudo pkg install -y cmake ninja pkgconf png libvorbis sdl2 ccache
       - name: Configure and build
         run: |
           mkdir -p "$PWD/host_cache/ccache"
@@ -296,7 +307,10 @@ jobs:
           architecture: x86-64
           version: '4.0.4'
       - name: Install dependencies
-        run: doas mport install cmake ninja pkgconf png libvorbis sdl2 ccache
+        timeout-minutes: 20
+        run: |
+          # mport may ask to continue; CI has no terminal to answer its prompt.
+          yes | doas mport install cmake ninja pkgconf png libvorbis sdl2 ccache
       - name: Configure and build
         run: |
           mkdir -p "$PWD/host_cache/ccache"
