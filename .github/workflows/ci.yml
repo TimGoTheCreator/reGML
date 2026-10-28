@@ -34,6 +34,11 @@ jobs:
           name: game-linux
           path: demo/demo.bmp
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regml-linux-x86_64
+          path: build/regml
+          if-no-files-found: error
 
   windows:
     name: Windows
@@ -61,6 +66,18 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force demo | Out-Null
           .\build\Release\regml.exe run include/data.win --headless --frames 90 --screenshot demo/demo.bmp
+      - name: Stage Windows binary and runtime DLLs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release/windows-x64 | Out-Null
+          Copy-Item build/Release/regml.exe release/windows-x64/
+          Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin" -Filter '*.dll' |
+            Copy-Item -Destination release/windows-x64/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regml-windows-x64
+          path: release/windows-x64/
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: game-windows
@@ -90,6 +107,11 @@ jobs:
           name: game-macos
           path: demo/demo.bmp
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regml-macos-${{ runner.arch }}
+          path: build/regml
+          if-no-files-found: error
 
   freebsd:
     name: FreeBSD
@@ -125,6 +147,11 @@ jobs:
           name: game-freebsd
           path: demo/demo.bmp
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regml-freebsd-x86_64
+          path: build/regml
+          if-no-files-found: error
 
   netbsd:
     name: NetBSD
@@ -182,6 +209,11 @@ jobs:
           name: game-netbsd
           path: demo/demo.bmp
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regml-netbsd-x86_64
+          path: build/regml
+          if-no-files-found: error
 
   openbsd:
     name: OpenBSD
@@ -228,6 +260,11 @@ jobs:
           name: game-openbsd
           path: demo/demo.bmp
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regml-openbsd-x86_64
+          path: build/regml
+          if-no-files-found: error
 
   dragonflybsd:
     name: DragonFly BSD
@@ -285,6 +322,11 @@ jobs:
           name: game-dragonflybsd
           path: demo/demo.bmp
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regml-dragonflybsd-x86_64
+          path: build/regml
+          if-no-files-found: error
 
   midnightbsd:
     name: MidnightBSD
@@ -334,6 +376,11 @@ jobs:
           name: game-midnightbsd
           path: demo/demo.bmp
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regml-midnightbsd-x86_64
+          path: build/regml
+          if-no-files-found: error
 
   haiku:
     name: Haiku
@@ -396,6 +443,11 @@ jobs:
           name: game-haiku
           path: demo/demo.bmp
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regml-haiku-x86_64
+          path: build/regml
+          if-no-files-found: error
 
   wii:
     name: Wii
@@ -410,6 +462,11 @@ jobs:
           /opt/devkitpro/portlibs/wii/bin/powerpc-eabi-cmake -S . -B build/wii \
             -DCMAKE_BUILD_TYPE=Release -DREGML_WII=ON -DBUILD_TESTING=OFF
           make -C build/wii -j"$(nproc)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regml-wii
+          path: build/wii/regml.dol
+          if-no-files-found: error
 
   wii-u:
     name: Wii U
@@ -424,6 +481,13 @@ jobs:
           /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake -S . -B build/wiiu \
             -DCMAKE_BUILD_TYPE=Release -DREGML_WIIU=ON -DBUILD_TESTING=OFF
           make -C build/wiiu -j"$(nproc)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regml-wii-u
+          path: |
+            build/wiiu/regml.rpx
+            build/wiiu/regml.wuhb
+          if-no-files-found: error
 
   ps2:
     name: PlayStation 2
@@ -439,3 +503,8 @@ jobs:
           cmake -S . -B build/ps2 -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$PS2DEV/share/ps2dev.cmake" -DPS2=ON -DBUILD_TESTING=OFF
           cmake --build build/ps2 --parallel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regml-ps2
+          path: build/ps2/regml.elf
+          if-no-files-found: error
