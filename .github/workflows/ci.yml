@@ -308,9 +308,7 @@ jobs:
           version: '4.0.4'
       - name: Install dependencies
         timeout-minutes: 20
-        run: |
-          # mport may ask to continue; CI has no terminal to answer its prompt.
-          yes | doas mport install cmake ninja pkgconf png libvorbis sdl2 ccache
+        run: doas mport install -y cmake ninja pkgconf png libvorbis sdl2 ccache gcc13
       - name: Configure and build
         run: |
           mkdir -p "$PWD/host_cache/ccache"
@@ -318,6 +316,8 @@ jobs:
           export CCACHE_BASEDIR="$PWD"
           export CCACHE_COMPILERCHECK=content
           export CCACHE_NOHASHDIR=true
+          export CC=/usr/local/bin/gcc13
+          export CXX=/usr/local/bin/g++13
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
