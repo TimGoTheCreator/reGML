@@ -17,6 +17,10 @@
 #include "platform/ps2/frontend.hpp"
 #include "platform/ps2/gpu.hpp"
 #endif
+#if REGML_PS4
+#include <orbis/Pad.h>
+#include <orbis/UserService.h>
+#endif
 #include "error.hpp"
 #include "game.hpp"
 #include "lookup.hpp"
@@ -219,14 +223,13 @@ class VideoWindow {
             throw Error(ErrorKind::io, std::string("framebuffer texture: ") + SDL_GetError());
         sdl_ok(SDL_SetTextureBlendMode(texture_.get(), SDL_BLENDMODE_NONE), "texture blend mode");
 #if REGML_PS4
-        if (SDL_InitSubSystem(SDL_INIT_JOYSTICK) >= 0) {
-            joystick_subsystem_ = true;
-            SDL_JoystickEventState(SDL_ENABLE);
-            for (int i = 0; i < SDL_NumJoysticks(); ++i) {
-                joystick_ = SDL_JoystickOpen(i);
-                if (joystick_)
-                    break;
-            }
+        OrbisUserServiceInitializeParams params{};
+        params.priority = ORBIS_KERNEL_PRIO_FIFO_LOWEST;
+        sceUserServiceInitialize(&params);
+        int user = -1;
+        if (scePadInit() >= 0 && sceUserServiceGetInitialUser(&user) >= 0) {
+            pad_ = scePadOpen(user, ORBIS_PAD_PORT_TYPE_STANDARD, 0, nullptr);
+            poll_ps4_pad();
         }
 #else
         if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) >= 0) {
@@ -245,10 +248,8 @@ class VideoWindow {
         if (controller_)
             SDL_GameControllerClose(controller_);
 #if REGML_PS4
-        if (joystick_)
-            SDL_JoystickClose(joystick_);
-        if (joystick_subsystem_)
-            SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
+        if (pad_ >= 0)
+            scePadClose(pad_);
 #endif
         if (controller_subsystem_)
             SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
@@ -315,25 +316,9 @@ class VideoWindow {
                 update_controller_axis(static_cast<SDL_GameControllerAxis>(event.caxis.axis),
                                        event.caxis.value, controller_axes_held_, controller_axes_pressed_);
             }
-#if REGML_PS4
-            if (event.type == SDL_JOYDEVICEADDED && joystick_subsystem_ && !joystick_)
-                joystick_ = SDL_JoystickOpen(event.jdevice.which);
-            if (event.type == SDL_JOYDEVICEREMOVED && joystick_ &&
-                SDL_JoystickInstanceID(joystick_) == event.jdevice.which) {
-                SDL_JoystickClose(joystick_);
-                joystick_ = nullptr;
-                joystick_buttons_held_.fill(false);
-                joystick_buttons_pressed_.fill(false);
-                joystick_hat_held_.fill(false);
-                joystick_hat_pressed_.fill(false);
-                joystick_axes_held_.fill(false);
-                joystick_axes_pressed_.fill(false);
-            }
-#endif
         }
 #if REGML_PS4
-        if (joystick_)
-            poll_joystick_state();
+        poll_ps4_pad();
 #endif
         rebuild_input_state();
         return true;
@@ -494,10 +479,17 @@ class VideoWindow {
     void tick_game(GameSession &session,
                    const KeyboardState *replay,
                    const KeyboardState *replay_pressed = nullptr) {
+#if REGML_PS4
+        session.set_gamepad_state(gamepad_);
+        gamepad_.pressed.fill(false);
+#endif
         session.tick(replay ? *replay : held_,
                      replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed_);
         pressed_.fill(false);
     }
+#if REGML_PS4
+    const GamepadState &gamepad_state() const { return gamepad_; }
+#endif
 
   private:
     void update_source_key(KeyboardState &source_held,
@@ -531,56 +523,38 @@ class VideoWindow {
             update_axis_pair(38, 40, value, source_held, source_pressed);
     }
 #if REGML_PS4
-    static int gml_joystick_button(Uint8 button) {
-        switch (button) {
-        case 0:
-            return 'Z';
-        case 1:
-            return 'X';
-        case 2:
-        case 3:
-            return 'C';
-        case 8:
-            return 13;
-        case 12:
-            return 38;
-        case 13:
-            return 40;
-        case 14:
-            return 37;
-        case 15:
-            return 39;
-        default:
-            return -1;
+    void poll_ps4_pad() {
+        OrbisPadData data{};
+        const bool connected = pad_ >= 0 && scePadReadState(pad_, &data) >= 0 && data.connected;
+        static constexpr std::array<std::uint32_t, 16> masks = {
+            ORBIS_PAD_BUTTON_CROSS, ORBIS_PAD_BUTTON_CIRCLE, ORBIS_PAD_BUTTON_SQUARE,
+            ORBIS_PAD_BUTTON_TRIANGLE, ORBIS_PAD_BUTTON_L1, ORBIS_PAD_BUTTON_R1,
+            ORBIS_PAD_BUTTON_L2, ORBIS_PAD_BUTTON_R2, ORBIS_PAD_BUTTON_TOUCH_PAD,
+            ORBIS_PAD_BUTTON_OPTIONS, ORBIS_PAD_BUTTON_L3, ORBIS_PAD_BUTTON_R3,
+            ORBIS_PAD_BUTTON_UP, ORBIS_PAD_BUTTON_DOWN, ORBIS_PAD_BUTTON_LEFT, ORBIS_PAD_BUTTON_RIGHT};
+        gamepad_.connected = connected;
+        for (std::size_t i = 0; i < masks.size(); ++i) {
+            const bool down = connected && (data.buttons & masks[i]);
+            gamepad_.pressed[i] = gamepad_.pressed[i] || (down && !gamepad_.buttons[i]);
+            gamepad_.buttons[i] = down;
         }
-    }
-    void poll_joystick_state() {
-        SDL_JoystickUpdate();
-
-        KeyboardState button_state{};
-        for (int button = 0; button < SDL_JoystickNumButtons(joystick_); ++button) {
-            if (!SDL_JoystickGetButton(joystick_, button))
-                continue;
-            const auto key = gml_joystick_button(static_cast<Uint8>(button));
-            if (key >= 0 && key < static_cast<int>(button_state.size()))
-                button_state[static_cast<std::size_t>(key)] = true;
-        }
-        for (std::size_t key = 0; key < button_state.size(); ++key)
-            update_source_key(joystick_buttons_held_, joystick_buttons_pressed_, static_cast<int>(key),
-                              button_state[key]);
-
-        const auto hat =
-            SDL_JoystickNumHats(joystick_) > 0 ? SDL_JoystickGetHat(joystick_, 0) : SDL_HAT_CENTERED;
-        update_source_key(joystick_hat_held_, joystick_hat_pressed_, 37, (hat & SDL_HAT_LEFT) != 0);
-        update_source_key(joystick_hat_held_, joystick_hat_pressed_, 38, (hat & SDL_HAT_UP) != 0);
-        update_source_key(joystick_hat_held_, joystick_hat_pressed_, 39, (hat & SDL_HAT_RIGHT) != 0);
-        update_source_key(joystick_hat_held_, joystick_hat_pressed_, 40, (hat & SDL_HAT_DOWN) != 0);
-
-        const int axis_count = SDL_JoystickNumAxes(joystick_);
-        update_axis_pair(37, 39, axis_count > 0 ? SDL_JoystickGetAxis(joystick_, 0) : 0, joystick_axes_held_,
-                         joystick_axes_pressed_);
-        update_axis_pair(38, 40, axis_count > 1 ? SDL_JoystickGetAxis(joystick_, 1) : 0, joystick_axes_held_,
-                         joystick_axes_pressed_);
+        const auto axis = [connected](std::uint8_t value) {
+            if (!connected)
+                return 0.0;
+            const double normalized = (static_cast<int>(value) - 128) / 127.0;
+            return std::clamp(normalized, -1.0, 1.0);
+        };
+        gamepad_.axes = {axis(data.leftStick.x), axis(data.leftStick.y), axis(data.rightStick.x),
+                         axis(data.rightStick.y)};
+        const std::array<std::pair<int, int>, 7> keys = {{{'Z', 0}, {'X', 1}, {'C', 2}, {13, 9},
+                                                           {38, 12}, {40, 13}, {37, 14}}};
+        for (const auto &[key, button] : keys)
+            update_source_key(joystick_buttons_held_, joystick_buttons_pressed_, key, gamepad_.buttons[button]);
+        update_source_key(joystick_buttons_held_, joystick_buttons_pressed_, 39, gamepad_.buttons[15]);
+        update_source_key(joystick_axes_held_, joystick_axes_pressed_, 37, gamepad_.axes[0] < -0.35);
+        update_source_key(joystick_axes_held_, joystick_axes_pressed_, 39, gamepad_.axes[0] > 0.35);
+        update_source_key(joystick_axes_held_, joystick_axes_pressed_, 38, gamepad_.axes[1] < -0.35);
+        update_source_key(joystick_axes_held_, joystick_axes_pressed_, 40, gamepad_.axes[1] > 0.35);
     }
 #endif
     void rebuild_input_state() {
@@ -588,7 +562,7 @@ class VideoWindow {
             const bool was_held = held_[i];
             held_[i] = keyboard_held_[i] || controller_buttons_held_[i] || controller_axes_held_[i] ||
                        joystick_buttons_held_[i] || joystick_hat_held_[i] || joystick_axes_held_[i];
-            pressed_[i] = keyboard_pressed_[i] || controller_buttons_pressed_[i] ||
+            pressed_[i] = pressed_[i] || keyboard_pressed_[i] || controller_buttons_pressed_[i] ||
                           controller_axes_pressed_[i] || joystick_buttons_pressed_[i] ||
                           joystick_hat_pressed_[i] || joystick_axes_pressed_[i] || (held_[i] && !was_held);
         }
@@ -629,8 +603,8 @@ class VideoWindow {
     std::unique_ptr<SDL_Texture, TextureDelete> texture_;
     SDL_GameController *controller_ = nullptr;
 #if REGML_PS4
-    SDL_Joystick *joystick_ = nullptr;
-    bool joystick_subsystem_ = false;
+    int pad_ = -1;
+    GamepadState gamepad_{};
 #endif
     bool controller_subsystem_ = false;
     KeyboardState held_{}, pressed_{};
@@ -831,7 +805,12 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
     };
     std::unique_ptr<GameSession> game;
     try {
+#if REGML_PS4
+        game = std::make_unique<GameSession>(package, options.seed, options.save_directory,
+                                             video_window ? video_window->gamepad_state() : GamepadState{});
+#else
         game = std::make_unique<GameSession>(package, options.seed, options.save_directory);
+#endif
     } catch (const Error &error) {
 #if !REGML_PS2
         show_reGML_error(error);

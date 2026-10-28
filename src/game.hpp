@@ -41,9 +41,11 @@ class GameSession {
     };
     explicit GameSession(const std::filesystem::path &package,
                          std::optional<std::uint32_t> seed = {},
-                         const std::filesystem::path &save_directory = {});
+                         const std::filesystem::path &save_directory = {},
+                         const GamepadState &gamepad = {});
     ~GameSession();
     void tick(const KeyboardState &held, const KeyboardState &pressed);
+    void set_gamepad_state(const GamepadState &state);
     void profile_tick(bool enabled) noexcept;
     TickProfile take_tick_profile() noexcept;
     void text_input(std::string_view text);

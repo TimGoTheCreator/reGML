@@ -362,6 +362,8 @@ struct GameSession::Impl {
     VariableStore globals, engine;
     std::unordered_map<int, VariableStore> static_variables;
     KeyboardState held{}, pressed{}, previous_held{}, released{};
+    GamepadState gamepad{};
+    std::array<bool, 16> gamepad_previous{}, gamepad_released{};
     // ds maps can have any game data as keys, so they need their own storage
     // instead of sharing the bytecode name pool
     struct DynamicValue {
@@ -551,7 +553,8 @@ struct GameSession::Impl {
     mutable std::unordered_map<std::string, std::vector<std::uint8_t>> load_chunks;
     explicit Impl(const std::filesystem::path &path,
                   std::optional<std::uint32_t> seed,
-                  const std::filesystem::path &save_directory)
+                  const std::filesystem::path &save_directory,
+                  const GamepadState &initial_gamepad = {})
         : package(load_stage("package metadata", [&] { return load_game_package(path); })),
           gmrt_project(package.is_gmrt() ? std::optional<GmrtProject>(GmrtProject::load_for_wad(path))
                                          : std::nullopt),
@@ -569,6 +572,7 @@ struct GameSession::Impl {
           })),
           audio(load_stage("audio metadata", [&] { return GameAudio(package, path.parent_path()); })),
           game_dir(path.parent_path()), package_path(path), fixed_seed(seed) {
+        gamepad = initial_gamepad;
         if (gmrt_project) {
             const auto wad = load_stage("GMRT modules", [&] { return GmrtWad::load(path); });
             gmrt_modules.reserve(wad.modules().size());
@@ -610,7 +614,12 @@ struct GameSession::Impl {
         // instructions already have the IDs they need, so we can drop these lookup maps now
         std::unordered_map<std::size_t, std::size_t>{}.swap(linked.variable_at);
         std::unordered_map<std::size_t, std::size_t>{}.swap(linked.function_at);
-        engine = {{"os_type", std::int32_t{0}},
+#if REGML_PS4
+        constexpr std::int32_t os_type = 14;
+#else
+        constexpr std::int32_t os_type = 0;
+#endif
+        engine = {{"os_type", os_type},
                   {"os_version", std::int32_t{0}},
                   {"os_browser", std::int32_t{-1}},
                   {"debug_mode", std::int32_t{0}},
@@ -623,12 +632,20 @@ struct GameSession::Impl {
                   {"background_color", std::int32_t{0}},
                   {"fps", 30.0},
                   {"fps_real", 30.0},
+                  {"async_load", std::int32_t{-1}},
                   {"keyboard_key", std::int32_t{0}},
                   {"keyboard_lastkey", std::int32_t{0}},
                   {"keyboard_string", std::string{}},
                   {"mouse_x", 0.0},
                   {"mouse_y", 0.0},
                   {"mouse_button", std::int32_t{0}}};
+#if REGML_PS4
+        if (!globals.contains("savedata")) {
+            const int savedata = next_ds++;
+            maps.try_emplace(savedata);
+            globals["savedata"] = std::int32_t{savedata};
+        }
+#endif
         load_stage("initial room", [&] {
             enter(order.at(0));
             return true;
@@ -3550,7 +3567,9 @@ struct GameSession::Impl {
         }
         if (name == "os_get_info") {
             auto info = std::make_shared<StructValue>();
-#if defined(_WIN32)
+#if REGML_PS4
+            info->variables["platform"] = std::string("PS4");
+#elif defined(_WIN32)
             info->variables["platform"] = std::string("Windows");
 #elif defined(__APPLE__)
             info->variables["platform"] = std::string("macOS");
@@ -3559,7 +3578,11 @@ struct GameSession::Impl {
 #else
             info->variables["platform"] = std::string("Unknown");
 #endif
+#if REGML_PS4
+            info->variables["device"] = std::string("PlayStation 4");
+#else
             info->variables["device"] = std::string("Desktop");
+#endif
             info->variables["version"] = std::string("reGML");
             info->variables["language"] = std::string("en");
             return info;
@@ -4442,15 +4465,20 @@ struct GameSession::Impl {
             return std::monostate{};
         if (name == "buffer_load_async" || name == "buffer_save_async") {
             if (args.size() < 4)
-                throw Error(ErrorKind::vm, std::string(name) + " requires buffer, offset, size and filename");
+                throw Error(ErrorKind::vm, std::string(name) + " requires buffer, filename, offset and size");
             auto &buffer = buffers.at(static_cast<int>(n(0)));
-            const auto offset = static_cast<std::size_t>(std::clamp(n(1), 0.0, 64.0 * 1024 * 1024));
-            const auto size = static_cast<std::size_t>(std::clamp(n(2), 0.0, 64.0 * 1024 * 1024));
-            const auto path = save_path(text(3));
+            const auto offset = static_cast<std::size_t>(std::clamp(n(2), 0.0, 64.0 * 1024 * 1024));
+            const double requested_size = n(3);
+            const auto size = requested_size < 0
+                                  ? 64U * 1024U * 1024U
+                                  : static_cast<std::size_t>(std::clamp(requested_size, 0.0, 64.0 * 1024 * 1024));
+            const auto filename = text(1);
+            const auto path = save_path(filename);
+            bool succeeded = false;
             if (name == "buffer_load_async") {
                 std::ifstream input(path, std::ios::binary);
                 if (!input)
-                    input.open(game_dir / text(3), std::ios::binary);
+                    input.open(game_dir / filename, std::ios::binary);
                 if (input) {
                     std::vector<std::uint8_t> bytes(size);
                     input.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(size));
@@ -4459,20 +4487,34 @@ struct GameSession::Impl {
                         buffer.bytes.resize(offset + bytes.size());
                     std::copy(bytes.begin(), bytes.end(),
                               buffer.bytes.begin() + static_cast<std::ptrdiff_t>(offset));
+                    succeeded = static_cast<bool>(input) || input.eof();
                 }
             } else {
                 if (!prepare_save_directory())
                     return std::int32_t{-1};
                 std::ofstream output(path, std::ios::binary | std::ios::trunc);
-                if (!output)
-                    return std::int32_t{-1};
-                if (offset < buffer.bytes.size()) {
+                if (output && offset < buffer.bytes.size()) {
                     const auto count = std::min(size, buffer.bytes.size() - offset);
                     output.write(reinterpret_cast<const char *>(buffer.bytes.data() + offset),
                                  static_cast<std::streamsize>(count));
                 }
+                succeeded = static_cast<bool>(output);
             }
-            return std::int32_t{next_async_request++};
+            const auto request_id = next_async_request++;
+            const int map_id = next_ds++;
+            auto [async_map, inserted] = maps.try_emplace(map_id);
+            (void)inserted;
+            async_map->second.set({true, "id"}, Value{std::int32_t{request_id}}, false);
+            async_map->second.set({true, "status"}, Value{succeeded}, false);
+            const auto previous_async_load = engine.at("async_load");
+            engine["async_load"] = std::int32_t{map_id};
+            const auto event_targets = instances;
+            for (const auto &target : event_targets)
+                if (target->alive && find_event_owner(objects[static_cast<std::size_t>(target->object)], {7, 72}) >= 0)
+                    event(target, 7, 72);
+            engine["async_load"] = previous_async_load;
+            maps.erase(map_id);
+            return std::int32_t{request_id};
         }
         if (name == "file_text_open_write" || name == "file_text_open_read" ||
             name == "file_text_open_append") {
@@ -6413,22 +6455,34 @@ struct GameSession::Impl {
             return std::monostate{};
         }
         if (name == "gamepad_get_device_count")
-            return std::int32_t{0};
+            return std::int32_t{gamepad.connected ? 1 : 0};
         if (name == "gamepad_get_description")
-            return std::string{};
+            return std::string(gamepad.connected && n(0) == 0 ? "PlayStation 4 controller" : "");
         if (name == "gamepad_get_guid")
             return std::string{"none"};
         if (name == "gamepad_test_mapping")
-            return false;
+            return gamepad.connected && n(0) == 0;
         if (name == "gamepad_is_connected")
-            return false;
+            return gamepad.connected && n(0) == 0;
         if (name == "joystick_exists")
             return false;
         if (name == "gamepad_button_check" || name == "gamepad_button_check_pressed" ||
-            name == "gamepad_button_check_released" || name == "joystick_check_button" ||
+            name == "gamepad_button_check_released") {
+            const int button = static_cast<int>(n(1)) - 32769;
+            if (!gamepad.connected || n(0) != 0 || button < 0 || button >= 16)
+                return false;
+            return name == "gamepad_button_check_pressed" ? gamepad.pressed[button]
+                   : name == "gamepad_button_check_released" ? gamepad_released[button]
+                                                               : gamepad.buttons[button];
+        }
+        if (name == "gamepad_axis_value") {
+            const int axis = static_cast<int>(n(1)) - 32785;
+            return gamepad.connected && n(0) == 0 && axis >= 0 && axis < 4 ? gamepad.axes[axis] : 0.0;
+        }
+        if (name == "joystick_check_button" ||
             name == "joystick_buttons" || name == "joystick_has_pov")
             return false;
-        if (name == "joystick_pov" || name == "joystick_direction" || name == "gamepad_axis_value" ||
+        if (name == "joystick_pov" || name == "joystick_direction" ||
             name == "joystick_xpos" || name == "joystick_ypos")
             return 0.0;
         if (name == "vertex_format_begin") {
@@ -6691,6 +6745,11 @@ struct GameSession::Impl {
                 released[k] = !held[k] && previous_held[k];
             }
             previous_held = held;
+            for (std::size_t k = 0; k < gamepad.buttons.size(); ++k) {
+                gamepad.pressed[k] = gamepad.pressed[k] || (gamepad.buttons[k] && !gamepad_previous[k]);
+                gamepad_released[k] = !gamepad.buttons[k] && gamepad_previous[k];
+            }
+            gamepad_previous = gamepad.buttons;
             event_budget = 0;
             allocation_stage = "room entry";
             for (int transitions = 0; pending_room >= 0 && transitions < 16; ++transitions)
@@ -7281,9 +7340,13 @@ struct GameSession::Impl {
 };
 GameSession::GameSession(const std::filesystem::path &path,
                          std::optional<std::uint32_t> seed,
-                         const std::filesystem::path &save_directory)
-    : impl_(std::make_unique<Impl>(path, seed, save_directory)) {}
+                         const std::filesystem::path &save_directory,
+                         const GamepadState &gamepad)
+    : impl_(std::make_unique<Impl>(path, seed, save_directory, gamepad)) {}
 GameSession::~GameSession() = default;
+void GameSession::set_gamepad_state(const GamepadState &state) {
+    impl_->gamepad = state;
+}
 void GameSession::tick(const KeyboardState &h, const KeyboardState &p) {
     impl_->tick(h, p);
     if (impl_->pending_game_change) {
@@ -7291,7 +7354,7 @@ void GameSession::tick(const KeyboardState &h, const KeyboardState &p) {
         const auto seed = impl_->fixed_seed;
         const auto save_directory = impl_->save_dir;
         const auto profile = impl_->profile_tick_timing;
-        auto next = std::make_unique<Impl>(path, seed, save_directory);
+        auto next = std::make_unique<Impl>(path, seed, save_directory, impl_->gamepad);
         next->profile_tick_timing = profile;
         next->canvas.profile_text(profile);
 #if !REGML_PS2
