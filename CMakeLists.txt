@@ -189,9 +189,21 @@ else()
 
     find_path(VORBISFILE_INCLUDE_DIR NAMES vorbis/vorbisfile.h REQUIRED)
     find_library(VORBISFILE_LIBRARY NAMES vorbisfile REQUIRED)
+    find_library(VORBIS_LIBRARY NAMES vorbis REQUIRED)
+    find_library(OGG_LIBRARY NAMES ogg REQUIRED)
     add_library(regml_vorbisfile UNKNOWN IMPORTED)
     set_target_properties(regml_vorbisfile PROPERTIES
         IMPORTED_LOCATION "${VORBISFILE_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${VORBISFILE_INCLUDE_DIR}"
+    )
+    add_library(regml_vorbis UNKNOWN IMPORTED)
+    set_target_properties(regml_vorbis PROPERTIES
+        IMPORTED_LOCATION "${VORBIS_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${VORBISFILE_INCLUDE_DIR}"
+    )
+    add_library(regml_ogg UNKNOWN IMPORTED)
+    set_target_properties(regml_ogg PROPERTIES
+        IMPORTED_LOCATION "${OGG_LIBRARY}"
         INTERFACE_INCLUDE_DIRECTORIES "${VORBISFILE_INCLUDE_DIR}"
     )
 endif()
@@ -368,7 +380,13 @@ elseif(PS2)
         m
     )
 else()
-    target_link_libraries(regml_engine PUBLIC PNG::PNG ZLIB::ZLIB regml_vorbisfile)
+    target_link_libraries(regml_engine PUBLIC
+        PNG::PNG
+        ZLIB::ZLIB
+        regml_vorbisfile
+        regml_vorbis
+        regml_ogg
+    )
 endif()
 
 if(PS2)
