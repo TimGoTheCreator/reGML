@@ -512,8 +512,6 @@ jobs:
   ps4:
     name: PlayStation 4
     runs-on: ubuntu-24.04
-    env:
-      REGML_PS4_DEPS_ROOT: ${{ runner.temp }}/regml-ps4-deps
     steps:
       - uses: actions/checkout@v4
       - name: Install build tools
@@ -536,6 +534,7 @@ jobs:
           toolchain_root="$(dirname "$(find "$RUNNER_TEMP/openorbis-v0.5.4" -name link.x -type f -print -quit)")"
           test -f "$toolchain_root/link.x"
           echo "OO_PS4_TOOLCHAIN=$toolchain_root" >> "$GITHUB_ENV"
+          echo "REGML_PS4_DEPS_ROOT=$RUNNER_TEMP/regml-ps4-deps" >> "$GITHUB_ENV"
           echo "$toolchain_root/bin/linux" >> "$GITHUB_PATH"
       - uses: actions/cache@v4
         with:
