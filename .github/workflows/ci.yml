@@ -412,7 +412,7 @@ jobs:
           fi
 
           ls /boot/system/packages/ > baseline_packages.txt
-          pkgman install -y cmake make ccache gcc gcc_syslibs_devel libpng16_devel libvorbis_devel libsdl2_devel
+          pkgman install -y cmake make ccache gcc gcc_syslibs_devel libpng16_devel libvorbis_devel bzip2_devel libsdl2_devel
           ls /boot/system/packages/ > current_packages.txt
 
           comm -13 baseline_packages.txt current_packages.txt | while IFS= read -r pkg; do
