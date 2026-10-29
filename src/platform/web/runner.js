@@ -82,12 +82,17 @@ Module.onRuntimeInitialized = function () {
         .split('/').filter(Boolean);
       if (packageParts.length > 1) packageParts.shift();
       var packagePath = gameRoot + '/' + packageParts.join('/');
+      var packageDirectory = packagePath.slice(0, packagePath.lastIndexOf('/'));
+      var inputScriptPath = packageDirectory + '/regml-input.txt';
       status.textContent = 'Starting game…';
       gameStarted = true;
       Module.gameStarted = true;
       Module.reportedError = false;
       picker.disabled = true;
-      var exitCode = Module.callMain(['run', packagePath, '--save-dir', '/persistent/saves']);
+      var args = ['run', packagePath, '--save-dir', '/persistent/saves'];
+      if (Module.FS.analyzePath(inputScriptPath).exists)
+        args.push('--input-script', inputScriptPath);
+      var exitCode = Module.callMain(args);
       if (exitCode !== undefined && exitCode !== 0) {
         gameStarted = false;
         Module.gameStarted = false;
