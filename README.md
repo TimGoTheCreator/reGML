@@ -216,4 +216,7 @@ heh, maybe if you just give it a prompt and say "make it work fast no error pls"
 So hadn't i given up. I started using codex proper with a more "usable" approach, aka, actually nudging it. i still used (and still do) use it to generate code but debug it and atleast try to see what's wrong and why doesn't it launch?
 well, thats when it started working.
 
-current reGML isn't the "best" either. I know just enough C++ to be dangerous (who doesn't love a good `std::bad_alloc` on the PS2?), so some architectural decisions are questionable at best, harmful at worst. 
+current reGML isn't the "best" either. I know just enough C++ to be dangerous (who doesn't love a good `std::bad_alloc` on the PS2?), so some architectural decisions are questionable at best, harmful at worst.
+
+Now, about when people say ai is "a tool"... ** THEYRE COMPLETELY LYING! ** , in reality, if someone says "it's a tool", it means they completely vibecoded it and trying to use the most uneffective method
+to defend it... no, ai was not used "like a tool".
