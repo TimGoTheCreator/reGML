@@ -230,3 +230,4 @@ NO, once again, im not going to lie i used it "for research", if anyone interpet
 
 Most people who call projects "vibecoded" aren't coders, or know practically nothing about coding itself. 
 If they ARE coders, they (often) know how ai works, and, are mostly, [Ludittes](https://en.wikipedia.org/wiki/Luddites)
+No, im not saying that they're uneducated or anything, luddites were actually very educated and good-working people, but because something does something faster they revolt.
