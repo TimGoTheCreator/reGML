@@ -227,3 +227,6 @@ Q: So, if you don't like ai, why do you use it?
 A: if you don't like ai, why don't you not use windows, your apps, or even Linux?, i hate to break it to you but lots of software have ai involvement in them and, in some, research without ai is rather hard, for example, making a gml runner.
 
 NO, once again, im not going to lie i used it "for research", if anyone interpeted the sentence wrong.
+
+Most people who call projects "vibecoded" aren't coders, or know practically nothing about coding itself. 
+If they ARE coders, they (often) know how ai works, and, are mostly, [Ludittes](https://en.wikipedia.org/wiki/Luddites)
