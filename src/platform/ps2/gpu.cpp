@@ -70,6 +70,7 @@ std::array<TextureSlot, kSlotCount> slots{};
 std::size_t slot_count = 0;
 std::size_t use_clock = 0;
 std::size_t scratch_slot = 0;
+TextureSlot *last_found_slot = nullptr;
 int canvas_width = 0, canvas_height = 0;
 double viewport_scale_x = 1, viewport_scale_y = 1, viewport_x = 0, viewport_y = 0;
 int frame_buffer = 0, last_presented_buffer = 0;
@@ -148,9 +149,16 @@ void set_canvas_scissor() {
 }
 
 TextureSlot *find_slot(std::uint64_t key) noexcept {
+    if (slot_count <= kScratchSlotCount || !key)
+        return nullptr;
+    if (last_found_slot && last_found_slot->key == key) {
+        last_found_slot->used = ++use_clock;
+        return last_found_slot;
+    }
     for (std::size_t i = kScratchSlotCount; i < slot_count; ++i) {
         if (slots[i].key == key) {
             slots[i].used = ++use_clock;
+            last_found_slot = &slots[i];
             return &slots[i];
         }
     }
@@ -205,6 +213,7 @@ TextureSlot *upload_tile(std::span<const std::uint32_t> pixels,
     if (cache_slot) {
         slot->key = cache_key;
         slot->used = ++use_clock;
+        last_found_slot = slot;
     }
     for (int y = 0; y < tile_height; ++y) {
         auto *destination = slot->memory + static_cast<std::size_t>(y) * kTileSize;
@@ -533,6 +542,7 @@ void ps2_gpu_shutdown() noexcept {
     slot_count = 0;
     use_clock = 0;
     scratch_slot = 0;
+    last_found_slot = nullptr;
     frame_active = false;
     readback_valid = false;
     font_atlas_ready = false;
