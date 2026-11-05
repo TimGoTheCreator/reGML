@@ -131,7 +131,7 @@ was tested with cemu v. 2.6
 
 The Trace logs and input scripts: [docs/wiiu.md](docs/wiiu.md)
 
-## Wii (experimental)
+## Wii
 
 wii build uses libogc for video, input, & audio, with direct GX render. the vm is shared with desktop and Wii U. sdl2 isn't linked:
 wii code is in `src/platform/wii/`
