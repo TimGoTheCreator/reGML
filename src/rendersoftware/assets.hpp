@@ -79,6 +79,8 @@ class GameAssets {
                                                                        std::nullopt) const;
     void prefetch(int id);
     void prefetch(int id, double frame);
+    bool prefetch_texture_group(std::string_view name);
+    void flush_texture_group(std::string_view name);
     void draw_background(Canvas &canvas, int id, double x, double y);
     void draw_background_stretched(Canvas &canvas, int id, double x, double y, double width, double height);
     void draw_background_part_ext(Canvas &canvas,
@@ -151,6 +153,26 @@ class GameAssets {
     double text_height(int font) const;
     int add_sprite_font(int sprite, std::string_view string_map, bool proportional, int separation);
     void view(double x, double y, double sx, double sy, double px, double py);
+    std::array<double, 2> transform_point(double x, double y) const noexcept;
+    void draw_circle(Canvas &canvas, double x, double y, double radius, bool outline) const;
+    void draw_line(Canvas &canvas, double x1, double y1, double x2, double y2, double width = 1) const;
+    void draw_triangle(Canvas &canvas,
+                       double x1,
+                       double y1,
+                       double x2,
+                       double y2,
+                       double x3,
+                       double y3,
+                       bool outline) const;
+    void draw_ellipse(Canvas &canvas, double x1, double y1, double x2, double y2, bool outline) const;
+    void draw_round_rectangle(Canvas &canvas,
+                              double x1,
+                              double y1,
+                              double x2,
+                              double y2,
+                              double radius_x,
+                              double radius_y,
+                              bool outline) const;
     void rectangle(Canvas &canvas, double x1, double y1, double x2, double y2, bool outline) const;
 
   private:

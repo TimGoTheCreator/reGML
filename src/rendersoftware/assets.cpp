@@ -1229,6 +1229,43 @@ void GameAssets::prefetch(int id, double frame) {
     (void)source_y;
 #endif
 }
+bool GameAssets::prefetch_texture_group(std::string_view name) {
+    if (!package_.texture_group_exists(name))
+        return false;
+    const auto page_ids = package_.texture_group_pages(name);
+    if constexpr (page_cache_limit_ != 0)
+        return true;
+    for (const auto page_id : page_ids) {
+        if (page_id >= pages_.size())
+            throw Error(ErrorKind::malformed, "texture group references an invalid page");
+        (void)load_page(static_cast<int>(page_id));
+    }
+    return true;
+}
+void GameAssets::flush_texture_group(std::string_view name) {
+    for (const auto page_id : package_.texture_group_pages(name)) {
+        if (page_id >= pages_.size())
+            continue;
+        if ((scratch_page_id_ == static_cast<int>(page_id)) ||
+            (scratch_region_valid_ && scratch_region_key_[0] == static_cast<int>(page_id)))
+            release_scratch_page();
+        auto &page = pages_[page_id];
+        if (!page.generated && !page.pixels.empty()) {
+            const auto bytes = page.pixels.capacity() * sizeof(std::uint32_t);
+            page_cache_bytes_ = page_cache_bytes_ >= bytes ? page_cache_bytes_ - bytes : 0;
+            std::vector<std::uint32_t>().swap(page.pixels);
+        }
+        for (auto it = region_cache_.begin(); it != region_cache_.end();) {
+            if (it->first[0] == static_cast<int>(page_id)) {
+                const auto bytes = it->second.pixels.capacity() * sizeof(std::uint32_t);
+                region_cache_bytes_ = region_cache_bytes_ >= bytes ? region_cache_bytes_ - bytes : 0;
+                it = region_cache_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+}
 void GameAssets::draw_background(Canvas &canvas, int id, double x, double y) {
     if (id < 0 || static_cast<std::size_t>(id) >= backgrounds_.size())
         throw Error(ErrorKind::vm, "background ID out of range");
@@ -1408,6 +1445,52 @@ void GameAssets::view(double x, double y, double sx, double sy, double px, doubl
     view_sy_ = sy;
     port_x_ = px;
     port_y_ = py;
+}
+std::array<double, 2> GameAssets::transform_point(double x, double y) const noexcept {
+    return {(x - view_x_) * view_sx_ + port_x_, (y - view_y_) * view_sy_ + port_y_};
+}
+void GameAssets::draw_circle(Canvas &canvas, double x, double y, double radius, bool outline) const {
+    const auto center = transform_point(x, y);
+    const double center_x = center[0], center_y = center[1];
+    const double radius_x = std::fabs(radius * view_sx_);
+    const double radius_y = std::fabs(radius * view_sy_);
+    if (std::fabs(radius_x - radius_y) <= 1e-9)
+        canvas.circle(center_x, center_y, radius_x, outline);
+    else
+        canvas.ellipse(center_x - radius_x, center_y - radius_y, center_x + radius_x, center_y + radius_y,
+                       outline);
+}
+void GameAssets::draw_line(Canvas &canvas, double x1, double y1, double x2, double y2, double width) const {
+    const auto start = transform_point(x1, y1), end = transform_point(x2, y2);
+    const double scale = std::sqrt(std::fabs(view_sx_ * view_sy_));
+    canvas.line(start[0], start[1], end[0], end[1], width * scale);
+}
+void GameAssets::draw_triangle(Canvas &canvas,
+                               double x1,
+                               double y1,
+                               double x2,
+                               double y2,
+                               double x3,
+                               double y3,
+                               bool outline) const {
+    const auto first = transform_point(x1, y1), second = transform_point(x2, y2), third = transform_point(x3, y3);
+    canvas.triangle(first[0], first[1], second[0], second[1], third[0], third[1], outline);
+}
+void GameAssets::draw_ellipse(Canvas &canvas, double x1, double y1, double x2, double y2, bool outline) const {
+    const auto first = transform_point(x1, y1), second = transform_point(x2, y2);
+    canvas.ellipse(first[0], first[1], second[0], second[1], outline);
+}
+void GameAssets::draw_round_rectangle(Canvas &canvas,
+                                      double x1,
+                                      double y1,
+                                      double x2,
+                                      double y2,
+                                      double radius_x,
+                                      double radius_y,
+                                      bool outline) const {
+    const auto first = transform_point(x1, y1), second = transform_point(x2, y2);
+    canvas.round_rectangle(first[0], first[1], second[0], second[1], std::fabs(radius_x * view_sx_),
+                           std::fabs(radius_y * view_sy_), outline);
 }
 void GameAssets::rectangle(Canvas &canvas, double x1, double y1, double x2, double y2, bool outline) const {
     canvas.rectangle((x1 - view_x_) * view_sx_ + port_x_, (y1 - view_y_) * view_sy_ + port_y_,

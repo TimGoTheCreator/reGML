@@ -873,8 +873,12 @@ void Canvas::circle(double x, double y, double radius, bool outline) {
     finite(x);
     finite(y);
     finite(radius);
-    if (radius < 0 || radius > 8192 || std::fabs(x) > 1e9 || std::fabs(y) > 1e9)
-        throw Error(ErrorKind::unsupported, "circle is outside supported coordinate/radius limits");
+    if (radius < 0)
+        return;
+    // Large finite circles are valid draw requests. Clip their bounding box to
+    // the canvas and use hypot below so the distance test cannot overflow.
+    if (x + radius < 0 || x - radius > width_ || y + radius < 0 || y - radius > height_)
+        return;
 #if REGML_WII
     if (gpu_) {
         wii_gpu_circle(x, y, radius, outline, (alpha_ << 24) | rgb_);
@@ -892,13 +896,20 @@ void Canvas::circle(double x, double y, double radius, bool outline) {
     const int top = static_cast<int>(std::clamp(std::floor(y - radius), 0.0, static_cast<double>(height_)));
     const int bottom =
         static_cast<int>(std::clamp(std::ceil(y + radius + 1), 0.0, static_cast<double>(height_)));
+    const bool large_circle = radius > 8192 || std::fabs(x) > 1e9 || std::fabs(y) > 1e9;
     const auto outer = radius * radius;
     const auto inner = std::max(0.0, radius - 1) * std::max(0.0, radius - 1);
     for (int py = top; py < bottom; ++py)
         for (int px = left; px < right; ++px) {
-            const auto distance = (px - x) * (px - x) + (py - y) * (py - y);
-            if (distance <= outer && (!outline || distance >= inner))
-                plot(px, py);
+            if (large_circle) {
+                const double distance = std::hypot(px - x, py - y);
+                if (distance <= radius && (!outline || distance >= std::max(0.0, radius - 1)))
+                    plot(px, py);
+            } else {
+                const auto distance = (px - x) * (px - x) + (py - y) * (py - y);
+                if (distance <= outer && (!outline || distance >= inner))
+                    plot(px, py);
+            }
         }
 }
 void Canvas::ellipse(double x1, double y1, double x2, double y2, bool outline) {

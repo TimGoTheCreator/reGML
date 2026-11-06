@@ -337,9 +337,26 @@ class VideoWindow {
         return true;
     }
     void present(const Canvas &canvas) {
-        sdl_ok(SDL_UpdateTexture(texture_.get(), nullptr, canvas.pixels().data(),
-                                 canvas.width() * static_cast<int>(sizeof(std::uint32_t))),
-               "texture upload");
+        const auto *pixels = canvas.pixels().data();
+        int pitch = canvas.width() * static_cast<int>(sizeof(std::uint32_t));
+        if (canvas.width() != render_width || canvas.height() != render_height) {
+            present_pixels_.resize(static_cast<std::size_t>(render_width) * render_height);
+            for (int y = 0; y < render_height; ++y) {
+                const int source_y = static_cast<int>(static_cast<std::int64_t>(y) * canvas.height() /
+                                                      render_height);
+                const auto *source_row = canvas.pixels().data() +
+                                         static_cast<std::size_t>(source_y) * canvas.width();
+                auto *target_row = present_pixels_.data() + static_cast<std::size_t>(y) * render_width;
+                for (int x = 0; x < render_width; ++x) {
+                    const int source_x = static_cast<int>(static_cast<std::int64_t>(x) * canvas.width() /
+                                                          render_width);
+                    target_row[x] = source_row[source_x];
+                }
+            }
+            pixels = present_pixels_.data();
+            pitch = render_width * static_cast<int>(sizeof(std::uint32_t));
+        }
+        sdl_ok(SDL_UpdateTexture(texture_.get(), nullptr, pixels, pitch), "texture upload");
         sdl_ok(SDL_SetRenderDrawColor(renderer_.get(), 0, 0, 0, 255), "clear color");
         sdl_ok(SDL_RenderClear(renderer_.get()), "renderer clear");
         sdl_ok(SDL_RenderCopy(renderer_.get(), texture_.get(), nullptr, nullptr), "frame presentation");
@@ -563,6 +580,7 @@ class VideoWindow {
     std::unique_ptr<SDL_Window, WindowDelete> window_;
     std::unique_ptr<SDL_Renderer, RendererDelete> renderer_;
     std::unique_ptr<SDL_Texture, TextureDelete> texture_;
+    std::vector<std::uint32_t> present_pixels_;
     SDL_GameController *controller_ = nullptr;
 #if REGML_PS4
     int pad_ = -1;

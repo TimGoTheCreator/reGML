@@ -5,6 +5,9 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 namespace regml {
 struct LoadLimits {
@@ -56,6 +59,9 @@ class Package {
     [[nodiscard]] const std::vector<CodeEntry> &code() const noexcept { return code_; }
     [[nodiscard]] std::string_view string_at(std::size_t index) const;
     [[nodiscard]] std::string_view string_pointer(std::uint32_t pointer) const;
+    [[nodiscard]] std::span<const std::string_view> asset_tags(std::uint32_t asset_handle) const noexcept;
+    [[nodiscard]] bool texture_group_exists(std::string_view name) const;
+    [[nodiscard]] std::span<const std::uint32_t> texture_group_pages(std::string_view name) const;
     [[nodiscard]] std::vector<std::uint8_t> code_bytes(std::size_t index) const;
     [[nodiscard]] std::string_view code_name(std::size_t index) const;
 
@@ -64,6 +70,8 @@ class Package {
     std::shared_ptr<FileReader> reader_;
     void parse(LoadLimits limits);
     void parse_strings(const Chunk &chunk, LoadLimits limits);
+    void parse_asset_tags(const Chunk &chunk, LoadLimits limits);
+    void parse_texture_groups(const Chunk &chunk, LoadLimits limits);
     void parse_info(const Chunk &chunk);
     void parse_code(const Chunk &chunk, LoadLimits limits);
     [[nodiscard]] std::size_t list_count(const Chunk &chunk, LoadLimits limits) const;
@@ -82,5 +90,7 @@ class Package {
     // another pointer for each one would cost 4 bytes per string
     std::vector<std::uint32_t> string_lookup_;
     std::vector<CodeEntry> code_;
+    std::unordered_map<std::uint32_t, std::vector<std::string_view>> asset_tags_;
+    std::unordered_map<std::string, std::vector<std::uint32_t>> texture_groups_;
 };
 } // namespace regml

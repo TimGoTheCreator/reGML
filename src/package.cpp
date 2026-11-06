@@ -136,6 +136,12 @@ void Package::parse(LoadLimits limits) {
         parse_info(*c);
     if (const auto *c = find_chunk("STRG"); c && !gmrt_ && info_ && info_->has_known_prefix)
         parse_strings(*c, limits);
+    if (const auto *c = find_chunk("TAGS"); c && !gmrt_ && info_ && info_->has_known_prefix &&
+        !strings_.empty())
+        parse_asset_tags(*c, limits);
+    if (const auto *c = find_chunk("TGIN"); c && !gmrt_ && info_ && info_->has_known_prefix &&
+        !strings_.empty())
+        parse_texture_groups(*c, limits);
     if (info_ && info_->has_known_prefix) {
         if (info_->name_pointer != 0)
             (void)string_pointer(info_->name_pointer);
@@ -250,6 +256,81 @@ void Package::parse_strings(const Chunk &c, LoadLimits limits) {
         }
     }
 }
+void Package::parse_asset_tags(const Chunk &c, LoadLimits limits) {
+    const auto bytes = read_bytes(c.data_offset, c.size);
+    const BinaryView data(bytes, c.data_offset);
+    data.require(0, 8);
+    // TAGS v1 stores the tag-name string pointers, followed by a pointer list
+    // of asset records. Each record contains a packed type/index handle and a
+    // list of string pointers for its tags.
+    if (data.u32(0) != 1)
+        return;
+    const auto tag_name_count = static_cast<std::size_t>(data.u32(4));
+    if (tag_name_count > limits.max_entries || tag_name_count > (data.size() - 8) / 4)
+        throw Error(ErrorKind::malformed, "TAGS name pointer table is invalid", c.data_offset + 4);
+    for (std::size_t i = 0; i < tag_name_count; ++i)
+        (void)string_pointer(data.u32(8 + i * 4));
+
+    const auto asset_count_offset = 8 + tag_name_count * 4;
+    data.require(asset_count_offset, 4);
+    const auto asset_count = static_cast<std::size_t>(data.u32(asset_count_offset));
+    if (asset_count > limits.max_entries || asset_count > (data.size() - asset_count_offset - 4) / 4)
+        throw Error(ErrorKind::malformed, "TAGS asset pointer table is invalid",
+                    c.data_offset + asset_count_offset);
+    const auto asset_pointers_offset = asset_count_offset + 4;
+    const auto records_offset = asset_pointers_offset + asset_count * 4;
+    for (std::size_t i = 0; i < asset_count; ++i) {
+        const auto pointer = static_cast<std::size_t>(data.u32(asset_pointers_offset + i * 4));
+        if (pointer < c.data_offset || pointer - c.data_offset < records_offset)
+            throw Error(ErrorKind::malformed, "TAGS asset record precedes the record table", pointer);
+        const auto record_offset = pointer - c.data_offset;
+        data.require(record_offset, 8);
+        const auto handle = data.u32(record_offset);
+        const auto tag_count = static_cast<std::size_t>(data.u32(record_offset + 4));
+        if (tag_count > limits.max_entries || tag_count > (data.size() - record_offset - 8) / 4)
+            throw Error(ErrorKind::malformed, "TAGS asset record is invalid", pointer + 4);
+        std::vector<std::string_view> tags;
+        tags.reserve(tag_count);
+        for (std::size_t tag = 0; tag < tag_count; ++tag)
+            tags.push_back(string_pointer(data.u32(record_offset + 8 + tag * 4)));
+        asset_tags_.insert_or_assign(handle, std::move(tags));
+    }
+}
+void Package::parse_texture_groups(const Chunk &c, LoadLimits limits) {
+    const auto bytes = read_bytes(c.data_offset, c.size);
+    const BinaryView data(bytes, c.data_offset);
+    data.require(0, 8);
+    if (data.u32(0) != 1)
+        return;
+    const auto group_count = static_cast<std::size_t>(data.u32(4));
+    if (group_count > limits.max_entries || group_count > (data.size() - 8) / 4)
+        throw Error(ErrorKind::malformed, "TGIN group pointer table is invalid", c.data_offset + 4);
+    const auto records_offset = 8 + group_count * 4;
+    for (std::size_t i = 0; i < group_count; ++i) {
+        const auto pointer = static_cast<std::size_t>(data.u32(8 + i * 4));
+        if (pointer < c.data_offset || pointer - c.data_offset < records_offset)
+            throw Error(ErrorKind::malformed, "TGIN group record precedes the record table", pointer);
+        const auto record_offset = pointer - c.data_offset;
+        data.require(record_offset, 24);
+        const auto name = string_pointer(data.u32(record_offset));
+        const auto pages_pointer = static_cast<std::size_t>(data.u32(record_offset + 16));
+        std::vector<std::uint32_t> pages;
+        if (pages_pointer) {
+            if (pages_pointer < c.data_offset || pages_pointer - c.data_offset < records_offset)
+                throw Error(ErrorKind::malformed, "TGIN texture page list precedes the record table",
+                            pages_pointer);
+            const auto list_offset = pages_pointer - c.data_offset;
+            data.require(list_offset, 4);
+            const auto page_count = static_cast<std::size_t>(data.u32(list_offset));
+            if (page_count > limits.max_entries || page_count > (data.size() - list_offset - 4) / 4)
+                throw Error(ErrorKind::malformed, "TGIN texture page list is invalid", pages_pointer);
+            pages.reserve(page_count);
+            for (std::size_t page = 0; page < page_count; ++page)
+                pages.push_back(data.u32(list_offset + 4 + page * 4));
+        }
+        texture_groups_.insert_or_assign(std::string(name), std::move(pages));
+    }
+}
 void Package::parse_code(const Chunk &c, LoadLimits limits) {
     const auto count = list_count(c, limits);
     const auto records_start = c.data_offset + 4 + 4 * count;
@@ -341,5 +422,20 @@ std::string_view Package::code_name(std::size_t index) const {
     if (index >= code_.size())
         throw Error(ErrorKind::usage, "code index is out of range");
     return string_pointer(code_[index].name_pointer);
+}
+std::span<const std::string_view> Package::asset_tags(std::uint32_t asset_handle) const noexcept {
+    const auto found = asset_tags_.find(asset_handle);
+    if (found == asset_tags_.end())
+        return {};
+    return found->second;
+}
+bool Package::texture_group_exists(std::string_view name) const {
+    return texture_groups_.contains(std::string(name));
+}
+std::span<const std::uint32_t> Package::texture_group_pages(std::string_view name) const {
+    const auto found = texture_groups_.find(std::string(name));
+    if (found == texture_groups_.end())
+        return {};
+    return found->second;
 }
 } // namespace regml

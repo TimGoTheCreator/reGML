@@ -8,6 +8,7 @@
 #include "instance_ptr.hpp"
 #include "interpreter.hpp"
 #include "linker.hpp"
+#include "lookup.hpp"
 #include "rendersoftware/assets.hpp"
 #include "video/video_player.hpp"
 #if REGML_WIIU
@@ -689,6 +690,7 @@ struct GameSession::Impl {
     std::unordered_map<int, std::pair<int, int>> sprite_textures;
     std::unordered_map<int, int> surface_texture_ids;
     std::unordered_map<int, int> texture_surfaces;
+    std::unordered_set<std::string> loaded_texture_groups;
     std::unordered_map<int, int> shader_texture_stages;
     int next_sprite_texture = 1;
     int active_shader = -1;
@@ -746,6 +748,7 @@ struct GameSession::Impl {
     std::unordered_map<int, VariableStore> static_variables;
     KeyboardState held{}, pressed{}, previous_held{}, released{}, physical_held{}, cleared_until_release{};
     GamepadState gamepad{};
+    double gamepad_axis_deadzone = 0.2;
     std::array<bool, 16> gamepad_previous{}, gamepad_released{};
     // ds maps can have any game data as keys, so they need their own storage
     // instead of sharing the bytecode name pool
@@ -897,6 +900,7 @@ struct GameSession::Impl {
     int next_layer_element_id = 1'000'000, next_dynamic_layer_id = 1'000'000;
     bool vertex_format_building = false, force_draw_depth = false;
     bool gpu_texture_repeat = false;
+    bool gui_draw_active = false;
     int next_vertex_format = 1, next_vertex_buffer = 1, active_vertex_buffer = -1, forced_depth = 0;
     std::vector<int> vertex_format_attributes;
     std::unordered_map<int, std::vector<int>> vertex_formats;
@@ -971,6 +975,15 @@ struct GameSession::Impl {
     std::optional<std::uint32_t> fixed_seed;
     std::optional<std::filesystem::path> pending_game_change;
     mutable std::unordered_map<std::string, std::vector<std::uint8_t>> load_chunks;
+    void update_gui_transform() {
+        const double width = engine.contains("gui_width") ? value_number(engine.at("gui_width"))
+                                                           : static_cast<double>(render_width);
+        const double height = engine.contains("gui_height") ? value_number(engine.at("gui_height"))
+                                                              : static_cast<double>(render_height);
+        const double scale_x = std::isfinite(width) && width > 0 ? canvas.logical_width() / width : 1.0;
+        const double scale_y = std::isfinite(height) && height > 0 ? canvas.logical_height() / height : 1.0;
+        assets.view(0, 0, scale_x, scale_y, 0, 0);
+    }
     explicit Impl(const std::filesystem::path &path,
                   std::optional<std::uint32_t> seed,
                   const std::filesystem::path &save_directory,
@@ -4505,9 +4518,9 @@ struct GameSession::Impl {
                 } else {
                     current_canvas().color(0xffffff);
                     current_canvas().alpha(alpha);
-                    current_canvas().circle(particle.x, particle.y,
-                                  std::max(1.0, particle.size * std::max(settings.scale_x, settings.scale_y) * 2),
-                                  false);
+                    assets.draw_circle(
+                        current_canvas(), particle.x, particle.y,
+                        std::max(1.0, particle.size * std::max(settings.scale_x, settings.scale_y) * 2), false);
                 }
             }
             draw_color = previous_color;
@@ -4998,6 +5011,54 @@ struct GameSession::Impl {
             if (const auto sound = audio.find_sound_id(requested))
                 return static_cast<std::int32_t>(*sound);
             return std::int32_t{-1};
+        }
+        if (name == "asset_get_tags") {
+            if (args.empty())
+                throw Error(ErrorKind::vm, "missing built-in argument");
+            std::optional<std::uint32_t> handle;
+            const auto make_handle = [](std::uint32_t type, std::size_t index) {
+                return (type << 24) | (static_cast<std::uint32_t>(index) & 0x00ffffffU);
+            };
+            if (value_is_string(args[0])) {
+                const auto requested = text(0);
+                for (std::size_t i = 0; i < objects.size() && !handle; ++i)
+                    if (objects[i].name == requested)
+                        handle = make_handle(1, i);
+                for (std::size_t i = 0; i < assets.sprite_count() && !handle; ++i)
+                    if (assets.sprite_name(static_cast<int>(i)) == requested)
+                        handle = make_handle(2, i);
+                for (std::size_t i = 0; i < rooms.size() && !handle; ++i)
+                    if (rooms[i].name == requested)
+                        handle = make_handle(3, i);
+                if (const auto sound = audio.find_sound_id(requested); sound && !handle)
+                    handle = make_handle(4, static_cast<std::size_t>(*sound));
+                for (const auto &[script_name, script_id] : script_names)
+                    if (script_name == requested && !handle) {
+                        handle = make_handle(6, static_cast<std::size_t>(script_id));
+                        break;
+                    }
+            } else {
+                const auto raw_index = n(0);
+                if (std::isfinite(raw_index) && raw_index >= 0 && std::trunc(raw_index) == raw_index) {
+                    if (args.size() > 1) {
+                        const auto raw_type = n(1);
+                        if (std::isfinite(raw_type) && raw_type >= 0 && raw_type <= 255 &&
+                            std::trunc(raw_type) == raw_type && raw_index <= 0x00ffffff)
+                            handle = make_handle(static_cast<std::uint32_t>(raw_type),
+                                                 static_cast<std::size_t>(raw_index));
+                    } else if (raw_index <= std::numeric_limits<std::uint32_t>::max()) {
+                        handle = static_cast<std::uint32_t>(raw_index);
+                    }
+                }
+            }
+            ArrayPtr result(new ArrayValue);
+            if (handle) {
+                const auto tags = package.asset_tags(*handle);
+                result->row_lengths[0] = static_cast<std::int32_t>(tags.size());
+                for (std::size_t i = 0; i < tags.size(); ++i)
+                    result->elements[static_cast<std::int32_t>(i)] = std::string(tags[i]);
+            }
+            return result;
         }
         if (name == "script_exists") {
             const int id = static_cast<int>(n(0));
@@ -5504,6 +5565,16 @@ struct GameSession::Impl {
             result.reserve(source.size());
             for (const unsigned char character : source)
                 if (character >= '0' && character <= '9')
+                    result.push_back(static_cast<char>(character));
+            return result;
+        }
+        if (name == "string_lettersdigits") {
+            std::string result;
+            const auto source = text(0);
+            result.reserve(source.size());
+            for (const unsigned char character : source)
+                if ((character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                    (character >= '0' && character <= '9'))
                     result.push_back(static_cast<char>(character));
             return result;
         }
@@ -6162,6 +6233,8 @@ struct GameSession::Impl {
             }
             return std::monostate{};
         }
+        if (name == "ds_list_empty")
+            return lists.at(static_cast<int>(n(0))).empty();
         if (name == "ds_list_size")
             return static_cast<double>(lists.at(static_cast<int>(n(0))).size());
         if (name == "ds_list_find_value") {
@@ -7510,15 +7583,32 @@ struct GameSession::Impl {
             return std::int32_t{0};
         }
         if (name == "texture_prefetch") {
+            if (!args.empty() && value_is_string(args[0])) {
+                const auto group = text(0);
+                if (assets.prefetch_texture_group(group))
+                    loaded_texture_groups.insert(group);
+                return std::monostate{};
+            }
             const auto found = sprite_textures.find(static_cast<int>(n(0)));
             if (found != sprite_textures.end())
                 assets.prefetch(found->second.first);
             return std::monostate{};
         }
-        if (name == "texture_is_ready")
+        if (name == "texture_is_ready") {
+            if (!args.empty() && value_is_string(args[0]))
+                return loaded_texture_groups.contains(text(0));
             return sprite_textures.contains(static_cast<int>(n(0))) ||
                    (texture_surfaces.contains(static_cast<int>(n(0))) &&
                     surface_exists(texture_surfaces.at(static_cast<int>(n(0)))));
+        }
+        if (name == "texture_flush") {
+            if (!args.empty() && value_is_string(args[0])) {
+                const auto group = text(0);
+                assets.flush_texture_group(group);
+                loaded_texture_groups.erase(group);
+            }
+            return std::monostate{};
+        }
         if (name == "texturegroup_get_textures")
             return ArrayPtr(new ArrayValue);
         if (name == "sprite_get_texture")
@@ -9083,7 +9173,7 @@ struct GameSession::Impl {
                 draw_color = average_color_arguments(3, 2);
                 current_canvas().color(draw_color);
             }
-            current_canvas().circle(n(0), n(1), n(2), n(colored ? 5 : 3) != 0);
+            assets.draw_circle(current_canvas(), n(0), n(1), n(2), n(colored ? 5 : 3) != 0);
             return std::monostate{};
         }
         if (name == "draw_line" || name == "draw_line_width" || name == "draw_line_color" ||
@@ -9097,7 +9187,7 @@ struct GameSession::Impl {
                 draw_color = average_color_arguments(thick ? 5 : 4, 2);
                 current_canvas().color(draw_color);
             }
-            current_canvas().line(n(0), n(1), n(2), n(3), thick ? n(4) : 1);
+            assets.draw_line(current_canvas(), n(0), n(1), n(2), n(3), thick ? n(4) : 1);
             return std::monostate{};
         }
         if (name == "draw_triangle" || name == "draw_triangle_color" || name == "draw_triangle_colour") {
@@ -9107,7 +9197,8 @@ struct GameSession::Impl {
                 draw_color = average_color_arguments(6, 3);
                 current_canvas().color(draw_color);
             }
-            current_canvas().triangle(n(0), n(1), n(2), n(3), n(4), n(5), n(outline_index) != 0);
+            assets.draw_triangle(current_canvas(), n(0), n(1), n(2), n(3), n(4), n(5),
+                                 n(outline_index) != 0);
             return std::monostate{};
         }
         if (name == "draw_ellipse" || name == "draw_ellipse_color" || name == "draw_ellipse_colour") {
@@ -9116,7 +9207,7 @@ struct GameSession::Impl {
                 draw_color = average_color_arguments(4, 2);
                 current_canvas().color(draw_color);
             }
-            current_canvas().ellipse(n(0), n(1), n(2), n(3), n(colored ? 6 : 4) != 0);
+            assets.draw_ellipse(current_canvas(), n(0), n(1), n(2), n(3), n(colored ? 6 : 4) != 0);
             return std::monostate{};
         }
         if (name == "draw_roundrect" || name == "draw_roundrect_color" || name == "draw_roundrect_colour" ||
@@ -9134,7 +9225,7 @@ struct GameSession::Impl {
             const double width = std::fabs(n(2) - n(0)), height = std::fabs(n(3) - n(1));
             const double radius_x = extended ? n(4) : std::min(10.0, width / 4);
             const double radius_y = extended ? n(5) : std::min(10.0, height / 4);
-            current_canvas().round_rectangle(n(0), n(1), n(2), n(3), radius_x, radius_y, outline);
+            assets.draw_round_rectangle(current_canvas(), n(0), n(1), n(2), n(3), radius_x, radius_y, outline);
             return std::monostate{};
         }
         if (name == "draw_rectangle_color" || name == "draw_rectangle_colour") {
@@ -9148,18 +9239,20 @@ struct GameSession::Impl {
                 draw_color = average_color_arguments(2, 2);
                 current_canvas().color(draw_color);
             }
-            current_canvas().line(n(0), n(1), n(0), n(1));
+            assets.draw_line(current_canvas(), n(0), n(1), n(0), n(1));
             return std::monostate{};
         }
         if (name == "draw_arrow") {
             const double x1 = n(0), y1 = n(1), x2 = n(2), y2 = n(3);
             const double size = std::max(0.0, n(4));
-            current_canvas().line(x1, y1, x2, y2);
+            assets.draw_line(current_canvas(), x1, y1, x2, y2);
             const double angle = std::atan2(y2 - y1, x2 - x1);
             const double wing = size * 0.55;
             constexpr double spread = 0.55;
-            current_canvas().line(x2, y2, x2 - size * std::cos(angle - spread), y2 - size * std::sin(angle - spread), wing);
-            current_canvas().line(x2, y2, x2 - size * std::cos(angle + spread), y2 - size * std::sin(angle + spread), wing);
+            assets.draw_line(current_canvas(), x2, y2, x2 - size * std::cos(angle - spread),
+                             y2 - size * std::sin(angle - spread), wing);
+            assets.draw_line(current_canvas(), x2, y2, x2 - size * std::cos(angle + spread),
+                             y2 - size * std::sin(angle + spread), wing);
             return std::monostate{};
         }
         if (name == "draw_path") {
@@ -9183,8 +9276,9 @@ struct GameSession::Impl {
                 if (length <= 0)
                     continue;
                 const double fraction = std::min(1.0, remaining / length);
-                current_canvas().line(x + a.x, y + a.y, x + a.x + (b.x - a.x) * fraction,
-                            y + a.y + (b.y - a.y) * fraction);
+                assets.draw_line(current_canvas(), x + a.x, y + a.y,
+                                 x + a.x + (b.x - a.x) * fraction,
+                                 y + a.y + (b.y - a.y) * fraction);
                 remaining -= length;
             }
             return std::monostate{};
@@ -9496,6 +9590,22 @@ struct GameSession::Impl {
             }
             return std::int32_t{-4};
         }
+        if (name == "place_free") {
+            // GameMaker's place_free checks the caller's collision mask against
+            // solid instances only. Coordinates are quantized to whole pixels
+            // before the collision check, matching the engine's movement API.
+            const double x = std::floor(n(0)), y = std::floor(n(1));
+            if (collision_sprite(*self) < 0)
+                return true;
+            for (const auto &instance : instances) {
+                if (!instance->alive || instance->deactivated || instance == self ||
+                    value_number(instance->vars.at("solid")) == 0 || collision_sprite(*instance) < 0)
+                    continue;
+                if (collides(*self, x, y, *instance))
+                    return false;
+            }
+            return true;
+        }
         if (name == "place_meeting" || name == "instance_place") {
             for (const auto &i : targets(static_cast<int>(n(2)), self, other))
                 if (i != self) {
@@ -9691,11 +9801,10 @@ struct GameSession::Impl {
                 for (int column = 0; column < grid.columns; ++column) {
                     const auto index = static_cast<std::size_t>(row) * grid.columns + column;
                     current_canvas().color(grid.blocked[index] ? 0x0000ffU : 0x00ff00U);
-                    current_canvas().rectangle(grid.x + column * grid.cell_width,
+                    assets.rectangle(current_canvas(), grid.x + column * grid.cell_width,
                                      grid.y + row * grid.cell_height,
                                      grid.x + (column + 1) * grid.cell_width,
-                                     grid.y + (row + 1) * grid.cell_height,
-                                     false);
+                                     grid.y + (row + 1) * grid.cell_height, false);
                 }
             current_canvas().color(saved_color);
             current_canvas().alpha(saved_alpha);
@@ -10689,8 +10798,21 @@ struct GameSession::Impl {
             }
             return std::monostate{};
         }
+        if (name == "gamepad_is_supported")
+            return true;
         if (name == "gamepad_get_device_count")
             return std::int32_t{gamepad.connected ? 1 : 0};
+        if (name == "gamepad_axis_count")
+            return gamepad.connected && n(0) == 0 ? std::int32_t{4} : std::int32_t{0};
+        if (name == "gamepad_button_count")
+            return gamepad.connected && n(0) == 0 ? std::int32_t{16} : std::int32_t{0};
+        if (name == "gamepad_set_axis_deadzone") {
+            if (n(0) == 0)
+                gamepad_axis_deadzone = std::clamp(n(1), 0.0, 1.0);
+            return std::monostate{};
+        }
+        if (name == "gamepad_get_axis_deadzone")
+            return n(0) == 0 ? gamepad_axis_deadzone : 0.0;
         if (name == "gamepad_get_description")
             return std::string(gamepad.connected && n(0) == 0 ? "PlayStation 4 controller" : "");
         if (name == "gamepad_get_guid")
@@ -10719,7 +10841,13 @@ struct GameSession::Impl {
         }
         if (name == "gamepad_axis_value") {
             const int axis = static_cast<int>(n(1)) - 32785;
-            return gamepad.connected && n(0) == 0 && axis >= 0 && axis < 4 ? gamepad.axes[axis] : 0.0;
+            if (!gamepad.connected || n(0) != 0 || axis < 0 || axis >= 4)
+                return 0.0;
+            const double value = std::clamp(gamepad.axes[axis], -1.0, 1.0);
+            const double magnitude = std::abs(value);
+            if (magnitude <= gamepad_axis_deadzone || gamepad_axis_deadzone >= 1.0)
+                return 0.0;
+            return std::copysign((magnitude - gamepad_axis_deadzone) / (1.0 - gamepad_axis_deadzone), value);
         }
         if (name == "joystick_check_button" ||
             name == "joystick_buttons" || name == "joystick_has_pov")
@@ -10857,6 +10985,9 @@ struct GameSession::Impl {
                     texture = found->second;
             }
             auto triangle = [&](const VertexPoint &a, const VertexPoint &b, const VertexPoint &c) {
+                const auto point_a = assets.transform_point(a.x, a.y);
+                const auto point_b = assets.transform_point(b.x, b.y);
+                const auto point_c = assets.transform_point(c.x, c.y);
                 if (current_canvas().gpu_target()) {
                     const auto channel = [&](unsigned shift) {
                         return (((a.color >> shift) & 255U) + ((b.color >> shift) & 255U) +
@@ -10866,15 +10997,16 @@ struct GameSession::Impl {
                     const unsigned tint = channel(0) | (channel(8) << 8) | (channel(16) << 16);
                     current_canvas().color(tint);
                     current_canvas().alpha((a.alpha + b.alpha + c.alpha) / 3.0);
-                    current_canvas().triangle(a.x, a.y, b.x, b.y, c.x, c.y, false);
+                    current_canvas().triangle(point_a[0], point_a[1], point_b[0], point_b[1], point_c[0],
+                                              point_c[1], false);
                     current_canvas().color(draw_color);
                     current_canvas().alpha(draw_alpha);
                     return;
                 }
                 const double scale = current_canvas().render_scale();
-                const double ax = a.x * scale, ay = a.y * scale;
-                const double bx = b.x * scale, by = b.y * scale;
-                const double cx = c.x * scale, cy = c.y * scale;
+                const double ax = point_a[0] * scale, ay = point_a[1] * scale;
+                const double bx = point_b[0] * scale, by = point_b[1] * scale;
+                const double cx = point_c[0] * scale, cy = point_c[1] * scale;
                 const double area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
                 if (std::fabs(area) < 1e-12)
                     return;
@@ -10930,8 +11062,8 @@ struct GameSession::Impl {
                 for (std::size_t index = begin; index < begin + count; ++index) {
                     current_canvas().color(vertices[index].color);
                     current_canvas().alpha(vertices[index].alpha);
-                    current_canvas().rectangle(vertices[index].x, vertices[index].y, vertices[index].x + 1,
-                                     vertices[index].y + 1, false);
+                    assets.rectangle(current_canvas(), vertices[index].x, vertices[index].y,
+                                     vertices[index].x + 1, vertices[index].y + 1, false);
                 }
                 current_canvas().color(draw_color);
                 current_canvas().alpha(draw_alpha);
@@ -10940,8 +11072,8 @@ struct GameSession::Impl {
                 for (std::size_t index = begin; index + 1 < begin + count; index += stride) {
                     current_canvas().color(vertices[index].color);
                     current_canvas().alpha(vertices[index].alpha);
-                    current_canvas().line(vertices[index].x, vertices[index].y, vertices[index + 1].x,
-                                vertices[index + 1].y);
+                    assets.draw_line(current_canvas(), vertices[index].x, vertices[index].y,
+                                     vertices[index + 1].x, vertices[index + 1].y);
                 }
                 current_canvas().color(draw_color);
                 current_canvas().alpha(draw_alpha);
@@ -11087,26 +11219,34 @@ struct GameSession::Impl {
             return args.empty() || n(0) == 0 ? Value{fps} : Value{fps > 0 ? 1000000.0 / fps : 0.0};
         }
         if (name == "display_set_gui_size") {
-            engine["gui_width"] = n(0);
-            engine["gui_height"] = n(1);
+            const double width = n(0), height = n(1);
+            if (width == -1 && height == -1) {
+                engine["gui_width"] = static_cast<double>(render_width);
+                engine["gui_height"] = static_cast<double>(render_height);
+            } else {
+                engine["gui_width"] = width;
+                engine["gui_height"] = height;
+            }
+            if (gui_draw_active)
+                update_gui_transform();
             return std::monostate{};
         }
         if (name == "display_get_width")
-            return static_cast<double>(this->canvas.logical_width());
+            return static_cast<double>(render_width);
         if (name == "display_get_height")
-            return static_cast<double>(this->canvas.logical_height());
+            return static_cast<double>(render_height);
         if (name == "display_get_gui_width")
             return engine.contains("gui_width") ? engine.at("gui_width")
-                                                 : Value{static_cast<double>(this->canvas.logical_width())};
+                                                 : Value{static_cast<double>(render_width)};
         if (name == "display_get_gui_height")
             return engine.contains("gui_height") ? engine.at("gui_height")
-                                                  : Value{static_cast<double>(this->canvas.logical_height())};
+                                                  : Value{static_cast<double>(render_height)};
         if (name == "window_get_width")
             return engine.contains("window_width") ? engine.at("window_width")
-                                                    : Value{static_cast<double>(this->canvas.logical_width())};
+                                                    : Value{static_cast<double>(render_width)};
         if (name == "window_get_height")
             return engine.contains("window_height") ? engine.at("window_height")
-                                                     : Value{static_cast<double>(this->canvas.logical_height())};
+                                                     : Value{static_cast<double>(render_height)};
         if (name == "window_get_x")
             return engine.contains("window_x") ? engine.at("window_x") : Value{0.0};
         if (name == "window_get_y")
@@ -11600,11 +11740,20 @@ struct GameSession::Impl {
                     port_height = screen_height;
                     engine["view_hport[0]"] = port_height;
                 }
+                const double surface_scale_x = port_width > 0 ? canvas.logical_width() / port_width : 1.0;
+                const double surface_scale_y = port_height > 0 ? canvas.logical_height() / port_height : 1.0;
                 assets.view(value_number(engine.at("view_xview[0]")),
-                            value_number(engine.at("view_yview[0]")), port_width / w, port_height / h,
-                            port_x, port_y);
-            } else
-                assets.view(0, 0, 1, 1, 0, 0);
+                            value_number(engine.at("view_yview[0]")), port_width / w * surface_scale_x,
+                            port_height / h * surface_scale_y, port_x * surface_scale_x,
+                            port_y * surface_scale_y);
+            } else {
+                const auto &active_room = rooms.at(static_cast<std::size_t>(current_room));
+                const double scale_x =
+                    static_cast<double>(canvas.logical_width()) / std::max(1, active_room.width);
+                const double scale_y =
+                    static_cast<double>(canvas.logical_height()) / std::max(1, active_room.height);
+                assets.view(0, 0, scale_x, scale_y, 0, 0);
+            }
             auto &room = rooms.at(static_cast<std::size_t>(current_room));
             allocation_stage = "pre-draw events";
             for (const auto &i : snapshot)
@@ -11927,6 +12076,8 @@ struct GameSession::Impl {
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
                     event(i, event_draw, event_draw_post);
             allocation_stage = "GUI draw begin events";
+            gui_draw_active = true;
+            update_gui_transform();
             for (const auto &i : snapshot)
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
                     event(i, event_draw, event_draw_gui_begin);
@@ -11939,6 +12090,8 @@ struct GameSession::Impl {
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
                     event(i, event_draw, event_draw_gui_end);
             }
+            gui_draw_active = false;
+            assets.view(0, 0, 1, 1, 0, 0);
             if (profile_tick_timing)
                 last_draw_ms = std::chrono::duration<double, std::milli>(ProfileClock::now() - draw_start).count();
             std::erase_if(instances, [](const auto &i) { return !i->alive; });
