@@ -4,11 +4,11 @@ project(regml LANGUAGES C CXX)
 if(PS2)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
-        # GCC 15's PS2 LTO backend can ICE while lowering the engine's largest translation units.
+        # GCC 15's PS2 register allocator ICEs on these large translation units at Release -O3.
         set_source_files_properties(
             src/game.cpp
             src/rendersoftware/assets.cpp
-            PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Release>:-fno-lto>"
+            PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Release>:-O2;-fno-lto>"
         )
     endif()
 endif()
