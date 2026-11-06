@@ -10,4 +10,4 @@ struct GamepadState {
     std::array<bool, 16> pressed{};
     std::array<double, 4> axes{};
 };
-}
+} // namespace regml

@@ -166,8 +166,8 @@ Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
             if (static_cast<std::uint8_t>((ins.word >> 16) & 0xff) != 15)
                 throw Error(ErrorKind::unsupported, "pushi with unexpected operand type",
                             code.origin() + offset);
-            ins.set_immediate(
-                static_cast<std::int32_t>(regml::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word))));
+            ins.set_immediate(static_cast<std::int32_t>(
+                regml::bit_cast<std::int16_t>(static_cast<std::uint16_t>(ins.word))));
             break;
         case Opcode::push:
         case Opcode::push_local:

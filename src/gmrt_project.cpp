@@ -53,13 +53,11 @@ class JsonParser {
   private:
     [[noreturn]] void malformed(std::string_view reason) const {
         throw Error(ErrorKind::malformed,
-                    "GMRT project JSON " + std::string(reason) + " at byte " +
-                        std::to_string(position_));
+                    "GMRT project JSON " + std::string(reason) + " at byte " + std::to_string(position_));
     }
     void whitespace() {
-        while (position_ < input_.size() &&
-               (input_[position_] == ' ' || input_[position_] == '\t' || input_[position_] == '\r' ||
-                input_[position_] == '\n'))
+        while (position_ < input_.size() && (input_[position_] == ' ' || input_[position_] == '\t' ||
+                                             input_[position_] == '\r' || input_[position_] == '\n'))
             ++position_;
     }
     bool consume(char ch) {
@@ -206,7 +204,8 @@ class JsonParser {
         char *parsed_end = nullptr;
         errno = 0;
         value = std::strtod(number_text.c_str(), &parsed_end);
-        if (errno == ERANGE || parsed_end != number_text.c_str() + number_text.size() || !std::isfinite(value))
+        if (errno == ERANGE || parsed_end != number_text.c_str() + number_text.size() ||
+            !std::isfinite(value))
             malformed("has a number outside the supported range");
         return JsonValue{value};
     }
@@ -274,7 +273,9 @@ class JsonParser {
     std::size_t position_ = 0;
 };
 
-const JsonValue *field(const JsonValue &value, std::string_view name) { return value.get(name); }
+const JsonValue *field(const JsonValue &value, std::string_view name) {
+    return value.get(name);
+}
 std::string text_field(const JsonValue &value, std::string_view name, std::string fallback = {}) {
     const auto *item = field(value, name);
     return item ? std::string(item->string()) : std::move(fallback);
@@ -451,8 +452,7 @@ GmrtProject GmrtProject::load_for_wad(const std::filesystem::path &wad_path) {
         sprite.smooth = bool_field(data, "smooth", false);
         for (const auto &frame : array_field(data, "frames")) {
             const auto image = text_field(frame, "imagePath");
-            sprite.frames.push_back(image.empty() ? std::filesystem::path{}
-                                                  : std::filesystem::path(image));
+            sprite.frames.push_back(image.empty() ? std::filesystem::path{} : std::filesystem::path(image));
         }
     }
 

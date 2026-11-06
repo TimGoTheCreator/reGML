@@ -136,11 +136,11 @@ void Package::parse(LoadLimits limits) {
         parse_info(*c);
     if (const auto *c = find_chunk("STRG"); c && !gmrt_ && info_ && info_->has_known_prefix)
         parse_strings(*c, limits);
-    if (const auto *c = find_chunk("TAGS"); c && !gmrt_ && info_ && info_->has_known_prefix &&
-        !strings_.empty())
+    if (const auto *c = find_chunk("TAGS");
+        c && !gmrt_ && info_ && info_->has_known_prefix && !strings_.empty())
         parse_asset_tags(*c, limits);
-    if (const auto *c = find_chunk("TGIN"); c && !gmrt_ && info_ && info_->has_known_prefix &&
-        !strings_.empty())
+    if (const auto *c = find_chunk("TGIN");
+        c && !gmrt_ && info_ && info_->has_known_prefix && !strings_.empty())
         parse_texture_groups(*c, limits);
     if (info_ && info_->has_known_prefix) {
         if (info_->name_pointer != 0)

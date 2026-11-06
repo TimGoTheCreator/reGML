@@ -118,10 +118,9 @@ void flush_font_batch() noexcept {
         font_batch_slot = nullptr;
         return;
     }
-    gskit_prim_list_sprite_texture_uv_flat_color(gs, &font_batch_slot->texture,
-                                                 rgbaq_to_RGBAQ(font_batch_color),
-                                                 static_cast<int>(font_batch_count * 2),
-                                                 font_batch_vertices.data());
+    gskit_prim_list_sprite_texture_uv_flat_color(
+        gs, &font_batch_slot->texture, rgbaq_to_RGBAQ(font_batch_color),
+        static_cast<int>(font_batch_count * 2), font_batch_vertices.data());
     font_batch_slot->pending_draws = true;
     if (profile_enabled) {
         frame_profile.glyph_quads += font_batch_count;
@@ -141,8 +140,8 @@ double screen_y(double y) noexcept {
 void set_canvas_scissor() {
     const int left = std::clamp(static_cast<int>(std::ceil(viewport_x)), 0, gs->Width - 1);
     const int top = std::clamp(static_cast<int>(std::ceil(viewport_y)), 0, gs->Height - 1);
-    const int right = std::clamp(static_cast<int>(std::ceil(viewport_x + canvas_width * viewport_scale_x)) - 1,
-                                 left, gs->Width - 1);
+    const int right = std::clamp(
+        static_cast<int>(std::ceil(viewport_x + canvas_width * viewport_scale_x)) - 1, left, gs->Width - 1);
     const int bottom = std::clamp(
         static_cast<int>(std::ceil(viewport_y + canvas_height * viewport_scale_y)) - 1, top, gs->Height - 1);
     gsKit_set_scissor(gs, GS_SETREG_SCISSOR(left, right, top, bottom));
@@ -217,11 +216,11 @@ TextureSlot *upload_tile(std::span<const std::uint32_t> pixels,
     }
     for (int y = 0; y < tile_height; ++y) {
         auto *destination = slot->memory + static_cast<std::size_t>(y) * kTileSize;
-        const auto *source = pixels.data() + static_cast<std::size_t>(source_tile_y + y) * stride + source_tile_x;
+        const auto *source =
+            pixels.data() + static_cast<std::size_t>(source_tile_y + y) * stride + source_tile_x;
         for (int x = 0; x < tile_width; ++x) {
             const std::uint32_t pixel = source[x];
-            destination[x] = ((pixel >> 16) & 0xff) | (pixel & 0x0000ff00) |
-                             ((pixel & 0xff) << 16) |
+            destination[x] = ((pixel >> 16) & 0xff) | (pixel & 0x0000ff00) | ((pixel & 0xff) << 16) |
                              (static_cast<std::uint32_t>(kPs2Alpha[pixel >> 24]) << 24);
         }
     }
@@ -262,11 +261,10 @@ void draw_tile(TextureSlot &slot,
     if (angle == 0 && draw_width > 0 && draw_height > 0) {
         if (profile_enabled)
             ++frame_profile.image_quads;
-        gsKit_prim_sprite_texture(gs, &slot.texture, static_cast<float>(screen_x(x + du0)),
-                                  static_cast<float>(screen_y(y + dv0)), static_cast<float>(u0),
-                                  static_cast<float>(v0), static_cast<float>(screen_x(x + du1)),
-                                  static_cast<float>(screen_y(y + dv1)), static_cast<float>(u1),
-                                  static_cast<float>(v1), 1, color);
+        gsKit_prim_sprite_texture(
+            gs, &slot.texture, static_cast<float>(screen_x(x + du0)), static_cast<float>(screen_y(y + dv0)),
+            static_cast<float>(u0), static_cast<float>(v0), static_cast<float>(screen_x(x + du1)),
+            static_cast<float>(screen_y(y + dv1)), static_cast<float>(u1), static_cast<float>(v1), 1, color);
         return;
     }
     const auto point = [&](double u, double v) {
@@ -278,14 +276,12 @@ void draw_tile(TextureSlot &slot,
     const auto p3 = point(du0, dv1);
     if (profile_enabled)
         ++frame_profile.image_quads;
-    gsKit_prim_quad_texture_3d(gs, &slot.texture, static_cast<float>(p0[0]), static_cast<float>(p0[1]), 1,
-                               static_cast<float>(u0), static_cast<float>(v0),
-                               static_cast<float>(p1[0]), static_cast<float>(p1[1]), 1,
-                               static_cast<float>(u1), static_cast<float>(v0),
-                               static_cast<float>(p2[0]), static_cast<float>(p2[1]), 1,
-                               static_cast<float>(u1), static_cast<float>(v1),
-                               static_cast<float>(p3[0]), static_cast<float>(p3[1]), 1,
-                               static_cast<float>(u0), static_cast<float>(v1), color);
+    gsKit_prim_quad_texture_3d(
+        gs, &slot.texture, static_cast<float>(p0[0]), static_cast<float>(p0[1]), 1, static_cast<float>(u0),
+        static_cast<float>(v0), static_cast<float>(p1[0]), static_cast<float>(p1[1]), 1,
+        static_cast<float>(u1), static_cast<float>(v0), static_cast<float>(p2[0]), static_cast<float>(p2[1]),
+        1, static_cast<float>(u1), static_cast<float>(v1), static_cast<float>(p3[0]),
+        static_cast<float>(p3[1]), 1, static_cast<float>(u0), static_cast<float>(v1), color);
 }
 
 bool tile_visible(int offset_x,
@@ -307,16 +303,14 @@ bool tile_visible(int offset_x,
     const double v1 = static_cast<double>(offset_y + height) * draw_height / image_height;
     if (!rotated) {
         return std::max(x + u0, x + u1) > 0 && std::max(y + v0, y + v1) > 0 &&
-               std::min(x + u0, x + u1) < canvas_width &&
-               std::min(y + v0, y + v1) < canvas_height;
+               std::min(x + u0, x + u1) < canvas_width && std::min(y + v0, y + v1) < canvas_height;
     }
 
-    const double tile_xs[] = {x + u0 * cs + v0 * sn, x + u1 * cs + v0 * sn,
-                              x + u1 * cs + v1 * sn, x + u0 * cs + v1 * sn};
-    const double tile_ys[] = {y - u0 * sn + v0 * cs, y - u1 * sn + v0 * cs,
-                              y - u1 * sn + v1 * cs, y - u0 * sn + v1 * cs};
-    return *std::max_element(tile_xs, tile_xs + 4) > 0 &&
-           *std::max_element(tile_ys, tile_ys + 4) > 0 &&
+    const double tile_xs[] = {x + u0 * cs + v0 * sn, x + u1 * cs + v0 * sn, x + u1 * cs + v1 * sn,
+                              x + u0 * cs + v1 * sn};
+    const double tile_ys[] = {y - u0 * sn + v0 * cs, y - u1 * sn + v0 * cs, y - u1 * sn + v1 * cs,
+                              y - u0 * sn + v1 * cs};
+    return *std::max_element(tile_xs, tile_xs + 4) > 0 && *std::max_element(tile_ys, tile_ys + 4) > 0 &&
            *std::min_element(tile_xs, tile_xs + 4) < canvas_width &&
            *std::min_element(tile_ys, tile_ys + 4) < canvas_height;
 }
@@ -341,8 +335,8 @@ void image_impl(std::span<const std::uint32_t> pixels,
     if (!gs || width <= 0 || height <= 0 || draw_width == 0 || draw_height == 0 || opacity <= 0)
         return;
     flush_font_batch();
-    const auto profile_start = profile_enabled ? std::chrono::steady_clock::now()
-                                               : std::chrono::steady_clock::time_point{};
+    const auto profile_start =
+        profile_enabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto color = gs_tint(tint, opacity);
     if (!transform_ready && angle != 0) {
         const double radians = angle * 3.14159265358979323846 / 180.0;
@@ -375,9 +369,9 @@ void image_impl(std::span<const std::uint32_t> pixels,
     }
     readback_valid = false;
     if (profile_enabled) {
-        frame_profile.image_ms += std::chrono::duration<double, std::milli>(
-                                     std::chrono::steady_clock::now() - profile_start)
-                                     .count();
+        frame_profile.image_ms +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - profile_start)
+                .count();
         ++frame_profile.image_calls;
     }
 }
@@ -507,10 +501,9 @@ void ps2_gpu_initialize(GSGLOBAL *global, int width, int height) {
             const int cell_x = static_cast<int>(character % 16) * 8;
             const int cell_y = static_cast<int>(character / 16) * 8;
             const float u0 = static_cast<float>(cell_x), v0 = static_cast<float>(cell_y);
-            font_atlas_uvs[character] = {vertex_to_UV(&font.texture, u0, v0),
-                                         vertex_to_UV(&font.texture, u0 + 5, v0),
-                                         vertex_to_UV(&font.texture, u0 + 5, v0 + 7),
-                                         vertex_to_UV(&font.texture, u0, v0 + 7)};
+            font_atlas_uvs[character] = {
+                vertex_to_UV(&font.texture, u0, v0), vertex_to_UV(&font.texture, u0 + 5, v0),
+                vertex_to_UV(&font.texture, u0 + 5, v0 + 7), vertex_to_UV(&font.texture, u0, v0 + 7)};
             for (int y = 0; y < 7; ++y)
                 for (int x = 0; x < 5; ++x)
                     if (bitmap[static_cast<std::size_t>(y)] & (1U << static_cast<unsigned>(4 - x)))
@@ -632,10 +625,8 @@ void ps2_gpu_ellipse(double x1, double y1, double x2, double y2, bool outline, s
     }
     const std::size_t offset = outline ? 0 : 1;
     for (std::size_t i = 0; i < point_count; ++i) {
-        points[(i + offset) * 2] =
-            static_cast<float>(screen_x(center_x + radius_x * unit[i][0]));
-        points[(i + offset) * 2 + 1] =
-            static_cast<float>(screen_y(center_y + radius_y * unit[i][1]));
+        points[(i + offset) * 2] = static_cast<float>(screen_x(center_x + radius_x * unit[i][0]));
+        points[(i + offset) * 2 + 1] = static_cast<float>(screen_y(center_y + radius_y * unit[i][1]));
     }
     if (outline) {
         gsKit_prim_line_strip(gs, points.data(), static_cast<int>(point_count), 1, gs_color(rgba));
@@ -754,12 +745,10 @@ void ps2_gpu_quad(double x1,
     if (!gs || !(rgba >> 24))
         return;
     flush_font_batch();
-    gsKit_prim_quad_3d(gs,
-                       static_cast<float>(screen_x(x1)), static_cast<float>(screen_y(y1)), 1,
+    gsKit_prim_quad_3d(gs, static_cast<float>(screen_x(x1)), static_cast<float>(screen_y(y1)), 1,
                        static_cast<float>(screen_x(x2)), static_cast<float>(screen_y(y2)), 1,
                        static_cast<float>(screen_x(x3)), static_cast<float>(screen_y(y3)), 1,
-                       static_cast<float>(screen_x(x4)), static_cast<float>(screen_y(y4)), 1,
-                       gs_color(rgba));
+                       static_cast<float>(screen_x(x4)), static_cast<float>(screen_y(y4)), 1, gs_color(rgba));
     readback_valid = false;
 }
 
@@ -786,11 +775,10 @@ void ps2_gpu_text_glyphs(std::span<const Ps2TextGlyph> glyphs, std::uint32_t rgb
                 auto &top_left = vertices[glyph_index * 2];
                 auto &bottom_right = vertices[glyph_index * 2 + 1];
                 top_left.uv = uv[0];
-                top_left.xyz2 = vertex_to_XYZ2(gs, screen_x(glyph.corners[0]),
-                                               screen_y(glyph.corners[1]), 1);
+                top_left.xyz2 = vertex_to_XYZ2(gs, screen_x(glyph.corners[0]), screen_y(glyph.corners[1]), 1);
                 bottom_right.uv = uv[2];
-                bottom_right.xyz2 = vertex_to_XYZ2(gs, screen_x(glyph.corners[4]),
-                                                   screen_y(glyph.corners[5]), 1);
+                bottom_right.xyz2 =
+                    vertex_to_XYZ2(gs, screen_x(glyph.corners[4]), screen_y(glyph.corners[5]), 1);
             }
             gskit_prim_list_sprite_texture_uv_flat_color(gs, &font.texture, color,
                                                          static_cast<int>(batch_count * 2), vertices.data());
@@ -836,21 +824,22 @@ bool ps2_gpu_font_glyphs(std::span<const std::uint32_t> pixels,
                          std::span<const Ps2FontGlyph> glyphs,
                          unsigned tint,
                          double opacity) {
-    if (!gs || !page_key || glyphs.size() > kFontGlyphsPerBatch || !std::isfinite(opacity) ||
-        tile_x < 0 || tile_y < 0 || tile_x % kTileSize || tile_y % kTileSize)
+    if (!gs || !page_key || glyphs.size() > kFontGlyphsPerBatch || !std::isfinite(opacity) || tile_x < 0 ||
+        tile_y < 0 || tile_x % kTileSize || tile_y % kTileSize)
         return false;
     if (glyphs.empty() || opacity <= 0)
         return true;
     const bool have_pixels = stride > 0 && !pixels.empty();
-    const auto page_height = have_pixels ? static_cast<int>(pixels.size() / static_cast<std::size_t>(stride)) : 0;
-    if (have_pixels && (page_height <= 0 || source_x < 0 || source_y < 0 || source_x >= stride ||
-                        source_y >= page_height))
+    const auto page_height =
+        have_pixels ? static_cast<int>(pixels.size() / static_cast<std::size_t>(stride)) : 0;
+    if (have_pixels &&
+        (page_height <= 0 || source_x < 0 || source_y < 0 || source_x >= stride || source_y >= page_height))
         return false;
 
     for (const auto &glyph : glyphs) {
         if (glyph.width <= 0 || glyph.height <= 0 || glyph.width > kTileSize || glyph.height > kTileSize ||
-            glyph.source_x < 0 || glyph.source_y < 0 || !std::isfinite(glyph.x) ||
-            !std::isfinite(glyph.y) || !std::isfinite(glyph.draw_width) || !std::isfinite(glyph.draw_height))
+            glyph.source_x < 0 || glyph.source_y < 0 || !std::isfinite(glyph.x) || !std::isfinite(glyph.y) ||
+            !std::isfinite(glyph.draw_width) || !std::isfinite(glyph.draw_height))
             return false;
         const int glyph_tile_x = glyph.source_x / kTileSize * kTileSize;
         const int glyph_tile_y = glyph.source_y / kTileSize * kTileSize;
@@ -859,13 +848,13 @@ bool ps2_gpu_font_glyphs(std::span<const std::uint32_t> pixels,
         if (glyph_tile_x != tile_x || glyph_tile_y != tile_y || local_x < 0 || local_y < 0 ||
             local_x + glyph.width > kTileSize || local_y + glyph.height > kTileSize)
             return false;
-        if (have_pixels && (source_x + local_x > stride - glyph.width ||
-                            source_y + local_y > page_height - glyph.height))
+        if (have_pixels &&
+            (source_x + local_x > stride - glyph.width || source_y + local_y > page_height - glyph.height))
             return false;
     }
 
-    const auto profile_start = profile_enabled ? std::chrono::steady_clock::now()
-                                               : std::chrono::steady_clock::time_point{};
+    const auto profile_start =
+        profile_enabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto cache_key = tile_key(page_key, tile_x, tile_y);
     auto *slot = find_slot(cache_key);
     if (!slot && !have_pixels)
@@ -873,8 +862,8 @@ bool ps2_gpu_font_glyphs(std::span<const std::uint32_t> pixels,
     const int tile_width = have_pixels ? std::min(kTileSize, stride - source_x) : 0;
     const int tile_height = have_pixels ? std::min(kTileSize, page_height - source_y) : 0;
     if (!slot)
-        slot = upload_tile(pixels, stride, source_x, source_y, tile_x, tile_y,
-                           tile_width, tile_height, page_key);
+        slot = upload_tile(pixels, stride, source_x, source_y, tile_x, tile_y, tile_width, tile_height,
+                           page_key);
     if (!slot)
         return false;
 
@@ -911,9 +900,9 @@ bool ps2_gpu_font_glyphs(std::span<const std::uint32_t> pixels,
     if (font_batch_count)
         readback_valid = false;
     if (profile_enabled)
-        frame_profile.image_ms += std::chrono::duration<double, std::milli>(
-                                      std::chrono::steady_clock::now() - profile_start)
-                                      .count();
+        frame_profile.image_ms +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - profile_start)
+                .count();
     return true;
 }
 
@@ -929,13 +918,13 @@ bool ps2_gpu_cached_image(int width,
                           std::uint64_t key) {
     if (!gs || !key || width <= 0 || height <= 0)
         return false;
-    const auto profile_start = profile_enabled ? std::chrono::steady_clock::now()
-                                               : std::chrono::steady_clock::time_point{};
+    const auto profile_start =
+        profile_enabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto record_profile = [&] {
         if (profile_enabled) {
-            frame_profile.image_ms += std::chrono::duration<double, std::milli>(
-                                          std::chrono::steady_clock::now() - profile_start)
-                                          .count();
+            frame_profile.image_ms +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - profile_start)
+                    .count();
             ++frame_profile.image_calls;
         }
     };
@@ -966,8 +955,8 @@ bool ps2_gpu_cached_image(int width,
                 record_profile();
                 return false;
             }
-            cached_image_tiles[cached_count++] = {slot, tile_x, tile_y, part_width, part_height,
-                                                  tile_x, tile_y};
+            cached_image_tiles[cached_count++] = {slot,        tile_x, tile_y, part_width,
+                                                  part_height, tile_x, tile_y};
         }
     }
     const auto color = gs_tint(tint, opacity);
@@ -975,8 +964,8 @@ bool ps2_gpu_cached_image(int width,
         flush_font_batch();
     for (std::size_t i = 0; i < cached_count; ++i) {
         const auto &tile = cached_image_tiles[i];
-        draw_tile(*tile.slot, tile.source_x, tile.source_y, tile.width, tile.height, tile.tile_x,
-                  tile.tile_y, 0, 0, width, height, x, y, draw_width, draw_height, angle, cs, sn, color);
+        draw_tile(*tile.slot, tile.source_x, tile.source_y, tile.width, tile.height, tile.tile_x, tile.tile_y,
+                  0, 0, width, height, x, y, draw_width, draw_height, angle, cs, sn, color);
         tile.slot->pending_draws = true;
     }
     readback_valid = false;
@@ -991,8 +980,8 @@ bool ps2_gpu_prefetch_image(std::span<const std::uint32_t> pixels,
                             int width,
                             int height,
                             std::uint64_t key) {
-    if (!gs || !key || pixels.empty() || stride <= 0 || source_x < 0 || source_y < 0 ||
-        width <= 0 || height <= 0)
+    if (!gs || !key || pixels.empty() || stride <= 0 || source_x < 0 || source_y < 0 || width <= 0 ||
+        height <= 0)
         return false;
     const auto page_height = static_cast<int>(pixels.size() / static_cast<std::size_t>(stride));
     if (page_height <= 0 || source_x > stride - width || source_y > page_height - height)
@@ -1005,8 +994,8 @@ bool ps2_gpu_prefetch_image(std::span<const std::uint32_t> pixels,
             const int tile_width = std::min(kTileSize, width - offset_x);
             const auto cache_key = tile_key(key, offset_x, offset_y);
             if (!find_slot(cache_key) &&
-                !upload_tile(pixels, stride, source_x + offset_x, source_y + offset_y,
-                             offset_x, offset_y, tile_width, tile_height, key))
+                !upload_tile(pixels, stride, source_x + offset_x, source_y + offset_y, offset_x, offset_y,
+                             tile_width, tile_height, key))
                 complete = false;
         }
     }

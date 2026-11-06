@@ -237,9 +237,8 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
             if (ins.type1 == DataType::variable || ins.type2() == DataType::variable) {
                 check_type(right, ins.type1);
                 check_type(left, ins.type2());
-                if (ins.opcode() == Opcode::cmp &&
-                    (std::holds_alternative<std::monostate>(left) ||
-                     std::holds_alternative<std::monostate>(right))) {
+                if (ins.opcode() == Opcode::cmp && (std::holds_alternative<std::monostate>(left) ||
+                                                    std::holds_alternative<std::monostate>(right))) {
                     const bool equal = std::holds_alternative<std::monostate>(left) &&
                                        std::holds_alternative<std::monostate>(right);
                     if (ins.comparison() == 3)
@@ -432,8 +431,7 @@ double value_number(const Value &value) {
         type = "undefined";
     else if (std::holds_alternative<ArrayPtr>(value))
         type = "array";
-    else if (std::holds_alternative<FunctionReference>(value) ||
-             std::holds_alternative<CallablePtr>(value))
+    else if (std::holds_alternative<FunctionReference>(value) || std::holds_alternative<CallablePtr>(value))
         type = "function";
     else if (std::holds_alternative<StructPtr>(value))
         type = "struct";

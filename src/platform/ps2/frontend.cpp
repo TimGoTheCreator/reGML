@@ -4,8 +4,8 @@
 #include "error.hpp"
 #include "game.hpp"
 #include "gpu.hpp"
-#include <audsrv.h>
 #include <algorithm>
+#include <audsrv.h>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -183,8 +183,8 @@ void Ps2Frontend::present(const Canvas &canvas) {
         ps2_gpu_flush();
         if (uncapped_) {
             if (!gs_->FirstFrame && gs_->DoubleBuffering == GS_SETTING_ON) {
-                GS_SET_DISPFB2(gs_->ScreenBuffer[gs_->ActiveBuffer & 1] / 8192,
-                               gs_->Width / 64, gs_->PSM, 0, 0);
+                GS_SET_DISPFB2(gs_->ScreenBuffer[gs_->ActiveBuffer & 1] / 8192, gs_->Width / 64, gs_->PSM, 0,
+                               0);
                 gs_->ActiveBuffer ^= 1;
             }
             gsKit_setactive(gs_);

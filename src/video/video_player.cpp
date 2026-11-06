@@ -85,24 +85,15 @@ struct VideoPlayer::Impl {
                 if (timestamp != AV_NOPTS_VALUE) {
                     if (timestamp_origin == AV_NOPTS_VALUE)
                         timestamp_origin = timestamp;
-                    frame_position = std::max(
-                        0.0, static_cast<double>(timestamp - timestamp_origin) *
-                                 av_q2d(stream->time_base) * 1000.0);
+                    frame_position = std::max(0.0, static_cast<double>(timestamp - timestamp_origin) *
+                                                       av_q2d(stream->time_base) * 1000.0);
                 } else {
                     frame_position = fallback_frame_position;
                 }
                 fallback_frame_position = frame_position + frame_interval;
-                scaler = sws_getCachedContext(scaler,
-                                              frame->width,
-                                              frame->height,
-                                              static_cast<AVPixelFormat>(frame->format),
-                                              width,
-                                              height,
-                                              AV_PIX_FMT_BGRA,
-                                              SWS_BILINEAR,
-                                              nullptr,
-                                              nullptr,
-                                              nullptr);
+                scaler = sws_getCachedContext(scaler, frame->width, frame->height,
+                                              static_cast<AVPixelFormat>(frame->format), width, height,
+                                              AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
                 if (!scaler) {
                     av_frame_unref(frame);
                     error = true;
@@ -110,13 +101,8 @@ struct VideoPlayer::Impl {
                 }
                 auto *destination = reinterpret_cast<std::uint8_t *>(rgba.data());
                 int destination_stride = width * static_cast<int>(sizeof(std::uint32_t));
-                const int scaled = sws_scale(scaler,
-                                             frame->data,
-                                             frame->linesize,
-                                             0,
-                                             frame->height,
-                                             &destination,
-                                             &destination_stride);
+                const int scaled = sws_scale(scaler, frame->data, frame->linesize, 0, frame->height,
+                                             &destination, &destination_stride);
                 av_frame_unref(frame);
                 if (scaled != height) {
                     error = true;
@@ -197,7 +183,9 @@ struct VideoPlayer::Impl {
 };
 
 VideoPlayer::VideoPlayer() : impl_(std::make_unique<Impl>()) {}
-VideoPlayer::~VideoPlayer() { close(); }
+VideoPlayer::~VideoPlayer() {
+    close();
+}
 
 bool VideoPlayer::open(const std::filesystem::path &path) {
     close();
@@ -226,7 +214,8 @@ bool VideoPlayer::open(const std::filesystem::path &path) {
     state.width = state.decoder->width;
     state.height = state.decoder->height;
     if (state.width < 1 || state.height < 1 || state.width > 4096 || state.height > 4096 ||
-        static_cast<std::uint64_t>(state.width) * static_cast<std::uint64_t>(state.height) > 16ULL * 1024 * 1024) {
+        static_cast<std::uint64_t>(state.width) * static_cast<std::uint64_t>(state.height) >
+            16ULL * 1024 * 1024) {
         close();
         return false;
     }
@@ -238,7 +227,8 @@ bool VideoPlayer::open(const std::filesystem::path &path) {
     }
     state.rgba.resize(static_cast<std::size_t>(state.width) * static_cast<std::size_t>(state.height));
     if (state.stream->duration != AV_NOPTS_VALUE && state.stream->duration > 0)
-        state.duration = static_cast<double>(state.stream->duration) * av_q2d(state.stream->time_base) * 1000.0;
+        state.duration =
+            static_cast<double>(state.stream->duration) * av_q2d(state.stream->time_base) * 1000.0;
     else if (state.format->duration != AV_NOPTS_VALUE && state.format->duration > 0)
         state.duration = static_cast<double>(state.format->duration) * 1000.0 / AV_TIME_BASE;
     const AVRational rate = av_guess_frame_rate(state.format, state.stream, nullptr);
@@ -285,7 +275,9 @@ void VideoPlayer::resume() noexcept {
     }
 }
 
-void VideoPlayer::enable_loop(bool enabled) noexcept { impl_->looping = enabled; }
+void VideoPlayer::enable_loop(bool enabled) noexcept {
+    impl_->looping = enabled;
+}
 
 bool VideoPlayer::update_frame() noexcept {
     auto &state = *impl_;
@@ -326,11 +318,21 @@ bool VideoPlayer::update_frame() noexcept {
 #endif
 }
 
-bool VideoPlayer::loaded() const noexcept { return impl_->open && !impl_->error; }
-bool VideoPlayer::failed() const noexcept { return impl_->error; }
-bool VideoPlayer::has_frame() const noexcept { return impl_->frame_ready; }
-int VideoPlayer::width() const noexcept { return impl_->width; }
-int VideoPlayer::height() const noexcept { return impl_->height; }
+bool VideoPlayer::loaded() const noexcept {
+    return impl_->open && !impl_->error;
+}
+bool VideoPlayer::failed() const noexcept {
+    return impl_->error;
+}
+bool VideoPlayer::has_frame() const noexcept {
+    return impl_->frame_ready;
+}
+int VideoPlayer::width() const noexcept {
+    return impl_->width;
+}
+int VideoPlayer::height() const noexcept {
+    return impl_->height;
+}
 int VideoPlayer::status() const noexcept {
     if (!loaded() || impl_->finished)
         return status_closed;
@@ -340,8 +342,14 @@ int VideoPlayer::status() const noexcept {
         return status_preparing;
     return status_playing;
 }
-double VideoPlayer::duration_ms() const noexcept { return impl_->duration; }
-double VideoPlayer::position_ms() const noexcept { return impl_->position_ms(); }
-std::span<const std::uint32_t> VideoPlayer::pixels() const noexcept { return impl_->rgba; }
+double VideoPlayer::duration_ms() const noexcept {
+    return impl_->duration;
+}
+double VideoPlayer::position_ms() const noexcept {
+    return impl_->position_ms();
+}
+std::span<const std::uint32_t> VideoPlayer::pixels() const noexcept {
+    return impl_->rgba;
+}
 
 } // namespace regml

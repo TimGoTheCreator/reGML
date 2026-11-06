@@ -34,8 +34,12 @@ class Canvas {
     void color(std::uint32_t gml_bgr) noexcept;
     void alpha(double alpha);
     void blend_enable(bool enabled) noexcept { blend_enabled_ = enabled; }
-    void blend_mode(int source_rgb, int destination_rgb, int source_alpha, int destination_alpha,
-                    int equation_rgb = 0, int equation_alpha = 0) noexcept {
+    void blend_mode(int source_rgb,
+                    int destination_rgb,
+                    int source_alpha,
+                    int destination_alpha,
+                    int equation_rgb = 0,
+                    int equation_alpha = 0) noexcept {
         blend_factors_ = {source_rgb, destination_rgb, source_alpha, destination_alpha};
         blend_equations_ = {equation_rgb, equation_alpha};
     }
@@ -52,7 +56,8 @@ class Canvas {
     void rectangle(double x1, double y1, double x2, double y2, bool outline);
     void circle(double x, double y, double radius, bool outline);
     void ellipse(double x1, double y1, double x2, double y2, bool outline);
-    void round_rectangle(double x1, double y1, double x2, double y2, double x_radius, double y_radius, bool outline);
+    void round_rectangle(
+        double x1, double y1, double x2, double y2, double x_radius, double y_radius, bool outline);
     void line(double x1, double y1, double x2, double y2, double width = 1);
     void triangle(double x1, double y1, double x2, double y2, double x3, double y3, bool outline);
     void draw_surface(const Canvas &source,
@@ -111,7 +116,8 @@ class Canvas {
         return color_write_[0] && color_write_[1] && color_write_[2] && color_write_[3];
     }
     bool standard_blend() const noexcept {
-        return blend_factors_ == std::array<int, 4>{5, 6, 5, 6} && blend_equations_ == std::array<int, 2>{0, 0};
+        return blend_factors_ == std::array<int, 4>{5, 6, 5, 6} &&
+               blend_equations_ == std::array<int, 2>{0, 0};
     }
     struct CoordinateScale {
         double &active;

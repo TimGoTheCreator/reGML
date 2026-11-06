@@ -1,10 +1,10 @@
 #include "output.hpp"
 #include "error.hpp"
 #include "game.hpp"
-#include <audsrv.h>
-#include <kernel.h>
 #include <algorithm>
+#include <audsrv.h>
 #include <cstdint>
+#include <kernel.h>
 #include <string>
 
 namespace regml {
@@ -14,14 +14,16 @@ constexpr int kAudioBytes = static_cast<int>(ps2_audio_frames * 2 * sizeof(std::
 
 Ps2AudioOutput::Ps2AudioOutput(GameSession &session) : session_(session) {
     if (audsrv_init() != AUDSRV_ERR_NOERROR)
-        throw Error(ErrorKind::io, std::string("PS2 audio initialization failed: ") + audsrv_get_error_string());
+        throw Error(ErrorKind::io,
+                    std::string("PS2 audio initialization failed: ") + audsrv_get_error_string());
 
     audsrv_fmt_t format{};
     format.freq = 48000;
     format.bits = 16;
     format.channels = 2;
     if (audsrv_set_format(&format) != AUDSRV_ERR_NOERROR) {
-        const std::string message = std::string("PS2 audio format setup failed: ") + audsrv_get_error_string();
+        const std::string message =
+            std::string("PS2 audio format setup failed: ") + audsrv_get_error_string();
         audsrv_quit();
         throw Error(ErrorKind::io, message);
     }

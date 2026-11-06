@@ -1,6 +1,6 @@
 #pragma once
-#include "bit_cast.hpp"
 #include "binary_view.hpp"
+#include "bit_cast.hpp"
 #include <algorithm>
 #include <limits>
 #include <optional>

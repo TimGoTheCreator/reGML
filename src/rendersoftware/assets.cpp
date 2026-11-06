@@ -108,14 +108,14 @@ DecodedQoi decode_qoi(std::span<const std::uint8_t> bytes, bool compressed, std:
                 run = static_cast<std::size_t>(op & 0x1f) + 1;
             }
             if (run > pixel_count - output)
-                throw Error(ErrorKind::malformed, "FIOQ run exceeds image dimensions", offset + 12 + position);
+                throw Error(ErrorKind::malformed, "FIOQ run exceeds image dimensions",
+                            offset + 12 + position);
             while (run--)
                 emit();
             continue;
         }
         if ((op & 0xc0) == 0x80) {
-            update_diff(signed_bits((op >> 4) & 3, 2), signed_bits((op >> 2) & 3, 2),
-                        signed_bits(op & 3, 2));
+            update_diff(signed_bits((op >> 4) & 3, 2), signed_bits((op >> 2) & 3, 2), signed_bits(op & 3, 2));
             continue;
         }
         if ((op & 0xf0) == 0xc0 || (op & 0xf0) == 0xd0) {
@@ -259,8 +259,8 @@ GameAssets::GameAssets(const Package &package)
                     throw Error(ErrorKind::malformed, "texture table range", c.data_offset);
                 const auto table = package.read_bytes(c.data_offset, 4 + static_cast<std::size_t>(count) * 4);
                 const BinaryView view(table, c.data_offset);
-                const bool bytecode17 = package.general_info() &&
-                                        package.general_info()->bytecode_version == 17;
+                const bool bytecode17 =
+                    package.general_info() && package.general_info()->bytecode_version == 17;
                 size = table.size();
                 for (std::size_t i = 0; i < count; ++i) {
                     const auto at = view.u32(4 + i * 4);
@@ -268,7 +268,8 @@ GameAssets::GameAssets(const Package &package)
                     if (at < c.data_offset || at - c.data_offset > c.size ||
                         c.size - (at - c.data_offset) < record_size)
                         throw Error(ErrorKind::malformed, "texture record range", at);
-                    size = std::max<std::size_t>(size, static_cast<std::size_t>(at - c.data_offset) + record_size);
+                    size = std::max<std::size_t>(size,
+                                                 static_cast<std::size_t>(at - c.data_offset) + record_size);
                 }
             }
             it->second = package.read_bytes(c.data_offset, size);
@@ -462,12 +463,13 @@ GameAssets::GameAssets(const Package &package)
                         bg->data_offset + bg->size - p - 64)
                     tileset = {};
                 else {
-                    const auto ids = rec(p, *bg, 64 +
-                                                     static_cast<std::size_t>(tileset.count) *
-                                                         static_cast<std::size_t>(tileset.frames_per_tile) * 4);
-                    tileset.tile_ids.reserve(static_cast<std::size_t>(tileset.count) * tileset.frames_per_tile);
-                    for (std::size_t i = 0; i < static_cast<std::size_t>(tileset.count) * tileset.frames_per_tile;
-                         ++i)
+                    const auto ids = rec(p, *bg,
+                                         64 + static_cast<std::size_t>(tileset.count) *
+                                                  static_cast<std::size_t>(tileset.frames_per_tile) * 4);
+                    tileset.tile_ids.reserve(static_cast<std::size_t>(tileset.count) *
+                                             tileset.frames_per_tile);
+                    for (std::size_t i = 0;
+                         i < static_cast<std::size_t>(tileset.count) * tileset.frames_per_tile; ++i)
                         tileset.tile_ids.push_back(ids.u32(64 + i * 4));
                 }
             }
@@ -507,9 +509,8 @@ GameAssets::GameAssets(const Package &package)
         const auto r = rec(p, *fo, 44);
         Font font;
         const auto encoded_size = r.u32(8);
-        const auto em_size = (encoded_size & 0x80000000U) != 0
-                                 ? -regml::bit_cast<float>(encoded_size)
-                                 : static_cast<float>(encoded_size);
+        const auto em_size = (encoded_size & 0x80000000U) != 0 ? -regml::bit_cast<float>(encoded_size)
+                                                               : static_cast<float>(encoded_size);
         if (!std::isfinite(em_size) || em_size < 0 || em_size > 8192)
             throw Error(ErrorKind::malformed, "invalid font size", p + 8);
         font.size = static_cast<int>(em_size);
@@ -558,13 +559,11 @@ int GameAssets::add_sprite_font(int sprite_id,
             advance > std::numeric_limits<std::int16_t>::max())
             throw Error(ErrorKind::unsupported, "sprite font advance exceeds supported bounds");
         const auto character = static_cast<unsigned char>(string_map[i]);
-        font.glyphs[character] = {static_cast<std::uint16_t>(region.x),
-                                  static_cast<std::uint16_t>(region.y),
-                                  static_cast<std::uint16_t>(region.w),
-                                  static_cast<std::uint16_t>(region.h),
-                                  static_cast<std::int16_t>(advance),
-                                  0,
-                                  static_cast<std::uint16_t>(region.page)};
+        font.glyphs[character] = {
+            static_cast<std::uint16_t>(region.x),   static_cast<std::uint16_t>(region.y),
+            static_cast<std::uint16_t>(region.w),   static_cast<std::uint16_t>(region.h),
+            static_cast<std::int16_t>(advance),     0,
+            static_cast<std::uint16_t>(region.page)};
         font.has_glyph[character] = true;
     }
     auto atlas = std::make_unique<Region>();
@@ -625,7 +624,8 @@ GameAssets::GameAssets(const Package &package, const GmrtProject &project)
         ranges[id].first = sprite_frame_regions_.size();
         for (const auto &image_path : source.frames) {
             Page page;
-            page.external_file = image_path.is_absolute() ? image_path : project.index_path().parent_path() / image_path;
+            page.external_file =
+                image_path.is_absolute() ? image_path : project.index_path().parent_path() / image_path;
             const auto page_id = static_cast<int>(pages_.size());
             pages_.push_back(std::move(page));
             Region region;
@@ -662,15 +662,15 @@ std::optional<GameAssets::SpriteFrameInfo> GameAssets::sprite_frame_info(int id,
     if (region_index >= regions_.size())
         return SpriteFrameInfo{0, 0, 0, 0, -1, source.width, source.height};
     const auto &region = regions_[region_index].region;
-    return SpriteFrameInfo{region.x, region.y, region.tw, region.th, region.page,
-                           source.width, source.height, region.w, region.h, region.tx, region.ty};
+    return SpriteFrameInfo{region.x,      region.y, region.tw, region.th, region.page, source.width,
+                           source.height, region.w, region.h,  region.tx, region.ty};
 }
 std::array<double, 8> GameAssets::sprite_uvs(int id, double frame) {
     const auto &source = sprite(id);
     if (source.frames.empty() || !std::isfinite(frame))
         return {};
-    auto frame_index = static_cast<long long>(std::fmod(std::floor(frame),
-                                                        static_cast<double>(source.frames.size())));
+    auto frame_index =
+        static_cast<long long>(std::fmod(std::floor(frame), static_cast<double>(source.frames.size())));
     if (frame_index < 0)
         frame_index += static_cast<long long>(source.frames.size());
     const auto region_index = source.frames[static_cast<std::size_t>(frame_index)];
@@ -695,8 +695,8 @@ std::pair<double, double> GameAssets::texture_texel_size(int id, double frame) {
     const auto &source = sprite(id);
     if (source.frames.empty() || !std::isfinite(frame))
         return {};
-    auto frame_index = static_cast<long long>(std::fmod(std::floor(frame),
-                                                        static_cast<double>(source.frames.size())));
+    auto frame_index =
+        static_cast<long long>(std::fmod(std::floor(frame), static_cast<double>(source.frames.size())));
     if (frame_index < 0)
         frame_index += static_cast<long long>(source.frames.size());
     const auto region_index = source.frames[static_cast<std::size_t>(frame_index)];
@@ -772,14 +772,14 @@ int GameAssets::sprite_bbox_mode(int id) const {
     return sprite(id).bbox_mode;
 }
 int GameAssets::create_sprite_from_surface(const Canvas &surface,
-                                          int x,
-                                          int y,
-                                          int width,
-                                          int height,
-                                          bool remove_background,
-                                          bool smooth,
-                                          int origin_x,
-                                          int origin_y) {
+                                           int x,
+                                           int y,
+                                           int width,
+                                           int height,
+                                           bool remove_background,
+                                           bool smooth,
+                                           int origin_x,
+                                           int origin_y) {
     if (width <= 0 || height <= 0 || dynamic_sprite_count_ >= max_dynamic_sprites_ ||
         sprites_.size() >= static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
         regions_.size() >= std::numeric_limits<std::uint32_t>::max() ||
@@ -849,9 +849,8 @@ int GameAssets::create_sprite_from_surface(const Canvas &surface,
     }
 
     int left = width, right = -1, top = height, bottom = -1;
-    const bool fully_opaque = std::all_of(pixels.begin(), pixels.end(), [](std::uint32_t pixel) {
-        return (pixel >> 24) == 255;
-    });
+    const bool fully_opaque =
+        std::all_of(pixels.begin(), pixels.end(), [](std::uint32_t pixel) { return (pixel >> 24) == 255; });
     if (fully_opaque) {
         left = top = 0;
         right = width - 1;
@@ -912,11 +911,8 @@ int GameAssets::create_sprite_from_surface(const Canvas &surface,
     dynamic_sprite_bytes_ += static_cast<std::size_t>(byte_count);
     return id;
 }
-int GameAssets::create_sprite_from_file(const std::filesystem::path &path,
-                                        bool remove_background,
-                                        bool smooth,
-                                        int origin_x,
-                                        int origin_y) {
+int GameAssets::create_sprite_from_file(
+    const std::filesystem::path &path, bool remove_background, bool smooth, int origin_x, int origin_y) {
     png_image image{};
     image.version = PNG_IMAGE_VERSION;
     struct Guard {
@@ -937,8 +933,9 @@ int GameAssets::create_sprite_from_file(const std::filesystem::path &path,
         return -1;
     Canvas surface(static_cast<int>(image.width), static_cast<int>(image.height));
     std::copy(pixels.begin(), pixels.end(), surface.pixels().begin());
-    return create_sprite_from_surface(surface, 0, 0, static_cast<int>(image.width), static_cast<int>(image.height),
-                                      remove_background, smooth, origin_x, origin_y);
+    return create_sprite_from_surface(surface, 0, 0, static_cast<int>(image.width),
+                                      static_cast<int>(image.height), remove_background, smooth, origin_x,
+                                      origin_y);
 }
 bool GameAssets::mask_pixel(int id, double frame, int x, int y) const {
     const auto &s = sprite(id);
@@ -975,10 +972,8 @@ std::pair<int, int> GameAssets::background_size(int id) const {
     const auto &r = *region;
     return {r.tw, r.th};
 }
-std::optional<GameAssets::TileSource> GameAssets::background_tile_source(int id,
-                                                                         std::uint32_t tile,
-                                                                         std::uint64_t elapsed_us,
-                                                                         std::optional<std::size_t> animation_frame) const {
+std::optional<GameAssets::TileSource> GameAssets::background_tile_source(
+    int id, std::uint32_t tile, std::uint64_t elapsed_us, std::optional<std::size_t> animation_frame) const {
     if (id < 0 || static_cast<std::size_t>(id) >= backgrounds_.size() ||
         static_cast<std::size_t>(id) >= tilesets_.size())
         return std::nullopt;
@@ -986,12 +981,11 @@ std::optional<GameAssets::TileSource> GameAssets::background_tile_source(int id,
     if (tile >= static_cast<std::uint32_t>(tileset.count) || tileset.width <= 0 || tileset.height <= 0 ||
         tileset.columns <= 0 || tileset.frames_per_tile <= 0)
         return std::nullopt;
-    const auto frame = animation_frame
-                           ? *animation_frame % static_cast<std::size_t>(tileset.frames_per_tile)
-                           : tileset.frame_length_us
-                                 ? static_cast<std::size_t>((elapsed_us / tileset.frame_length_us) %
-                                                            static_cast<std::uint64_t>(tileset.frames_per_tile))
-                                 : 0;
+    const auto frame = animation_frame ? *animation_frame % static_cast<std::size_t>(tileset.frames_per_tile)
+                       : tileset.frame_length_us
+                           ? static_cast<std::size_t>((elapsed_us / tileset.frame_length_us) %
+                                                      static_cast<std::uint64_t>(tileset.frames_per_tile))
+                           : 0;
     const auto tile_id_at = static_cast<std::size_t>(tile) * tileset.frames_per_tile + frame;
     if (tile_id_at >= tileset.tile_ids.size())
         return std::nullopt;
@@ -1003,10 +997,10 @@ std::optional<GameAssets::TileSource> GameAssets::background_tile_source(int id,
         return std::nullopt;
     const auto stride_x = tileset.width + 2 * tileset.border_x;
     const auto stride_y = tileset.height + 2 * tileset.border_y;
-    const auto x = static_cast<int>(tile % static_cast<std::uint32_t>(tileset.columns)) * stride_x +
-                   tileset.border_x;
-    const auto y = static_cast<int>(tile / static_cast<std::uint32_t>(tileset.columns)) * stride_y +
-                   tileset.border_y;
+    const auto x =
+        static_cast<int>(tile % static_cast<std::uint32_t>(tileset.columns)) * stride_x + tileset.border_x;
+    const auto y =
+        static_cast<int>(tile / static_cast<std::uint32_t>(tileset.columns)) * stride_y + tileset.border_y;
     if (x < 0 || y < 0 || x > region->tw - tileset.width || y > region->th - tileset.height)
         return std::nullopt;
     return TileSource{x, y, tileset.width, tileset.height};
@@ -1052,42 +1046,43 @@ GameAssets::Page &GameAssets::load_page(int id) {
             width = image.width;
             height = image.height;
         } else {
-        const auto *chunk = package_.find_chunk("TXTR");
-        const auto png_header = package_.read_bytes(page.png, 8);
-        if (png_header[0] != 0x89 || png_header[1] != 'P' || png_header[2] != 'N' || png_header[3] != 'G' ||
-            png_header[4] != 0x0d || png_header[5] != 0x0a || png_header[6] != 0x1a || png_header[7] != 0x0a)
-            throw Error(ErrorKind::malformed, "texture PNG header invalid", page.png);
-        std::size_t png_size = 8;
-        bool found_end = false;
-        const auto chunk_end = chunk->data_offset + chunk->size;
-        while (page.png <= chunk_end && png_size <= chunk_end - page.png &&
-               chunk_end - page.png - png_size >= 12) {
-            const auto record = package_.read_bytes(page.png + png_size, 8);
-            const auto length = (static_cast<std::size_t>(record[0]) << 24) |
-                                (static_cast<std::size_t>(record[1]) << 16) |
-                                (static_cast<std::size_t>(record[2]) << 8) | record[3];
-            if (length > chunk_end - page.png - png_size - 12)
-                throw Error(ErrorKind::malformed, "texture PNG chunk exceeds TXTR", page.png + png_size);
-            found_end = record[4] == 'I' && record[5] == 'E' && record[6] == 'N' && record[7] == 'D';
-            png_size += 12 + length;
-            if (found_end)
-                break;
-        }
-        if (!found_end)
-            throw Error(ErrorKind::malformed, "texture PNG has no IEND chunk", page.png);
-        png_bytes = package_.read_bytes(page.png, png_size);
-        image.version = PNG_IMAGE_VERSION;
-        if (!png_image_begin_read_from_memory(&image, png_bytes.data(), png_bytes.size()))
-            throw Error(ErrorKind::malformed, "texture PNG header invalid", page.png);
-        guard.active = true;
-        if (image.width > 8192 || image.height > 8192 || !image.width || !image.height)
-            throw Error(ErrorKind::unsupported, "texture dimensions exceed limit", page.png);
-        if constexpr (std::endian::native == std::endian::little)
-            image.format = PNG_FORMAT_BGRA;
-        else
-            image.format = PNG_FORMAT_ARGB;
-        width = image.width;
-        height = image.height;
+            const auto *chunk = package_.find_chunk("TXTR");
+            const auto png_header = package_.read_bytes(page.png, 8);
+            if (png_header[0] != 0x89 || png_header[1] != 'P' || png_header[2] != 'N' ||
+                png_header[3] != 'G' || png_header[4] != 0x0d || png_header[5] != 0x0a ||
+                png_header[6] != 0x1a || png_header[7] != 0x0a)
+                throw Error(ErrorKind::malformed, "texture PNG header invalid", page.png);
+            std::size_t png_size = 8;
+            bool found_end = false;
+            const auto chunk_end = chunk->data_offset + chunk->size;
+            while (page.png <= chunk_end && png_size <= chunk_end - page.png &&
+                   chunk_end - page.png - png_size >= 12) {
+                const auto record = package_.read_bytes(page.png + png_size, 8);
+                const auto length = (static_cast<std::size_t>(record[0]) << 24) |
+                                    (static_cast<std::size_t>(record[1]) << 16) |
+                                    (static_cast<std::size_t>(record[2]) << 8) | record[3];
+                if (length > chunk_end - page.png - png_size - 12)
+                    throw Error(ErrorKind::malformed, "texture PNG chunk exceeds TXTR", page.png + png_size);
+                found_end = record[4] == 'I' && record[5] == 'E' && record[6] == 'N' && record[7] == 'D';
+                png_size += 12 + length;
+                if (found_end)
+                    break;
+            }
+            if (!found_end)
+                throw Error(ErrorKind::malformed, "texture PNG has no IEND chunk", page.png);
+            png_bytes = package_.read_bytes(page.png, png_size);
+            image.version = PNG_IMAGE_VERSION;
+            if (!png_image_begin_read_from_memory(&image, png_bytes.data(), png_bytes.size()))
+                throw Error(ErrorKind::malformed, "texture PNG header invalid", page.png);
+            guard.active = true;
+            if (image.width > 8192 || image.height > 8192 || !image.width || !image.height)
+                throw Error(ErrorKind::unsupported, "texture dimensions exceed limit", page.png);
+            if constexpr (std::endian::native == std::endian::little)
+                image.format = PNG_FORMAT_BGRA;
+            else
+                image.format = PNG_FORMAT_ARGB;
+            width = image.width;
+            height = image.height;
         }
     } else {
         std::size_t texture_size = page.data_size;
@@ -1153,7 +1148,8 @@ GameAssets::Page &GameAssets::load_page(int id) {
     }
     pixels.resize(width * height);
     if (is_png) {
-        if (!png_image_finish_read(&image, nullptr, reinterpret_cast<unsigned char *>(pixels.data()), 0, nullptr))
+        if (!png_image_finish_read(&image, nullptr, reinterpret_cast<unsigned char *>(pixels.data()), 0,
+                                   nullptr))
             throw Error(ErrorKind::malformed,
                         std::string("texture PNG decode failed") +
                             (image.message[0] ? ": " + std::string(image.message) : ""),
@@ -1397,14 +1393,14 @@ void GameAssets::draw_tile(Canvas &canvas,
     if (target_w <= 0 || target_h <= 0)
         return;
 
-    const int dest_left = static_cast<int>(std::clamp(std::ceil(target_x - 0.5), 0.0,
-                                                       static_cast<double>(canvas.width())));
-    const int dest_top = static_cast<int>(std::clamp(std::ceil(target_y - 0.5), 0.0,
-                                                     static_cast<double>(canvas.height())));
-    const int dest_right = static_cast<int>(std::clamp(std::ceil(target_x + target_w - 0.5), 0.0,
-                                                        static_cast<double>(canvas.width())));
-    const int dest_bottom = static_cast<int>(std::clamp(std::ceil(target_y + target_h - 0.5), 0.0,
-                                                         static_cast<double>(canvas.height())));
+    const int dest_left =
+        static_cast<int>(std::clamp(std::ceil(target_x - 0.5), 0.0, static_cast<double>(canvas.width())));
+    const int dest_top =
+        static_cast<int>(std::clamp(std::ceil(target_y - 0.5), 0.0, static_cast<double>(canvas.height())));
+    const int dest_right = static_cast<int>(
+        std::clamp(std::ceil(target_x + target_w - 0.5), 0.0, static_cast<double>(canvas.width())));
+    const int dest_bottom = static_cast<int>(
+        std::clamp(std::ceil(target_y + target_h - 0.5), 0.0, static_cast<double>(canvas.height())));
     if (dest_left >= dest_right || dest_top >= dest_bottom)
         return;
 
@@ -1465,18 +1461,14 @@ void GameAssets::draw_line(Canvas &canvas, double x1, double y1, double x2, doub
     const double scale = std::sqrt(std::fabs(view_sx_ * view_sy_));
     canvas.line(start[0], start[1], end[0], end[1], width * scale);
 }
-void GameAssets::draw_triangle(Canvas &canvas,
-                               double x1,
-                               double y1,
-                               double x2,
-                               double y2,
-                               double x3,
-                               double y3,
-                               bool outline) const {
-    const auto first = transform_point(x1, y1), second = transform_point(x2, y2), third = transform_point(x3, y3);
+void GameAssets::draw_triangle(
+    Canvas &canvas, double x1, double y1, double x2, double y2, double x3, double y3, bool outline) const {
+    const auto first = transform_point(x1, y1), second = transform_point(x2, y2),
+               third = transform_point(x3, y3);
     canvas.triangle(first[0], first[1], second[0], second[1], third[0], third[1], outline);
 }
-void GameAssets::draw_ellipse(Canvas &canvas, double x1, double y1, double x2, double y2, bool outline) const {
+void GameAssets::draw_ellipse(
+    Canvas &canvas, double x1, double y1, double x2, double y2, bool outline) const {
     const auto first = transform_point(x1, y1), second = transform_point(x2, y2);
     canvas.ellipse(first[0], first[1], second[0], second[1], outline);
 }
@@ -1534,8 +1526,7 @@ const GameAssets::Page &GameAssets::region_pixels(const Region &r, int &source_x
         cropped.pixels = read_png_region(package_, page.png, r.x, r.y, r.w, r.h);
     } else {
         const auto &source = load_page(r.page);
-        if (r.x < 0 || r.y < 0 || r.w < 0 || r.h < 0 || r.x + r.w > source.width ||
-            r.y + r.h > source.height)
+        if (r.x < 0 || r.y < 0 || r.w < 0 || r.h < 0 || r.x + r.w > source.width || r.y + r.h > source.height)
             throw Error(ErrorKind::malformed, "texture region outside page");
         cropped.pixels.resize(static_cast<std::size_t>(r.w) * r.h);
         for (int row = 0; row < r.h; ++row)
@@ -1764,14 +1755,14 @@ void GameAssets::blit(Canvas &canvas,
             scaled_y_[static_cast<std::size_t>(dy - top)] = source_y + static_cast<int>(ty * r.h / r.th);
         }
         if (tint == 0xffffff && source_alpha_mode == 2 &&
-            canvas.blit_rgba_scaled_opaque(page.pixels, page.width,
-                                           std::span<const int>(scaled_x_.data(), sample_width),
-                                           std::span<const int>(scaled_y_.data(), sample_height), left, top, alpha))
+            canvas.blit_rgba_scaled_opaque(
+                page.pixels, page.width, std::span<const int>(scaled_x_.data(), sample_width),
+                std::span<const int>(scaled_y_.data(), sample_height), left, top, alpha))
             return;
         if (tint == 0xffffff && alpha == 1 && source_alpha_mode == 1 &&
-            canvas.blit_rgba_scaled_binary_alpha(page.pixels, page.width,
-                                                 std::span<const int>(scaled_x_.data(), sample_width),
-                                                 std::span<const int>(scaled_y_.data(), sample_height), left, top))
+            canvas.blit_rgba_scaled_binary_alpha(
+                page.pixels, page.width, std::span<const int>(scaled_x_.data(), sample_width),
+                std::span<const int>(scaled_y_.data(), sample_height), left, top))
             return;
         // The repeated source-x runs are safe for binary transparent glyphs as
         // well as partially transparent images. In particular, Wii U text can
@@ -1905,11 +1896,8 @@ void GameAssets::draw_sprite(Canvas &canvas,
     blit(canvas, r, x + ox * std::cos(rad) + oy * std::sin(rad), y - ox * std::sin(rad) + oy * std::cos(rad),
          sx, sy, angle, color, alpha);
 }
-void GameAssets::draw_sprite_pos(Canvas &canvas,
-                                 int id,
-                                 double frame,
-                                 const std::array<double, 8> &corners,
-                                 double alpha) {
+void GameAssets::draw_sprite_pos(
+    Canvas &canvas, int id, double frame, const std::array<double, 8> &corners, double alpha) {
     if (!sprite_exists(id))
         return;
     const auto &spr = sprite(id);
@@ -1971,16 +1959,20 @@ void GameAssets::draw_sprite_pos(Canvas &canvas,
         min_y = std::min(min_y, point[1]);
         max_y = std::max(max_y, point[1]);
     }
-    const int left = static_cast<int>(std::clamp(std::floor(min_x), 0.0, static_cast<double>(canvas.width())));
-    const int right = static_cast<int>(std::clamp(std::ceil(max_x), 0.0, static_cast<double>(canvas.width())));
-    const int top = static_cast<int>(std::clamp(std::floor(min_y), 0.0, static_cast<double>(canvas.height())));
-    const int bottom = static_cast<int>(std::clamp(std::ceil(max_y), 0.0, static_cast<double>(canvas.height())));
+    const int left =
+        static_cast<int>(std::clamp(std::floor(min_x), 0.0, static_cast<double>(canvas.width())));
+    const int right =
+        static_cast<int>(std::clamp(std::ceil(max_x), 0.0, static_cast<double>(canvas.width())));
+    const int top =
+        static_cast<int>(std::clamp(std::floor(min_y), 0.0, static_cast<double>(canvas.height())));
+    const int bottom =
+        static_cast<int>(std::clamp(std::ceil(max_y), 0.0, static_cast<double>(canvas.height())));
     if (left >= right || top >= bottom)
         return;
 
-    const auto draw_triangle = [&](std::size_t ia, std::size_t ib, std::size_t ic,
-                                   std::array<double, 2> uva, std::array<double, 2> uvb,
-                                   std::array<double, 2> uvc, bool skip_shared_edge) {
+    const auto draw_triangle = [&](std::size_t ia, std::size_t ib, std::size_t ic, std::array<double, 2> uva,
+                                   std::array<double, 2> uvb, std::array<double, 2> uvc,
+                                   bool skip_shared_edge) {
         const auto &a = points[ia];
         const auto &b = points[ib];
         const auto &c = points[ic];
@@ -2048,8 +2040,8 @@ std::uint32_t GameAssets::sample_sprite(int id, double frame, double u, double v
             return 0;
         return page.pixels[static_cast<std::size_t>(sy) * static_cast<std::size_t>(page.width) + sx];
     };
-    const std::array<std::uint32_t, 4> colors = {
-        texel(x0, y0), texel(x0 + 1, y0), texel(x0, y0 + 1), texel(x0 + 1, y0 + 1)};
+    const std::array<std::uint32_t, 4> colors = {texel(x0, y0), texel(x0 + 1, y0), texel(x0, y0 + 1),
+                                                 texel(x0 + 1, y0 + 1)};
     const std::array<double, 4> weights = {(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy};
     std::uint32_t result = 0;
     for (unsigned shift : {0U, 8U, 16U, 24U}) {
@@ -2149,14 +2141,8 @@ void GameAssets::draw_text(Canvas &canvas,
     if (font < 0 || static_cast<std::size_t>(font) >= fonts_.size()) {
         canvas.color(color);
         canvas.alpha(alpha);
-        canvas.text((x - view_x_) * view_sx_ + port_x_,
-                    (y - view_y_) * view_sy_ + port_y_,
-                    text,
-                    sx * view_sx_,
-                    sy * view_sy_,
-                    angle,
-                    halign,
-                    valign);
+        canvas.text((x - view_x_) * view_sx_ + port_x_, (y - view_y_) * view_sy_ + port_y_, text,
+                    sx * view_sx_, sy * view_sy_, angle, halign, valign);
         return;
     }
     const auto &f = fonts_[static_cast<std::size_t>(font)];
@@ -2204,21 +2190,20 @@ void GameAssets::draw_text(Canvas &canvas,
                 for (std::size_t i = 0; i < count; ++i)
                     gpu_glyphs[i] = pending[i].gpu;
                 auto group = std::span<const Ps2FontGlyph>(gpu_glyphs.data(), count);
-                bool drawn = ps2_gpu_font_glyphs({}, 0, 0, 0, batch_tile_x, batch_tile_y, page_key,
-                                                 group, tint, alpha);
-                if (!drawn && batch_tile_x >= 0 && batch_tile_y >= 0 &&
-                    batch_tile_x < page.width && batch_tile_y < page.height) {
+                bool drawn = ps2_gpu_font_glyphs({}, 0, 0, 0, batch_tile_x, batch_tile_y, page_key, group,
+                                                 tint, alpha);
+                if (!drawn && batch_tile_x >= 0 && batch_tile_y >= 0 && batch_tile_x < page.width &&
+                    batch_tile_y < page.height) {
                     const int tile_width = std::min(128, page.width - batch_tile_x);
                     const int tile_height = std::min(128, page.height - batch_tile_y);
-                    auto pixels = read_png_region(package_, page.png, batch_tile_x, batch_tile_y,
-                                                  tile_width, tile_height);
-                    drawn = ps2_gpu_font_glyphs(pixels, tile_width, 0, 0, batch_tile_x,
-                                                batch_tile_y, page_key, group, tint, alpha);
+                    auto pixels = read_png_region(package_, page.png, batch_tile_x, batch_tile_y, tile_width,
+                                                  tile_height);
+                    drawn = ps2_gpu_font_glyphs(pixels, tile_width, 0, 0, batch_tile_x, batch_tile_y,
+                                                page_key, group, tint, alpha);
                 }
                 if (!drawn)
                     for (std::size_t i = 0; i < count; ++i)
-                        blit(canvas, pending[i].region, pending[i].x, pending[i].y, sx, sy,
-                             0, color, alpha);
+                        blit(canvas, pending[i].region, pending[i].x, pending[i].y, sx, sy, 0, color, alpha);
                 count = 0;
                 batch_tile_x = batch_tile_y = -1;
             };
@@ -2242,8 +2227,8 @@ void GameAssets::draw_text(Canvas &canvas,
                     if (region.x >= 0 && region.y >= 0 && region.x + region.w <= page.width &&
                         region.y + region.h <= page.height && region.w <= 128 && region.h <= 128 &&
                         region.x + region.w <= tile_x + 128 && region.y + region.h <= tile_y + 128) {
-                        if (count && (batch_tile_x != tile_x || batch_tile_y != tile_y ||
-                                      count == glyphs_per_batch))
+                        if (count &&
+                            (batch_tile_x != tile_x || batch_tile_y != tile_y || count == glyphs_per_batch))
                             flush();
                         batch_tile_x = tile_x;
                         batch_tile_y = tile_y;
@@ -2251,12 +2236,13 @@ void GameAssets::draw_text(Canvas &canvas,
                         const double oy = ly * sy;
                         const double draw_x = ((x + ox - view_x_) * view_sx_ + port_x_) * render_scale;
                         const double draw_y = ((y + oy - view_y_) * view_sy_ + port_y_) * render_scale;
-                        pending[count++] = {
-                            {region.x, region.y, region.w, region.h,
-                             static_cast<float>(draw_x), static_cast<float>(draw_y),
-                             static_cast<float>(g.w * sx * view_sx_ * render_scale),
-                             static_cast<float>(g.h * sy * view_sy_ * render_scale)},
-                            region, x + ox, y + oy};
+                        pending[count++] = {{region.x, region.y, region.w, region.h,
+                                             static_cast<float>(draw_x), static_cast<float>(draw_y),
+                                             static_cast<float>(g.w * sx * view_sx_ * render_scale),
+                                             static_cast<float>(g.h * sy * view_sy_ * render_scale)},
+                                            region,
+                                            x + ox,
+                                            y + oy};
                     } else {
                         flush();
                         const double ox = (lx + g.offset) * sx;
@@ -2283,7 +2269,14 @@ void GameAssets::draw_text(Canvas &canvas,
         if (!f.has_glyph[ch])
             continue;
         const auto &g = f.glyphs[ch];
-        Region r{atlas.x + g.x, atlas.y + g.y, g.w, g.h, 0, 0, g.w, g.h,
+        Region r{atlas.x + g.x,
+                 atlas.y + g.y,
+                 g.w,
+                 g.h,
+                 0,
+                 0,
+                 g.w,
+                 g.h,
                  f.page_per_glyph ? static_cast<int>(g.page) : atlas.page};
         r.alpha_mode = g.alpha_mode;
         const auto ox = (lx + g.offset) * sx, oy = ly * sy;

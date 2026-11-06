@@ -1,6 +1,6 @@
 #include "game.hpp"
-#include "bit_cast.hpp"
 #include "audio/sdl/audio.hpp"
+#include "bit_cast.hpp"
 #include "gmrt_ir.hpp"
 #include "gmrt_project.hpp"
 #include "gmrt_vm.hpp"
@@ -22,9 +22,9 @@
 #endif
 #include <algorithm>
 #include <atomic>
-#include <charconv>
 #include <cctype>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -359,17 +359,18 @@ void rebuild_path(Path &path) {
         for (std::size_t segment = 0; segment + 1 < controls.size(); ++segment) {
             const auto &p1 = controls[segment];
             const auto &p2 = controls[segment + 1];
-            const auto &p0 = segment ? controls[segment - 1] : (path.closed ? controls[controls.size() - 2] : p1);
-            const auto &p3 = segment + 2 < controls.size() ? controls[segment + 2]
-                                                             : (path.closed ? controls[1] : p2);
+            const auto &p0 =
+                segment ? controls[segment - 1] : (path.closed ? controls[controls.size() - 2] : p1);
+            const auto &p3 =
+                segment + 2 < controls.size() ? controls[segment + 2] : (path.closed ? controls[1] : p2);
             for (int sample = 0; sample < subdivisions; ++sample) {
                 const double t = static_cast<double>(sample) / subdivisions, t2 = t * t, t3 = t2 * t;
-                const double x = 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t +
-                                        (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
-                                        (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3);
-                const double y = 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t +
-                                        (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
-                                        (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3);
+                const double x =
+                    0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
+                           (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3);
+                const double y =
+                    0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+                           (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3);
                 const double speed = p1.speed + (p2.speed - p1.speed) * t;
                 path.points.push_back({x, y, speed, 0});
             }
@@ -381,8 +382,8 @@ void rebuild_path(Path &path) {
 
     for (std::size_t i = 0; i < path.points.size(); ++i) {
         if (i)
-            path.length += std::hypot(path.points[i].x - path.points[i - 1].x,
-                                      path.points[i].y - path.points[i - 1].y);
+            path.length +=
+                std::hypot(path.points[i].x - path.points[i - 1].x, path.points[i].y - path.points[i - 1].y);
         path.points[i].distance = path.length;
     }
 }
@@ -461,8 +462,8 @@ constexpr std::size_t gif_capture_limit = 4 * 1024 * 1024;
 constexpr std::size_t gif_capture_limit = 32 * 1024 * 1024;
 #endif
 std::uint8_t gif_palette_index(std::uint32_t rgb) {
-    return static_cast<std::uint8_t>((((rgb >> 16) & 255) >> 5) << 5 |
-                                     (((rgb >> 8) & 255) >> 5) << 2 | ((rgb & 255) >> 6));
+    return static_cast<std::uint8_t>((((rgb >> 16) & 255) >> 5) << 5 | (((rgb >> 8) & 255) >> 5) << 2 |
+                                     ((rgb & 255) >> 6));
 }
 std::vector<std::uint8_t> gif_lzw(std::span<const std::uint8_t> indices) {
     std::vector<std::uint8_t> output;
@@ -575,10 +576,9 @@ bool write_gif(const GifCapture &capture, const std::filesystem::path &path) {
 }
 std::string md5_hex(std::span<const std::uint8_t> input) {
     static constexpr std::array<std::uint32_t, 64> shifts{
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};
+        7,  12, 17, 22, 7,  12, 17, 22, 7,  12, 17, 22, 7,  12, 17, 22, 5,  9,  14, 20, 5,  9,
+        14, 20, 5,  9,  14, 20, 5,  9,  14, 20, 4,  11, 16, 23, 4,  11, 16, 23, 4,  11, 16, 23,
+        4,  11, 16, 23, 6,  10, 15, 21, 6,  10, 15, 21, 6,  10, 15, 21, 6,  10, 15, 21};
     static constexpr std::array<std::uint32_t, 64> constants{
         0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
         0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
@@ -753,8 +753,16 @@ struct GameSession::Impl {
     // ds maps can have any game data as keys, so they need their own storage
     // instead of sharing the bytecode name pool
     struct DynamicValue {
-        using Storage = std::variant<std::int32_t, double, bool, PackageString, std::monostate, ArrayPtr,
-                                     FunctionReference, CallablePtr, StructPtr, std::shared_ptr<std::string>>;
+        using Storage = std::variant<std::int32_t,
+                                     double,
+                                     bool,
+                                     PackageString,
+                                     std::monostate,
+                                     ArrayPtr,
+                                     FunctionReference,
+                                     CallablePtr,
+                                     StructPtr,
+                                     std::shared_ptr<std::string>>;
         Storage stored = std::monostate{};
 
         DynamicValue() = default;
@@ -828,17 +836,15 @@ struct GameSession::Impl {
         }
 
         bool operator()(std::string_view stored, DynamicMapKeyView query) const noexcept {
-            return stored.size() == query.value.size() + 2 &&
-                   stored[0] == (query.string_key ? 's' : 'n') && stored[1] == ':' &&
-                   stored.substr(2) == query.value;
+            return stored.size() == query.value.size() + 2 && stored[0] == (query.string_key ? 's' : 'n') &&
+                   stored[1] == ':' && stored.substr(2) == query.value;
         }
 
         bool operator()(DynamicMapKeyView query, std::string_view stored) const noexcept {
             return (*this)(stored, query);
         }
     };
-    struct DynamicMap
-        : std::unordered_map<std::string, DynamicValue, DynamicMapHash, DynamicMapEqual> {
+    struct DynamicMap : std::unordered_map<std::string, DynamicValue, DynamicMapHash, DynamicMapEqual> {
         using Base = std::unordered_map<std::string, DynamicValue, DynamicMapHash, DynamicMapEqual>;
 
         DynamicMap() { this->max_load_factor(1.5f); }
@@ -977,9 +983,9 @@ struct GameSession::Impl {
     mutable std::unordered_map<std::string, std::vector<std::uint8_t>> load_chunks;
     void update_gui_transform() {
         const double width = engine.contains("gui_width") ? value_number(engine.at("gui_width"))
-                                                           : static_cast<double>(render_width);
+                                                          : static_cast<double>(render_width);
         const double height = engine.contains("gui_height") ? value_number(engine.at("gui_height"))
-                                                              : static_cast<double>(render_height);
+                                                            : static_cast<double>(render_height);
         const double scale_x = std::isfinite(width) && width > 0 ? canvas.logical_width() / width : 1.0;
         const double scale_y = std::isfinite(height) && height > 0 ? canvas.logical_height() / height : 1.0;
         assets.view(0, 0, scale_x, scale_y, 0, 0);
@@ -998,11 +1004,12 @@ struct GameSession::Impl {
                                 return link_legacy_package(package, {}, false, build_instruction_index,
                                                            lazy_programs);
                             })),
-          assets(load_stage("graphics metadata", [&] {
-              if (gmrt_project)
-                  return GameAssets(package, *gmrt_project);
-              return GameAssets(package);
-          })),
+          assets(load_stage("graphics metadata",
+                            [&] {
+                                if (gmrt_project)
+                                    return GameAssets(package, *gmrt_project);
+                                return GameAssets(package);
+                            })),
           audio(load_stage("audio metadata", [&] { return GameAudio(package, path.parent_path()); })),
           game_dir(path.parent_path()), package_path(path), fixed_seed(seed) {
         gamepad = initial_gamepad;
@@ -1010,9 +1017,8 @@ struct GameSession::Impl {
             const auto wad = load_stage("GMRT modules", [&] { return GmrtWad::load(path); });
             gmrt_modules.reserve(wad.modules().size());
             for (std::size_t i = 0; i < wad.modules().size(); ++i)
-                gmrt_modules.push_back(load_stage("GMIR module", [&] {
-                    return GmrtModule::parse(wad.read_module(i));
-                }));
+                gmrt_modules.push_back(
+                    load_stage("GMIR module", [&] { return GmrtModule::parse(wad.read_module(i)); }));
             for (std::size_t module = 0; module < gmrt_modules.size(); ++module)
                 for (std::size_t function = 0; function < gmrt_modules[module].functions.size(); ++function) {
                     const auto &entry = gmrt_modules[module].functions[function];
@@ -1222,7 +1228,7 @@ struct GameSession::Impl {
     double shader_uniform_value(int handle, double fallback) const {
         const auto found = shader_uniforms.find(handle);
         return found == shader_uniforms.end() || found->second.values.empty() ? fallback
-                                                                                : found->second.values.front();
+                                                                              : found->second.values.front();
     }
     int sprite_texture_handle(int sprite, double frame) {
         if (!assets.sprite_exists(sprite) || !std::isfinite(frame))
@@ -1259,7 +1265,8 @@ struct GameSession::Impl {
             return;
         texture_surfaces.erase(found->second);
         surface_texture_ids.erase(found);
-        std::erase_if(shader_texture_stages, [&](const auto &stage) { return stage.second == found->second; });
+        std::erase_if(shader_texture_stages,
+                      [&](const auto &stage) { return stage.second == found->second; });
     }
     std::uint32_t sample_shader_stage(int sampler, double u, double v) {
         const auto slot = std::find(shoujo_sampler_uniforms.begin(), shoujo_sampler_uniforms.end(), sampler);
@@ -1292,7 +1299,8 @@ struct GameSession::Impl {
         const double frag_x = static_cast<double>(x), frag_y = static_cast<double>(y);
         const double gradient_x = fract(frag_x / width + time);
         auto gradient = sample_shader_stage(shoujo_sampler_uniforms[0], gradient_x, 0);
-        const auto next_gradient = sample_shader_stage(shoujo_sampler_uniforms[0], gradient_x + 0.5 / 128.0, 0);
+        const auto next_gradient =
+            sample_shader_stage(shoujo_sampler_uniforms[0], gradient_x + 0.5 / 128.0, 0);
         const double mix_amount = fract(frag_x / (width / 128.0));
         std::array<double, 3> color{};
         for (std::size_t channel = 0; channel < color.size(); ++channel) {
@@ -1312,8 +1320,8 @@ struct GameSession::Impl {
         const auto stars = sample_shader_stage(shoujo_sampler_uniforms[2], stars_x, stars_y);
         for (std::size_t channel = 0; channel < color.size(); ++channel) {
             const unsigned shift = static_cast<unsigned>((2 - channel) * 8);
-            color[channel] += ((bubble >> shift) & 255) + ((bubble2 >> shift) & 255) * 0.15 +
-                              ((stars >> shift) & 255);
+            color[channel] +=
+                ((bubble >> shift) & 255) + ((bubble2 >> shift) & 255) * 0.15 + ((stars >> shift) & 255);
         }
         std::uint32_t result = rgba & 0xff000000;
         for (std::size_t channel = 0; channel < color.size(); ++channel) {
@@ -1360,11 +1368,10 @@ struct GameSession::Impl {
         if (const auto *array = std::get_if<ArrayPtr>(&args[1]); array && *array) {
             const int offset = args.size() > 2 ? std::max(number(args[2]), 0) : 0;
             const auto row_length = (*array)->row_lengths.find(0);
-            const int length = row_length == (*array)->row_lengths.end()
-                                   ? 0
-                                   : std::max<std::int32_t>(row_length->second -
-                                                                static_cast<std::int32_t>(offset),
-                                                            0);
+            const int length =
+                row_length == (*array)->row_lengths.end()
+                    ? 0
+                    : std::max<std::int32_t>(row_length->second - static_cast<std::int32_t>(offset), 0);
             values.reserve(static_cast<std::size_t>(length));
             for (int i = 0; i < length; ++i) {
                 const auto *item = (*array)->elements.find(offset + i);
@@ -1442,10 +1449,9 @@ struct GameSession::Impl {
                 if (code < 0)
                     continue;
                 const Object::EventKey key{event.type, event.number};
-                const auto found = std::find_if(object.events.begin(), object.events.end(),
-                                                [key](const Object::EventCode &entry) {
-                                                    return entry.key == key;
-                                                });
+                const auto found =
+                    std::find_if(object.events.begin(), object.events.end(),
+                                 [key](const Object::EventCode &entry) { return entry.key == key; });
                 if (found == object.events.end())
                     object.events.push_back({key, {code}});
                 else
@@ -1636,8 +1642,10 @@ struct GameSession::Impl {
             o.mask = r.i32(28 + object_field_shift);
             const auto vertices = r.u32(64 + object_field_shift);
             if (vertices > 4096)
-                throw Error(ErrorKind::unsupported, "physics vertices exceed limit", p + 64 + object_field_shift);
-            const auto groups = list(p + 80 + object_field_shift + static_cast<std::size_t>(vertices) * 8, *ob);
+                throw Error(ErrorKind::unsupported, "physics vertices exceed limit",
+                            p + 64 + object_field_shift);
+            const auto groups =
+                list(p + 80 + object_field_shift + static_cast<std::size_t>(vertices) * 8, *ob);
             for (std::size_t type = 0; type < groups.size(); ++type)
                 for (auto e : list(groups[type], *ob)) {
                     const auto er = record(e, *ob, 8);
@@ -1790,7 +1798,8 @@ struct GameSession::Impl {
                 const auto effect_count = header.u32(44);
                 if (effect_count > 4096)
                     throw Error(ErrorKind::malformed, "room layer effect property limit", layer_offset + 44);
-                const auto layer_data_offset = layer_offset + 48 + static_cast<std::size_t>(effect_count) * 12;
+                const auto layer_data_offset =
+                    layer_offset + 48 + static_cast<std::size_t>(effect_count) * 12;
                 if (effect_count)
                     (void)record(layer_offset + 48, *ro, static_cast<std::size_t>(effect_count) * 12);
                 if (layer.type == 2) {
@@ -1878,9 +1887,9 @@ struct GameSession::Impl {
                     const auto cell_count = static_cast<std::uint64_t>(columns) * rows;
                     if (cell_count > 1'000'000)
                         throw Error(ErrorKind::malformed, "room tilemap cell limit", layer_data_offset);
-                    const auto data = record(layer_data_offset,
-                                             *ro,
-                                             12 + static_cast<std::size_t>(cell_count) * sizeof(std::uint32_t));
+                    const auto data =
+                        record(layer_data_offset, *ro,
+                               12 + static_cast<std::size_t>(cell_count) * sizeof(std::uint32_t));
                     for (std::uint32_t y = 0; y < rows; ++y)
                         for (std::uint32_t x = 0; x < columns; ++x) {
                             const auto tile = data.u32(12 + (static_cast<std::size_t>(y) * columns + x) * 4);
@@ -2196,8 +2205,8 @@ struct GameSession::Impl {
     }
     void event(InstancePtr inst, int type, int subtype, int object = -1, InstancePtr other = {}) {
         const bool profile_draw_event = profile_tick_timing && type == 8;
-        const auto draw_event_start = profile_draw_event ? std::chrono::steady_clock::now()
-                                                         : std::chrono::steady_clock::time_point{};
+        const auto draw_event_start =
+            profile_draw_event ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         struct DrawEventProfileGuard {
             double &total;
             std::size_t &depth;
@@ -2214,12 +2223,13 @@ struct GameSession::Impl {
             ~DrawEventProfileGuard() {
                 if (enabled) {
                     --depth;
-                    total += std::chrono::duration<double, std::milli>(
-                                 std::chrono::steady_clock::now() - start)
-                                 .count();
+                    total +=
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                            .count();
                 }
             }
-        } draw_event_profile_guard{last_draw_event_ms, draw_event_depth, profile_draw_event, draw_event_start};
+        } draw_event_profile_guard{last_draw_event_ms, draw_event_depth, profile_draw_event,
+                                   draw_event_start};
         if (!inst->alive || inst->deactivated)
             return;
         // In ordinary event execution, GML's `other` resolves to the current
@@ -2246,8 +2256,8 @@ struct GameSession::Impl {
         for (const auto entry : event_code->code)
             wiiu_load_trace(std::string("event-code object=") + std::string(definition.name) +
                             " owner=" + std::string(objects[static_cast<std::size_t>(owner)].name) +
-                            " code=" + std::to_string(entry) + " name=" +
-                            std::string(package.code_name(static_cast<std::size_t>(entry))));
+                            " code=" + std::to_string(entry) +
+                            " name=" + std::string(package.code_name(static_cast<std::size_t>(entry))));
 #endif
         event_stack.push_back({type, subtype, owner});
         struct Guard {
@@ -2256,7 +2266,6 @@ struct GameSession::Impl {
         } guard{event_stack};
         for (const auto entry : event_code->code)
             execute(entry, inst, {}, other);
-
     }
     int audio_recorder_count() const {
 #if REGML_WITH_SDL2 && !REGML_WEB
@@ -2312,7 +2321,8 @@ struct GameSession::Impl {
             SDL_UnlockAudioDevice(recorder.device);
             if (raw.empty() || recorder.format.freq <= 0 || recorder.format.channels == 0)
                 continue;
-            const auto frame_bytes = static_cast<std::size_t>(recorder.format.channels) * sizeof(std::int16_t);
+            const auto frame_bytes =
+                static_cast<std::size_t>(recorder.format.channels) * sizeof(std::int16_t);
             const auto input_frames = raw.size() / frame_bytes;
             const auto *input = reinterpret_cast<const std::int16_t *>(raw.data());
             std::vector<std::int16_t> mono;
@@ -2509,8 +2519,8 @@ struct GameSession::Impl {
             wiiu_load_trace("room-events.begin");
             for (std::size_t i = 0; i < placed_instances.size(); ++i) {
                 const auto &p = room.instances[i];
-                const auto instance_stage = std::string("instance=") + std::to_string(i) +
-                                            " object=" + std::to_string(p.object);
+                const auto instance_stage =
+                    std::string("instance=") + std::to_string(i) + " object=" + std::to_string(p.object);
                 wiiu_load_trace(instance_stage + " event14.begin");
                 event(placed_instances[i], 14, 0);
                 wiiu_load_trace(instance_stage + " event14.end");
@@ -2574,10 +2584,9 @@ struct GameSession::Impl {
         }
 #endif
         ++depth;
-        const auto program_index = gmrt_project
-                                       ? std::numeric_limits<std::size_t>::max()
-                                       : (linked.shared_code ? linked.code_to_program.at(code)
-                                                             : static_cast<std::size_t>(code));
+        const auto program_index = gmrt_project ? std::numeric_limits<std::size_t>::max()
+                                                : (linked.shared_code ? linked.code_to_program.at(code)
+                                                                      : static_cast<std::size_t>(code));
         active_program_stack[depth - 1] = program_index;
         struct Guard {
             std::size_t &depth;
@@ -2630,39 +2639,38 @@ struct GameSession::Impl {
             std::vector<std::string> recent_gmrt_instructions;
             GmrtVmOptions vm_options;
             if (std::getenv("REGML_GMRT_DEBUG"))
-                vm_options.trace = [&](const GmrtFunction &function,
-                                   const GmrtBlock &,
-                                   const GmrtInstruction &instruction,
-                                   std::span<const Value> registers) {
-                std::string text = function.global_name.empty() ? function.symbol : function.global_name;
-                text += " " + std::string(gmrt_opcode_name(instruction.opcode));
-                for (const auto operand : instruction.arguments)
-                    text += " " + std::to_string(operand);
-                if (instruction.opcode == 19 && instruction.arguments.size() > 1 &&
-                    instruction.arguments[1] < function.constants.size()) {
-                    const auto &constant = function.constants[instruction.arguments[1]];
-                    text += " const-kind=" + std::to_string(static_cast<unsigned>(constant.kind));
-                    if (const auto *constant_text = std::get_if<std::string>(&constant.value))
-                        text += ":" + *constant_text;
-                    if (const auto *constant_number = std::get_if<std::int32_t>(&constant.value))
-                        text += ":" + std::to_string(*constant_number);
-                    if (const auto *constant_real = std::get_if<double>(&constant.value))
-                        text += ":" + std::to_string(*constant_real);
-                }
-                if (instruction.opcode == 0 && instruction.arguments.size() >= 3 &&
-                    instruction.arguments[1] < registers.size() && instruction.arguments[2] < registers.size()) {
-                    const auto &left = registers[instruction.arguments[1]];
-                    const auto &right = registers[instruction.arguments[2]];
-                    text += " values=" + std::to_string(left.index()) + "," +
-                            std::to_string(right.index());
-                    if (value_is_string(left))
-                        text += ":" + std::string(value_string_view(left));
-                    if (value_is_string(right))
-                        text += ":" + std::string(value_string_view(right));
-                }
-                recent_gmrt_instructions.push_back(std::move(text));
-                if (recent_gmrt_instructions.size() > 8)
-                    recent_gmrt_instructions.erase(recent_gmrt_instructions.begin());
+                vm_options.trace = [&](const GmrtFunction &function, const GmrtBlock &,
+                                       const GmrtInstruction &instruction, std::span<const Value> registers) {
+                    std::string text = function.global_name.empty() ? function.symbol : function.global_name;
+                    text += " " + std::string(gmrt_opcode_name(instruction.opcode));
+                    for (const auto operand : instruction.arguments)
+                        text += " " + std::to_string(operand);
+                    if (instruction.opcode == 19 && instruction.arguments.size() > 1 &&
+                        instruction.arguments[1] < function.constants.size()) {
+                        const auto &constant = function.constants[instruction.arguments[1]];
+                        text += " const-kind=" + std::to_string(static_cast<unsigned>(constant.kind));
+                        if (const auto *constant_text = std::get_if<std::string>(&constant.value))
+                            text += ":" + *constant_text;
+                        if (const auto *constant_number = std::get_if<std::int32_t>(&constant.value))
+                            text += ":" + std::to_string(*constant_number);
+                        if (const auto *constant_real = std::get_if<double>(&constant.value))
+                            text += ":" + std::to_string(*constant_real);
+                    }
+                    if (instruction.opcode == 0 && instruction.arguments.size() >= 3 &&
+                        instruction.arguments[1] < registers.size() &&
+                        instruction.arguments[2] < registers.size()) {
+                        const auto &left = registers[instruction.arguments[1]];
+                        const auto &right = registers[instruction.arguments[2]];
+                        text +=
+                            " values=" + std::to_string(left.index()) + "," + std::to_string(right.index());
+                        if (value_is_string(left))
+                            text += ":" + std::string(value_string_view(left));
+                        if (value_is_string(right))
+                            text += ":" + std::string(value_string_view(right));
+                    }
+                    recent_gmrt_instructions.push_back(std::move(text));
+                    if (recent_gmrt_instructions.size() > 8)
+                        recent_gmrt_instructions.erase(recent_gmrt_instructions.begin());
                 };
             auto instance_for_value = [&](const Value &value) -> InstancePtr {
                 const auto *handle = std::get_if<StructPtr>(&value);
@@ -2791,18 +2799,15 @@ struct GameSession::Impl {
                     (*structure)->variables[name] = value;
                 }
             };
-            context.call = [&](std::string_view name,
-                               std::uint16_t,
-                               const Value &call_self,
-                               const Value &call_other,
-                               const Value &scope,
+            context.call = [&](std::string_view name, std::uint16_t, const Value &call_self,
+                               const Value &call_other, const Value &scope,
                                std::span<const Value> call_arguments) -> Value {
                 try {
                     return call(name, call_arguments, instance_for_value(call_self),
                                 instance_for_value(call_other), struct_for_value(scope));
                 } catch (const Error &error) {
-                    std::string message = "GMIR builtin " + std::string(name) + ": " + error.what() +
-                                          " (argument types";
+                    std::string message =
+                        "GMIR builtin " + std::string(name) + ": " + error.what() + " (argument types";
                     for (const auto &argument : call_arguments)
                         message += " " + std::to_string(argument.index());
                     message += ")";
@@ -2811,25 +2816,24 @@ struct GameSession::Impl {
                         message += "\n  " + instruction;
                     throw Error(error.kind(), std::move(message), error.offset());
                 } catch (const std::exception &error) {
-                    throw Error(ErrorKind::vm,
-                                "GMIR builtin " + std::string(name) + ": " + error.what());
+                    throw Error(ErrorKind::vm, "GMIR builtin " + std::string(name) + ": " + error.what());
                 }
             };
             GmrtVmResult result;
             try {
-                result = execute_gmrt(gmrt_modules, reference.module, reference.function,
-                                      std::move(context), std::move(vm_options));
+                result = execute_gmrt(gmrt_modules, reference.module, reference.function, std::move(context),
+                                      std::move(vm_options));
             } catch (const Error &error) {
-                std::string message = "GMIR " + gmrt_modules.at(reference.module)
-                                                   .functions.at(reference.function)
-                                                   .global_name + ": " + error.what() + " at";
+                std::string message =
+                    "GMIR " + gmrt_modules.at(reference.module).functions.at(reference.function).global_name +
+                    ": " + error.what() + " at";
                 for (const auto &instruction : recent_gmrt_instructions)
                     message += "\n  " + instruction;
                 throw Error(error.kind(), std::move(message), error.offset());
             } catch (const std::exception &error) {
-                std::string message = "GMIR " + gmrt_modules.at(reference.module)
-                                                   .functions.at(reference.function)
-                                                   .global_name + ": " + error.what() + " at";
+                std::string message =
+                    "GMIR " + gmrt_modules.at(reference.module).functions.at(reference.function).global_name +
+                    ": " + error.what() + " at";
                 for (const auto &instruction : recent_gmrt_instructions)
                     message += "\n  " + instruction;
                 throw Error(ErrorKind::vm, std::move(message));
@@ -2952,21 +2956,20 @@ struct GameSession::Impl {
                     wiiu_load_trace(std::string("launch-param-step pc=") + std::to_string(pc) +
                                     " opcode=" + std::string(opcode_name(opcode)));
                 if (event_budget % 1000 == 0)
-                    wiiu_load_trace(std::string("instruction-progress count=") +
-                                    std::to_string(event_budget) + " code=" +
-                                    std::string(package.code_name(static_cast<std::size_t>(code))) +
-                                    " pc=" + std::to_string(pc) + " opcode=" +
-                                    std::string(opcode_name(opcode)));
+                    wiiu_load_trace(
+                        std::string("instruction-progress count=") + std::to_string(event_budget) +
+                        " code=" + std::string(package.code_name(static_cast<std::size_t>(code))) +
+                        " pc=" + std::to_string(pc) + " opcode=" + std::string(opcode_name(opcode)));
 #endif
 #if REGML_PS2
                 regml_ps2_active_pc = static_cast<std::uint32_t>(pc);
                 regml_ps2_active_opcode = static_cast<std::uint32_t>(opcode);
                 regml_ps2_active_symbol = ins.symbol_id;
 #endif
-                current_stack_type = opcode == Opcode::call || opcode == Opcode::call_v ||
-                                             opcode == Opcode::extended
-                                          ? DataType::variable
-                                          : ins.type1;
+                current_stack_type =
+                    opcode == Opcode::call || opcode == Opcode::call_v || opcode == Opcode::extended
+                        ? DataType::variable
+                        : ins.type1;
                 if (opcode == Opcode::cmp) {
                     current_stack_type = DataType::boolean;
                 } else if (opcode == Opcode::neg || opcode == Opcode::bit_not) {
@@ -3010,10 +3013,9 @@ struct GameSession::Impl {
                     const bool side_effect_variable =
                         ins.symbol_id != Instruction::no_symbol &&
                         (linked.variables[id].name == "depth" || linked.variables[id].name == "layer" ||
-                         (writing && (linked.variables[id].name == "speed" ||
-                                      linked.variables[id].name == "direction" ||
-                                      linked.variables[id].name == "hspeed" ||
-                                      linked.variables[id].name == "vspeed")));
+                         (writing &&
+                          (linked.variables[id].name == "speed" || linked.variables[id].name == "direction" ||
+                           linked.variables[id].name == "hspeed" || linked.variables[id].name == "vspeed")));
                     if (ins.symbol_id != Instruction::no_symbol && !side_effect_variable && kind == 0xa0) {
                         auto &cached = scratch.variable_cache[id % scratch.variable_cache.size()];
                         if (cached.generation == variable_cache_generation && cached.symbol == id &&
@@ -3048,18 +3050,16 @@ struct GameSession::Impl {
                     std::string_view name = symbol.name;
 #if REGML_WIIU
                     if (code == 44 && pc == 24)
-                        wiiu_load_trace(std::string("local-store symbol=") + std::to_string(id) +
-                                        " length=" + std::to_string(name.size()) + " name=" +
-                                        std::string(name));
+                        wiiu_load_trace(std::string("local-store symbol=") + std::to_string(id) + " length=" +
+                                        std::to_string(name.size()) + " name=" + std::string(name));
 #endif
                     int scope = encoded_scope;
                     int array_index = -1;
                     StructPtr explicit_struct;
-                    const bool dynamic_local = name == "undefined" || name == "instance_count" ||
-                                               name.starts_with("bbox_") || name.starts_with("argument[") ||
-                                               name == "sprite_width" || name == "sprite_height" ||
-                                               name == "sprite_xoffset" || name == "sprite_yoffset" ||
-                                               name == "image_number";
+                    const bool dynamic_local =
+                        name == "undefined" || name == "instance_count" || name.starts_with("bbox_") ||
+                        name.starts_with("argument[") || name == "sprite_width" || name == "sprite_height" ||
+                        name == "sprite_xoffset" || name == "sprite_yoffset" || name == "image_number";
                     if (kind == 0 || kind == 0x10 || kind == 0x90) {
                         array_index = number(pop());
                         if (array_index < 0 || array_index >= 32000 * 32000)
@@ -3078,7 +3078,8 @@ struct GameSession::Impl {
                         const auto receiver = pop();
                         if (const auto *object = std::get_if<StructPtr>(&receiver))
                             explicit_struct = *object;
-                        else if (const auto *callable = std::get_if<CallablePtr>(&receiver); callable && *callable) {
+                        else if (const auto *callable = std::get_if<CallablePtr>(&receiver);
+                                 callable && *callable) {
                             if (!(*callable)->properties)
                                 (*callable)->properties = make_struct();
                             explicit_struct = (*callable)->properties;
@@ -3160,11 +3161,9 @@ struct GameSession::Impl {
                             !locals.contains(name))
                             return static_cast<std::int32_t>(arguments.size());
                         if (!writing && store == &locals && !locals.contains(name) &&
-                            name.starts_with("argument") &&
-                            name.size() > 8 &&
-                            std::all_of(name.begin() + 8, name.end(), [](unsigned char ch) {
-                                return std::isdigit(ch) != 0;
-                            }))
+                            name.starts_with("argument") && name.size() > 8 &&
+                            std::all_of(name.begin() + 8, name.end(),
+                                        [](unsigned char ch) { return std::isdigit(ch) != 0; }))
                             return std::monostate{};
                         if (store == &locals && name.starts_with("argument[") && store->contains(name)) {
                             if (writing)
@@ -3180,7 +3179,7 @@ struct GameSession::Impl {
                                     return writing ? value : flat->second;
                                 }
                                 if (!writing && kind != 0x90)
-                                        return std::monostate{};
+                                    return std::monostate{};
                                 base = store->emplace(symbol.name, ArrayPtr(new ArrayValue)).first;
                             }
                             auto *array = std::get_if<ArrayPtr>(&base->second);
@@ -3200,8 +3199,8 @@ struct GameSession::Impl {
                                     !std::get<ArrayPtr>(*element)) {
                                     (*array)->elements[array_index] = ArrayPtr(new ArrayValue);
                                     auto &length = (*array)->row_lengths[row];
-                                    length = std::max<std::int32_t>(
-                                        length, static_cast<std::int32_t>(col + 1));
+                                    length =
+                                        std::max<std::int32_t>(length, static_cast<std::int32_t>(col + 1));
                                 }
                                 return (*array)->elements.at(array_index);
                             }
@@ -3212,8 +3211,7 @@ struct GameSession::Impl {
                                     throw Error(ErrorKind::vm, "array element limit reached");
                                 (*array)->elements[array_index] = value;
                                 auto &length = (*array)->row_lengths[row];
-                                length = std::max<std::int32_t>(
-                                    length, static_cast<std::int32_t>(col + 1));
+                                length = std::max<std::int32_t>(length, static_cast<std::int32_t>(col + 1));
                                 return value;
                             }
                             const auto length = (*array)->row_lengths.find(row);
@@ -3496,9 +3494,8 @@ struct GameSession::Impl {
                 case Opcode::shl:
                 case Opcode::shr: {
                     const auto right = pop(), left = pop();
-                    if (opcode == Opcode::cmp &&
-                        (std::holds_alternative<std::monostate>(left) ||
-                         std::holds_alternative<std::monostate>(right))) {
+                    if (opcode == Opcode::cmp && (std::holds_alternative<std::monostate>(left) ||
+                                                  std::holds_alternative<std::monostate>(right))) {
                         const bool equal = std::holds_alternative<std::monostate>(left) &&
                                            std::holds_alternative<std::monostate>(right);
                         if (ins.comparison() == 3)
@@ -3531,11 +3528,11 @@ struct GameSession::Impl {
                             throw Error(ErrorKind::unsupported, "string arithmetic");
                         break;
                     }
-                    if (opcode == Opcode::cmp &&
-                        (ins.comparison() == 3 || ins.comparison() == 4)) {
+                    if (opcode == Opcode::cmp && (ins.comparison() == 3 || ins.comparison() == 4)) {
                         const auto is_numeric = [](const Value &value) {
                             return std::holds_alternative<std::int32_t>(value) ||
-                                   std::holds_alternative<double>(value) || std::holds_alternative<bool>(value);
+                                   std::holds_alternative<double>(value) ||
+                                   std::holds_alternative<bool>(value);
                         };
                         bool equal = false;
                         if (is_numeric(left) && is_numeric(right)) {
@@ -3597,7 +3594,7 @@ struct GameSession::Impl {
                         break;
                     case Opcode::shl:
                         push(regml::bit_cast<std::int32_t>(static_cast<std::uint32_t>(number(left))
-                                                         << (static_cast<unsigned>(number(right)) & 31)));
+                                                           << (static_cast<unsigned>(number(right)) & 31)));
                         break;
                     case Opcode::shr:
                         push(static_cast<std::int32_t>(number(left) >>
@@ -3650,10 +3647,11 @@ struct GameSession::Impl {
                     Value result;
                     if (const auto *callable = std::get_if<CallablePtr>(&function)) {
                         if (!*callable || !(*callable)->invoke)
-                            throw Error(ErrorKind::vm, "CALLV received an empty callable", program.origin + pc);
+                            throw Error(ErrorKind::vm, "CALLV received an empty callable",
+                                        program.origin + pc);
                         const auto caller = instance_for_value(receiver, self, other);
-                        result = (*callable)->invoke(args,
-                                                     caller ? std::optional<int>{caller->id} : std::nullopt);
+                        result =
+                            (*callable)->invoke(args, caller ? std::optional<int>{caller->id} : std::nullopt);
                     } else if (const auto *reference = std::get_if<FunctionReference>(&function)) {
                         if (const auto *object = std::get_if<StructPtr>(&receiver))
                             result = invoke_function(reference->symbol_id, args, {}, other, *object);
@@ -3661,7 +3659,8 @@ struct GameSession::Impl {
                             result = invoke_function(reference->symbol_id, args,
                                                      instance_for_value(receiver, self, other), other);
                     } else {
-                        throw Error(ErrorKind::unsupported, "CALLV requires a function value", program.origin + pc);
+                        throw Error(ErrorKind::unsupported, "CALLV requires a function value",
+                                    program.origin + pc);
                     }
 #if REGML_PS2
                     regml_ps2_active_code_name = active_code_name.data();
@@ -3719,11 +3718,21 @@ struct GameSession::Impl {
                                 if (particle_scope_traces++ < 32) {
                                     std::cerr << "particle struct scope pc=" << std::hex
                                               << (program.origin + pc) << std::dec;
-                                    constexpr std::string_view fields[] = {
-                                        "timer",          "x",                "y",           "hspeed",
-                                        "vspeed",         "gravity",          "friction",    "image_index",
-                                        "image_speed",    "image_alpha",      "fadeout_speed", "sprite_index",
-                                        "animation_mode", "lifetime",         "particle_step_func"};
+                                    constexpr std::string_view fields[] = {"timer",
+                                                                           "x",
+                                                                           "y",
+                                                                           "hspeed",
+                                                                           "vspeed",
+                                                                           "gravity",
+                                                                           "friction",
+                                                                           "image_index",
+                                                                           "image_speed",
+                                                                           "image_alpha",
+                                                                           "fadeout_speed",
+                                                                           "sprite_index",
+                                                                           "animation_mode",
+                                                                           "lifetime",
+                                                                           "particle_step_func"};
                                     for (const auto field : fields) {
                                         const auto value = struct_target->variables.find(field);
                                         std::cerr << " " << field << '='
@@ -3849,8 +3858,8 @@ struct GameSession::Impl {
                                 !std::get<ArrayPtr>(*found)) {
                                 (*array)->elements[index] = ArrayPtr(new ArrayValue);
                                 auto &length = (*array)->row_lengths[index / 32000];
-                                length = std::max<std::int32_t>(
-                                    length, static_cast<std::int32_t>(index % 32000 + 1));
+                                length = std::max<std::int32_t>(length,
+                                                                static_cast<std::int32_t>(index % 32000 + 1));
                             }
                             push((*array)->elements.at(index));
                         }
@@ -3863,8 +3872,7 @@ struct GameSession::Impl {
                             throw Error(ErrorKind::vm, "invalid multi-dimensional array assignment");
                         (*array)->elements[index] = value;
                         auto &length = (*array)->row_lengths[index / 32000];
-                        length = std::max<std::int32_t>(
-                            length, static_cast<std::int32_t>(index % 32000 + 1));
+                        length = std::max<std::int32_t>(length, static_cast<std::int32_t>(index % 32000 + 1));
                     } else if (sub == -5) {
                         (void)pop();
                     } else if (sub == -8 || sub == -9) {
@@ -3893,8 +3901,8 @@ struct GameSession::Impl {
             current_code = code;
             current_vm_address = program.origin + last_instruction_pc;
         } catch (const Error &e) {
-            if (!e.offset() || (*e.offset() >= program.origin &&
-                                *e.offset() < program.origin + program.byte_length))
+            if (!e.offset() ||
+                (*e.offset() >= program.origin && *e.offset() < program.origin + program.byte_length))
                 current_code = code;
             current_vm_address = e.offset().value_or(program.origin + pc);
             std::string error_text = e.what();
@@ -3907,8 +3915,8 @@ struct GameSession::Impl {
                     instruction_pc = absolute_offset - program.origin;
                 error_text += " [instruction pc=" + std::to_string(instruction_pc);
                 if (const auto instruction_index = program.instruction_at(instruction_pc))
-                    error_text += " opcode=" + std::string(
-                        opcode_name(program.instructions[*instruction_index].opcode()));
+                    error_text += " opcode=" +
+                                  std::string(opcode_name(program.instructions[*instruction_index].opcode()));
                 error_text += "]";
             }
 #if REGML_PS2
@@ -3993,8 +4001,8 @@ struct GameSession::Impl {
         int count = requested;
         if (emitter.relative) {
             const double area = std::fabs((emitter.x_max - emitter.x_min) * (emitter.y_max - emitter.y_min));
-            count = static_cast<int>(std::clamp(std::ceil(area * std::max(0, requested) / 100.0 / 256.0),
-                                                0.0, 10'000.0));
+            count = static_cast<int>(
+                std::clamp(std::ceil(area * std::max(0, requested) / 100.0 / 256.0), 0.0, 10'000.0));
         } else if (count < 0) {
             std::uniform_int_distribution<int> chance(1, std::min(100'000, -count));
             count = chance(random) == 1 ? 1 : 0;
@@ -4025,9 +4033,9 @@ struct GameSession::Impl {
                 const double angle = unit_random(random) * 2 * 3.141592653589793;
                 const double u = unit_random(random);
                 const double v = unit_random(random);
-                double radius = emitter.distribution == 1 ? (u + v) * 0.5
-                                 : emitter.distribution == 2 ? 1.0 - (u + v) * 0.5
-                                                             : std::sqrt(u);
+                double radius = emitter.distribution == 1   ? (u + v) * 0.5
+                                : emitter.distribution == 2 ? 1.0 - (u + v) * 0.5
+                                                            : std::sqrt(u);
                 if (emitter.shape == 2)
                     radius = shaped_unit(emitter.distribution);
                 const double rx = (emitter.x_max - emitter.x_min) * 0.5;
@@ -4041,7 +4049,8 @@ struct GameSession::Impl {
             }
             ParticleState particle;
             particle.type = type_id;
-            particle.life = std::max(1, static_cast<int>(std::round(random_between(type.life_min, type.life_max))));
+            particle.life =
+                std::max(1, static_cast<int>(std::round(random_between(type.life_min, type.life_max))));
             particle.x = x;
             particle.y = y;
             particle.direction = random_between(type.direction_min, type.direction_max);
@@ -4065,8 +4074,7 @@ struct GameSession::Impl {
             if (name.starts_with("draw_text"))
                 draw_builtin_category = 0;
             else if (name.starts_with("draw_sprite") || name.starts_with("draw_background") ||
-                     name.starts_with("draw_surface") || name.starts_with("draw_tile") ||
-                     name == "draw_self")
+                     name.starts_with("draw_surface") || name.starts_with("draw_tile") || name == "draw_self")
                 draw_builtin_category = 1;
             else if (name.starts_with("draw_"))
                 draw_builtin_category = 2;
@@ -4074,8 +4082,8 @@ struct GameSession::Impl {
                 draw_builtin_category = 3;
         }
         const bool profile_draw_builtin = draw_builtin_category >= 0;
-        const auto draw_builtin_start = profile_draw_builtin ? std::chrono::steady_clock::now()
-                                                             : std::chrono::steady_clock::time_point{};
+        const auto draw_builtin_start =
+            profile_draw_builtin ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         struct DrawBuiltinProfileGuard {
             double &total;
             std::array<double, 4> &categories;
@@ -4089,9 +4097,9 @@ struct GameSession::Impl {
             std::span<const Value> arguments;
             ~DrawBuiltinProfileGuard() {
                 if (enabled) {
-                    const double elapsed = std::chrono::duration<double, std::milli>(
-                                               std::chrono::steady_clock::now() - start)
-                                               .count();
+                    const double elapsed =
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                            .count();
                     total += elapsed;
                     categories[static_cast<std::size_t>(category)] += elapsed;
                     if (elapsed > maximum) {
@@ -4124,16 +4132,22 @@ struct GameSession::Impl {
                     }
                 }
             }
-        } draw_builtin_profile_guard{last_draw_builtin_ms, last_draw_builtin_categories,
-                                     max_draw_builtin_call_ms, slowest_draw_builtin,
-                                     slowest_draw_builtin_details, draw_builtin_category,
-                                     profile_draw_builtin, draw_builtin_start, name, args};
+        } draw_builtin_profile_guard{last_draw_builtin_ms,
+                                     last_draw_builtin_categories,
+                                     max_draw_builtin_call_ms,
+                                     slowest_draw_builtin,
+                                     slowest_draw_builtin_details,
+                                     draw_builtin_category,
+                                     profile_draw_builtin,
+                                     draw_builtin_start,
+                                     name,
+                                     args};
         auto n = [&](std::size_t i) {
             if (i >= args.size())
                 throw Error(ErrorKind::vm, "missing built-in argument");
             const auto &argument = args[i];
-            if (std::holds_alternative<std::int32_t>(argument) ||
-                std::holds_alternative<double>(argument) || std::holds_alternative<bool>(argument))
+            if (std::holds_alternative<std::int32_t>(argument) || std::holds_alternative<double>(argument) ||
+                std::holds_alternative<bool>(argument))
                 return value_number(argument);
             if (std::holds_alternative<std::monostate>(argument))
                 return 0.0;
@@ -4145,9 +4159,8 @@ struct GameSession::Impl {
                 while (end && *end && std::isspace(static_cast<unsigned char>(*end)))
                     ++end;
                 if (end == source.c_str() || !end || *end || errno == ERANGE || !std::isfinite(converted))
-                    throw Error(ErrorKind::vm,
-                                "cannot convert string argument " + std::to_string(i) + " to a number for " +
-                                    std::string(name));
+                    throw Error(ErrorKind::vm, "cannot convert string argument " + std::to_string(i) +
+                                                   " to a number for " + std::string(name));
                 return converted;
             }
             if (const auto *structure = std::get_if<StructPtr>(&argument); structure && *structure) {
@@ -4155,9 +4168,8 @@ struct GameSession::Impl {
                     instance != gmrt_instance_values.end() && instance->second && instance->second->alive)
                     return static_cast<double>(instance->second->id);
             }
-            throw Error(ErrorKind::vm,
-                        "numeric argument " + std::to_string(i) + " to " + std::string(name) +
-                            " cannot convert " + value_text(argument) + " to a number");
+            throw Error(ErrorKind::vm, "numeric argument " + std::to_string(i) + " to " + std::string(name) +
+                                           " cannot convert " + value_text(argument) + " to a number");
         };
         auto text = [&](std::size_t i) {
             if (i >= args.size())
@@ -4224,8 +4236,8 @@ struct GameSession::Impl {
                         return std::string{};
                     path.erase(0, start);
                 }
-                while (!path.empty() && (path.back() == '"' || path.back() == '\'' ||
-                                         path.back() == ')' || path.back() == ','))
+                while (!path.empty() && (path.back() == '"' || path.back() == '\'' || path.back() == ')' ||
+                                         path.back() == ','))
                     path.pop_back();
                 return path;
             };
@@ -4276,9 +4288,8 @@ struct GameSession::Impl {
                                 add_candidate(requested_path);
                             add_candidate(requested_path / "data.win");
                             add_candidate(requested_path / "game.win");
-                            working_directory = requested_path.has_extension()
-                                                    ? requested_path.parent_path()
-                                                    : std::move(requested_path);
+                            working_directory = requested_path.has_extension() ? requested_path.parent_path()
+                                                                               : std::move(requested_path);
                         }
                     } else if (!value.empty() && !working_directory) {
                         auto requested_path = clean_path(value);
@@ -4288,9 +4299,8 @@ struct GameSession::Impl {
                 }
             }
             if (working_directory) {
-                const auto package_name = launch_package
-                                              ? launch_package->filename()
-                                              : std::filesystem::path("data.win");
+                const auto package_name =
+                    launch_package ? launch_package->filename() : std::filesystem::path("data.win");
                 add_candidate(*working_directory / package_name);
                 add_candidate(*working_directory / "data.win");
             }
@@ -4329,9 +4339,9 @@ struct GameSession::Impl {
                 const auto layer_name = value_text(args[index]);
                 if (current_room >= 0 && static_cast<std::size_t>(current_room) < rooms.size()) {
                     const auto &current = rooms[static_cast<std::size_t>(current_room)];
-                    const auto found = std::find_if(
-                        current.layers.begin(), current.layers.end(),
-                        [&](const RoomLayer &layer) { return layer.name == layer_name; });
+                    const auto found =
+                        std::find_if(current.layers.begin(), current.layers.end(),
+                                     [&](const RoomLayer &layer) { return layer.name == layer_name; });
                     if (found != current.layers.end())
                         return found->id;
                 }
@@ -4378,10 +4388,9 @@ struct GameSession::Impl {
             if (current_room < 0 || static_cast<std::size_t>(current_room) >= rooms.size())
                 return nullptr;
             auto &current = rooms[static_cast<std::size_t>(current_room)];
-            const auto found = std::find_if(current.layers.begin(), current.layers.end(),
-                                             [&](const RoomLayer &layer) {
-                                                 return layer.tile_element_id == id;
-                                             });
+            const auto found =
+                std::find_if(current.layers.begin(), current.layers.end(),
+                             [&](const RoomLayer &layer) { return layer.tile_element_id == id; });
             return found == current.layers.end() ? nullptr : &*found;
         };
         auto move_layer = [&](RoomLayer &layer, double x, double y) {
@@ -4503,24 +4512,27 @@ struct GameSession::Impl {
                 const double t = std::clamp(static_cast<double>(particle.age) /
                                                 static_cast<double>(std::max(1, particle.life)),
                                             0.0, 1.0);
-                const double alpha = t < 0.5 ? settings.alpha[0] + (settings.alpha[1] - settings.alpha[0]) * (t * 2)
-                                             : settings.alpha[1] + (settings.alpha[2] - settings.alpha[1]) * ((t - 0.5) * 2);
+                const double alpha =
+                    t < 0.5 ? settings.alpha[0] + (settings.alpha[1] - settings.alpha[0]) * (t * 2)
+                            : settings.alpha[1] + (settings.alpha[2] - settings.alpha[1]) * ((t - 0.5) * 2);
                 const int sprite = settings.sprite;
                 if (sprite >= 0 && assets.sprite_exists(sprite)) {
                     const auto count = assets.sprite(sprite).frames.size();
-                    const double image = count ? std::fmod(std::max(0.0, particle.image_index),
-                                                           static_cast<double>(count)) : 0;
+                    const double image =
+                        count ? std::fmod(std::max(0.0, particle.image_index), static_cast<double>(count))
+                              : 0;
                     const double sx = particle.size * settings.scale_x;
                     const double sy = (settings.stretch ? std::max(0.25, particle.speed) : particle.size) *
                                       settings.scale_y;
-                    assets.draw_sprite(current_canvas(), sprite, image, particle.x, particle.y, sx, sy,
-                                       0, 0xffffff, alpha);
+                    assets.draw_sprite(current_canvas(), sprite, image, particle.x, particle.y, sx, sy, 0,
+                                       0xffffff, alpha);
                 } else {
                     current_canvas().color(0xffffff);
                     current_canvas().alpha(alpha);
                     assets.draw_circle(
                         current_canvas(), particle.x, particle.y,
-                        std::max(1.0, particle.size * std::max(settings.scale_x, settings.scale_y) * 2), false);
+                        std::max(1.0, particle.size * std::max(settings.scale_x, settings.scale_y) * 2),
+                        false);
                 }
             }
             draw_color = previous_color;
@@ -4569,10 +4581,11 @@ struct GameSession::Impl {
                 if (property_name == "length")
                     return true;
                 int index = -1;
-                const auto parsed = std::from_chars(property_name.data(),
-                                                    property_name.data() + property_name.size(), index);
-                return parsed.ec == std::errc{} && parsed.ptr == property_name.data() + property_name.size() &&
-                       index >= 0 && elements.contains(index);
+                const auto parsed =
+                    std::from_chars(property_name.data(), property_name.data() + property_name.size(), index);
+                return parsed.ec == std::errc{} &&
+                       parsed.ptr == property_name.data() + property_name.size() && index >= 0 &&
+                       elements.contains(index);
             }
             return false;
         }
@@ -4587,15 +4600,14 @@ struct GameSession::Impl {
                 existing_callable = *function;
                 symbol_id = existing_callable->symbol_id;
             }
-            if (symbol_id == Instruction::no_symbol &&
-                (!existing_callable || !existing_callable->invoke))
+            if (symbol_id == Instruction::no_symbol && (!existing_callable || !existing_callable->invoke))
                 throw Error(ErrorKind::unsupported, "method requires a function or callable value");
             InstancePtr target;
             StructPtr target_struct;
             if (const auto *value = std::get_if<StructPtr>(&args[0])) {
                 target_struct = *value;
             } else if (struct_self && std::holds_alternative<std::int32_t>(args[0]) &&
-                     std::get<std::int32_t>(args[0]) == -1)
+                       std::get<std::int32_t>(args[0]) == -1)
                 target_struct = struct_self;
             else if (!std::holds_alternative<std::monostate>(args[0]))
                 target = instance_for_value(args[0], self, other);
@@ -4603,8 +4615,8 @@ struct GameSession::Impl {
             callable->symbol_id = symbol_id;
             callable->bound_struct = target_struct;
             if (symbol_id != Instruction::no_symbol)
-                callable->invoke = [this, symbol_id, target, target_struct](
-                                       std::span<const Value> call_args, std::optional<int> other_id) {
+                callable->invoke = [this, symbol_id, target, target_struct](std::span<const Value> call_args,
+                                                                            std::optional<int> other_id) {
                     InstancePtr call_other;
                     if (other_id)
                         for (const auto &instance : instances)
@@ -4633,8 +4645,8 @@ struct GameSession::Impl {
                 throw Error(ErrorKind::unsupported, "@@NewGMLObject@@ requires a constructor function");
             const auto &constructor_name = linked.functions[symbol_id].name;
 #if REGML_WIIU
-            wiiu_load_trace(std::string("new-object symbol=") + std::to_string(symbol_id) + " name=" +
-                            constructor_name);
+            wiiu_load_trace(std::string("new-object symbol=") + std::to_string(symbol_id) +
+                            " name=" + constructor_name);
 #endif
             auto object = make_struct();
 #if REGML_WIIU
@@ -4692,7 +4704,8 @@ struct GameSession::Impl {
             if (const auto *callable = std::get_if<CallablePtr>(&args[0])) {
                 if (!*callable || !(*callable)->invoke)
                     throw Error(ErrorKind::vm, "script_execute received an empty callable");
-                return (*callable)->invoke(args.subspan(1), self ? std::optional<int>{self->id} : std::nullopt);
+                return (*callable)->invoke(args.subspan(1),
+                                           self ? std::optional<int>{self->id} : std::nullopt);
             }
             const auto id = static_cast<std::size_t>(n(0));
             if (id >= scripts.size())
@@ -4904,8 +4917,8 @@ struct GameSession::Impl {
             const double serial = n(0);
             if (!std::isfinite(serial) || std::fabs(serial) > 3'000'000.0)
                 return std::int32_t{0};
-            const auto epoch = std::chrono::sys_days{
-                std::chrono::year{1899} / std::chrono::December / std::chrono::day{30}};
+            const auto epoch =
+                std::chrono::sys_days{std::chrono::year{1899} / std::chrono::December / std::chrono::day{30}};
             const auto timestamp = epoch + std::chrono::duration<double>{serial * 86400.0};
             const auto day = std::chrono::floor<std::chrono::days>(timestamp);
             const std::chrono::year_month_day calendar{day};
@@ -5071,8 +5084,10 @@ struct GameSession::Impl {
             if (id < 0)
                 return false;
             if (name == "room_exists")
-                return static_cast<std::size_t>(id) < rooms.size() && !rooms[static_cast<std::size_t>(id)].name.empty();
-            return static_cast<std::size_t>(id) < objects.size() && !objects[static_cast<std::size_t>(id)].name.empty();
+                return static_cast<std::size_t>(id) < rooms.size() &&
+                       !rooms[static_cast<std::size_t>(id)].name.empty();
+            return static_cast<std::size_t>(id) < objects.size() &&
+                   !objects[static_cast<std::size_t>(id)].name.empty();
         }
         if (name == "object_get_sprite") {
             const int id = static_cast<int>(n(0));
@@ -5112,8 +5127,9 @@ struct GameSession::Impl {
                 static_cast<std::size_t>(ancestor) >= objects.size())
                 return false;
             int parent = objects[static_cast<std::size_t>(child)].parent;
-            for (std::size_t depth = 0; parent >= 0 && static_cast<std::size_t>(parent) < objects.size() &&
-                                        depth < objects.size(); ++depth) {
+            for (std::size_t depth = 0;
+                 parent >= 0 && static_cast<std::size_t>(parent) < objects.size() && depth < objects.size();
+                 ++depth) {
                 if (parent == ancestor)
                     return true;
                 parent = objects[static_cast<std::size_t>(parent)].parent;
@@ -5136,17 +5152,17 @@ struct GameSession::Impl {
                         append_names(instance->second->vars);
                     else
                         append_names((*structure)->variables);
-                } else if (const auto *callable = std::get_if<CallablePtr>(&args[0]); callable && *callable &&
-                           (*callable)->properties)
+                } else if (const auto *callable = std::get_if<CallablePtr>(&args[0]);
+                           callable && *callable && (*callable)->properties)
                     append_names((*callable)->properties->variables);
             } else if (value_is_string(args[0]) && value_text(args[0]) == "global") {
                 append_names(globals);
             } else {
                 const int id = number(args[0]);
-                const auto found = std::find_if(instances.begin(), instances.end(),
-                                                [&](const InstancePtr &instance) {
-                                                    return instance->alive && instance->id == id;
-                                                });
+                const auto found =
+                    std::find_if(instances.begin(), instances.end(), [&](const InstancePtr &instance) {
+                        return instance->alive && instance->id == id;
+                    });
                 if (found != instances.end())
                     append_names((*found)->vars);
             }
@@ -5182,7 +5198,7 @@ struct GameSession::Impl {
             else if (name == "tile_set_empty")
                 tile &= ~index_mask;
             else {
-                const std::uint32_t mask = name == "tile_set_flip" ? flip_mask
+                const std::uint32_t mask = name == "tile_set_flip"     ? flip_mask
                                            : name == "tile_set_mirror" ? mirror_mask
                                                                        : rotate_mask;
                 if (n(1) != 0)
@@ -5194,8 +5210,7 @@ struct GameSession::Impl {
         }
         if (name == "variable_struct_get" || name == "variable_struct_exists" ||
             (name == "variable_instance_exists" && !args.empty() &&
-             (std::holds_alternative<StructPtr>(args[0]) ||
-              std::holds_alternative<CallablePtr>(args[0])))) {
+             (std::holds_alternative<StructPtr>(args[0]) || std::holds_alternative<CallablePtr>(args[0])))) {
             if (args.size() < 2 || !value_is_string(args[1]))
                 throw Error(ErrorKind::vm, std::string(name) + " requires a struct and string name");
             const auto key = value_string_view(args[1]);
@@ -5211,8 +5226,8 @@ struct GameSession::Impl {
                     if (found != (*structure)->variables.end())
                         value = &found->second;
                 }
-            } else if (const auto *callable = std::get_if<CallablePtr>(&args[0]); callable && *callable &&
-                       (*callable)->properties) {
+            } else if (const auto *callable = std::get_if<CallablePtr>(&args[0]);
+                       callable && *callable && (*callable)->properties) {
                 const auto found = (*callable)->properties->variables.find(key);
                 if (found != (*callable)->properties->variables.end())
                     value = &found->second;
@@ -5391,8 +5406,8 @@ struct GameSession::Impl {
                 const int raw_index = number(n(1));
                 const int index = std::max(0, raw_index < 0 ? length + raw_index : raw_index);
                 const auto insertion_count = args.size() - 2;
-                if (insertion_count > 32000 || static_cast<std::size_t>(std::max(length, index)) +
-                                                  insertion_count > 32000)
+                if (insertion_count > 32000 ||
+                    static_cast<std::size_t>(std::max(length, index)) + insertion_count > 32000)
                     throw Error(ErrorKind::vm, "array_insert exceeds the one-dimensional array limit");
                 const int old_length = length;
                 const int new_length = std::max(old_length, index) + static_cast<int>(insertion_count);
@@ -5437,8 +5452,9 @@ struct GameSession::Impl {
                                                      self ? std::optional<int>{self->id} : std::nullopt);
                     else if ((*callable)->symbol_id != Instruction::no_symbol)
                         result = invoke_function((*callable)->symbol_id, compare_args,
-                                                 (*callable)->bound_struct ? InstancePtr{} : self,
-                                                 other, (*callable)->bound_struct ? (*callable)->bound_struct : struct_self);
+                                                 (*callable)->bound_struct ? InstancePtr{} : self, other,
+                                                 (*callable)->bound_struct ? (*callable)->bound_struct
+                                                                           : struct_self);
                     return value_number(result) < 0;
                 };
                 std::stable_sort(contents.begin(), contents.end(), compare);
@@ -5449,9 +5465,8 @@ struct GameSession::Impl {
                     return value_number(left) < value_number(right);
                 };
                 std::stable_sort(contents.begin(), contents.end(), less);
-                const bool ascending = std::holds_alternative<bool>(args[1])
-                                           ? std::get<bool>(args[1])
-                                           : value_number(args[1]) != 0;
+                const bool ascending = std::holds_alternative<bool>(args[1]) ? std::get<bool>(args[1])
+                                                                             : value_number(args[1]) != 0;
                 if (!ascending)
                     std::reverse(contents.begin(), contents.end());
             }
@@ -5496,8 +5511,9 @@ struct GameSession::Impl {
         }
         if (name == "array_copy") {
             if (args.size() < 5)
-                throw Error(ErrorKind::vm,
-                            "array_copy requires destination, destination index, source, source index, and length");
+                throw Error(
+                    ErrorKind::vm,
+                    "array_copy requires destination, destination index, source, source index, and length");
             auto *destination = std::get_if<ArrayPtr>(&args[0]);
             const auto *source = std::get_if<ArrayPtr>(&args[2]);
             if (!destination || !*destination || !source || !*source)
@@ -5522,9 +5538,9 @@ struct GameSession::Impl {
             const long long count = raw_count < 0 ? -static_cast<long long>(raw_count) : raw_count;
             if (count == 0)
                 return std::monostate{};
-            long long destination_index = raw_destination_index < 0
-                                              ? static_cast<long long>(destination_length) + raw_destination_index
-                                              : raw_destination_index;
+            long long destination_index =
+                raw_destination_index < 0 ? static_cast<long long>(destination_length) + raw_destination_index
+                                          : raw_destination_index;
             destination_index = std::max<long long>(0, destination_index);
             const long long source_index = raw_source_index < 0
                                                ? static_cast<long long>(source_length) + raw_source_index
@@ -5534,12 +5550,14 @@ struct GameSession::Impl {
             if (count > 32000 || new_length > 32000)
                 throw Error(ErrorKind::vm, "array_copy exceeds the one-dimensional array limit");
             const long long last_source = source_index + (count - 1) * source_step;
-            if (source_index < 0 || source_index >= source_length || last_source < 0 || last_source >= source_length)
+            if (source_index < 0 || source_index >= source_length || last_source < 0 ||
+                last_source >= source_length)
                 throw Error(ErrorKind::vm, "array_copy source range is out of bounds");
             std::vector<Value> copied;
             copied.reserve(static_cast<std::size_t>(count));
             for (long long index = 0; index < count; ++index) {
-                const auto *value = input.elements.find(static_cast<std::int32_t>(source_index + index * source_step));
+                const auto *value =
+                    input.elements.find(static_cast<std::int32_t>(source_index + index * source_step));
                 copied.push_back(value ? *value : Value{std::int32_t{0}});
             }
             for (int index = destination_length; index < destination_index; ++index)
@@ -5806,13 +5824,12 @@ struct GameSession::Impl {
             auto &queue = priorities.at(static_cast<int>(n(0)));
             if (queue.empty())
                 return std::int32_t{0};
-            const auto found = name == "ds_priority_delete_min"
-                                   ? std::min_element(queue.begin(), queue.end(), [](const auto &a, const auto &b) {
-                                         return a.priority < b.priority;
-                                     })
-                                   : std::max_element(queue.begin(), queue.end(), [](const auto &a, const auto &b) {
-                                         return a.priority < b.priority;
-                                     });
+            const auto found =
+                name == "ds_priority_delete_min"
+                    ? std::min_element(queue.begin(), queue.end(),
+                                       [](const auto &a, const auto &b) { return a.priority < b.priority; })
+                    : std::max_element(queue.begin(), queue.end(),
+                                       [](const auto &a, const auto &b) { return a.priority < b.priority; });
             Value value = found->value;
             queue.erase(found);
             return value;
@@ -5920,7 +5937,7 @@ struct GameSession::Impl {
             const std::string current = (value_is_string(args[1]) ? "s:" : "n:") + text(1);
             const auto found = std::find(keys.begin(), keys.end(), current);
             return found == keys.end() || found + 1 == keys.end() ? Value{std::int32_t{-1}}
-                                                                    : key_value(*(found + 1));
+                                                                  : key_value(*(found + 1));
         }
         if (name == "json_encode") {
             const auto &map = maps.at(static_cast<int>(n(0)));
@@ -5959,7 +5976,8 @@ struct GameSession::Impl {
                 else if (const auto *array = std::get_if<ArrayPtr>(&decoded); array && *array) {
                     json += '[';
                     int length = 0;
-                    if (const auto found = (*array)->row_lengths.find(0); found != (*array)->row_lengths.end())
+                    if (const auto found = (*array)->row_lengths.find(0);
+                        found != (*array)->row_lengths.end())
                         length = found->second;
                     for (int index = 0; index < length; ++index) {
                         if (index)
@@ -5976,8 +5994,7 @@ struct GameSession::Impl {
                             json += value_text(item);
                     }
                     json += ']';
-                }
-                else
+                } else
                     json += value_text(decoded);
             }
             return json + '}';
@@ -6102,7 +6119,8 @@ struct GameSession::Impl {
                     throw Error(ErrorKind::vm, "ds_list_insert requires a value");
                 const auto index = static_cast<std::size_t>(std::clamp<long long>(position, 0, list.size()));
                 list.insert(list.begin() + static_cast<std::ptrdiff_t>(index), args[2]);
-            } else if (args.size() >= 3 && position >= 0 && static_cast<std::size_t>(position) < list.size()) {
+            } else if (args.size() >= 3 && position >= 0 &&
+                       static_cast<std::size_t>(position) < list.size()) {
                 list[static_cast<std::size_t>(position)] = args[2];
             }
             return std::monostate{};
@@ -6260,8 +6278,9 @@ struct GameSession::Impl {
             if (values.empty())
                 return std::monostate{};
             const std::size_t index = name == "ds_queue_tail" ? values.size() - 1
-                                      : name == "ds_queue_head" || name == "ds_queue_dequeue" ? 0
-                                                                                               : values.size() - 1;
+                                      : name == "ds_queue_head" || name == "ds_queue_dequeue"
+                                          ? 0
+                                          : values.size() - 1;
             const Value result = values[index];
             if (name == "ds_stack_pop" || name == "ds_queue_dequeue")
                 values.erase(values.begin() + static_cast<std::ptrdiff_t>(index));
@@ -6395,8 +6414,8 @@ struct GameSession::Impl {
                 return std::int32_t{-1};
             std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
             input.seekg(0, std::ios::beg);
-            if (!bytes.empty() &&
-                !input.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
+            if (!bytes.empty() && !input.read(reinterpret_cast<char *>(bytes.data()),
+                                              static_cast<std::streamsize>(bytes.size())))
                 return std::int32_t{-1};
             const int id = next_buffer++;
             buffers.emplace(id, GameBuffer{std::move(bytes), 0, 0});
@@ -6420,19 +6439,22 @@ struct GameSession::Impl {
                 const auto size = static_cast<std::int64_t>(buffer.bytes.size());
                 buffer.position = static_cast<std::size_t>((destination % size + size) % size);
             } else
-                buffer.position = static_cast<std::size_t>(std::clamp<std::int64_t>(
-                    destination, 0, static_cast<std::int64_t>(buffer.bytes.size())));
+                buffer.position = static_cast<std::size_t>(
+                    std::clamp<std::int64_t>(destination, 0, static_cast<std::int64_t>(buffer.bytes.size())));
             return static_cast<double>(buffer.position);
         }
         if (name == "buffer_copy") {
             if (args.size() < 5)
-                throw Error(ErrorKind::vm, "buffer_copy requires source, source offset, size, destination and destination offset");
+                throw Error(
+                    ErrorKind::vm,
+                    "buffer_copy requires source, source offset, size, destination and destination offset");
             const int source_id = number(args[0]), destination_id = number(args[3]);
             if (source_id == destination_id)
                 return std::monostate{};
             const auto source_offset = static_cast<std::size_t>(std::clamp(n(1), 0.0, 64.0 * 1024 * 1024));
             const auto requested_size = static_cast<std::size_t>(std::clamp(n(2), 0.0, 64.0 * 1024 * 1024));
-            const auto destination_offset = static_cast<std::size_t>(std::clamp(n(4), 0.0, 64.0 * 1024 * 1024));
+            const auto destination_offset =
+                static_cast<std::size_t>(std::clamp(n(4), 0.0, 64.0 * 1024 * 1024));
             auto &source_buffer = buffers.at(source_id);
             auto &destination_buffer = buffers.at(destination_id);
             const auto &source = source_buffer.bytes;
@@ -6443,7 +6465,8 @@ struct GameSession::Impl {
             if (destination_offset + count > 64 * 1024 * 1024)
                 throw Error(ErrorKind::vm, "buffer_copy exceeds size limit");
             std::vector<std::uint8_t> copy(source.begin() + static_cast<std::ptrdiff_t>(source_offset),
-                                           source.begin() + static_cast<std::ptrdiff_t>(source_offset + count));
+                                           source.begin() +
+                                               static_cast<std::ptrdiff_t>(source_offset + count));
             if (destination_buffer.type == 1 && destination_offset + count > destination.size())
                 destination.resize(destination_offset + count);
             if (destination_offset < destination.size()) {
@@ -6457,8 +6480,10 @@ struct GameSession::Impl {
             if (args.size() < 3)
                 throw Error(ErrorKind::vm, "buffer_md5 requires a buffer, offset and size");
             const auto &bytes = buffers.at(number(args[0])).bytes;
-            const auto offset = static_cast<std::size_t>(std::clamp(n(1), 0.0, static_cast<double>(bytes.size())));
-            const auto size = static_cast<std::size_t>(std::clamp(n(2), 0.0, static_cast<double>(bytes.size() - offset)));
+            const auto offset =
+                static_cast<std::size_t>(std::clamp(n(1), 0.0, static_cast<double>(bytes.size())));
+            const auto size =
+                static_cast<std::size_t>(std::clamp(n(2), 0.0, static_cast<double>(bytes.size() - offset)));
             return md5_hex(std::span<const std::uint8_t>(bytes).subspan(offset, size));
         }
         if (name == "buffer_get_surface" || name == "buffer_set_surface") {
@@ -6566,7 +6591,8 @@ struct GameSession::Impl {
                 return value;
             }
             if (type == 8)
-                return static_cast<double>(regml::bit_cast<float>(static_cast<std::uint32_t>(read_integer(4))));
+                return static_cast<double>(
+                    regml::bit_cast<float>(static_cast<std::uint32_t>(read_integer(4))));
             if (type == 9)
                 return regml::bit_cast<double>(read_integer(8));
             const std::size_t width = (type == 1 || type == 2 || type == 10)  ? 1
@@ -6715,7 +6741,8 @@ struct GameSession::Impl {
             if (name == "screen_save")
                 save_image(this->canvas);
             else {
-                const int x = number(args[1]), y = number(args[2]), width = number(args[3]), height = number(args[4]);
+                const int x = number(args[1]), y = number(args[2]), width = number(args[3]),
+                          height = number(args[4]);
                 if (width <= 0 || height <= 0 || width > 8192 || height > 8192)
                     return std::monostate{};
                 Canvas cropped(width, height);
@@ -6739,15 +6766,14 @@ struct GameSession::Impl {
             const std::filesystem::path requested(text(0));
             std::array<std::filesystem::path, 3> candidates{
                 requested.is_absolute() ? requested : game_dir / requested,
-                requested.is_absolute() ? requested : save_dir / requested,
-                requested};
+                requested.is_absolute() ? requested : save_dir / requested, requested};
             for (const auto &candidate : candidates) {
                 std::error_code error;
                 if (!std::filesystem::is_regular_file(candidate, error))
                     continue;
-                return std::int32_t{assets.create_sprite_from_file(
-                    candidate, value_number(args[2]) != 0, value_number(args[3]) != 0, number(args[4]),
-                    number(args[5]))};
+                return std::int32_t{assets.create_sprite_from_file(candidate, value_number(args[2]) != 0,
+                                                                   value_number(args[3]) != 0,
+                                                                   number(args[4]), number(args[5]))};
             }
             return std::int32_t{-1};
         }
@@ -6839,9 +6865,10 @@ struct GameSession::Impl {
             auto &buffer = buffers.at(static_cast<int>(n(0)));
             const auto offset = static_cast<std::size_t>(std::clamp(n(2), 0.0, 64.0 * 1024 * 1024));
             const double requested_size = n(3);
-            const auto size = requested_size < 0
-                                  ? 64U * 1024U * 1024U
-                                  : static_cast<std::size_t>(std::clamp(requested_size, 0.0, 64.0 * 1024 * 1024));
+            const auto size =
+                requested_size < 0
+                    ? 64U * 1024U * 1024U
+                    : static_cast<std::size_t>(std::clamp(requested_size, 0.0, 64.0 * 1024 * 1024));
             const auto filename = text(1);
             const auto path = save_path(filename);
             bool succeeded = false;
@@ -6880,7 +6907,8 @@ struct GameSession::Impl {
             engine["async_load"] = std::int32_t{map_id};
             const auto event_targets = instances;
             for (const auto &target : event_targets)
-                if (target->alive && find_event_owner(objects[static_cast<std::size_t>(target->object)], {7, 72}) >= 0)
+                if (target->alive &&
+                    find_event_owner(objects[static_cast<std::size_t>(target->object)], {7, 72}) >= 0)
                     event(target, 7, 72);
             engine["async_load"] = previous_async_load;
             maps.erase(map_id);
@@ -7093,10 +7121,9 @@ struct GameSession::Impl {
         auto find_animation_curve = [&](const Value &value) -> const AnimationCurve * {
             if (value_is_string(value)) {
                 const auto curve_name = value_text(value);
-                const auto found = std::find_if(animation_curves.begin(), animation_curves.end(),
-                                                [&](const AnimationCurve &curve) {
-                                                    return curve.name == curve_name;
-                                                });
+                const auto found =
+                    std::find_if(animation_curves.begin(), animation_curves.end(),
+                                 [&](const AnimationCurve &curve) { return curve.name == curve_name; });
                 return found == animation_curves.end() ? nullptr : &*found;
             }
             if (std::holds_alternative<std::int32_t>(value) || std::holds_alternative<double>(value)) {
@@ -7109,26 +7136,25 @@ struct GameSession::Impl {
                 const auto found = (*structure)->variables.find("name");
                 if (found != (*structure)->variables.end() && value_is_string(found->second)) {
                     const auto curve_name = value_text(found->second);
-                    const auto curve = std::find_if(animation_curves.begin(), animation_curves.end(),
-                                                    [&](const AnimationCurve &entry) {
-                                                        return entry.name == curve_name;
-                                                    });
+                    const auto curve =
+                        std::find_if(animation_curves.begin(), animation_curves.end(),
+                                     [&](const AnimationCurve &entry) { return entry.name == curve_name; });
                     return curve == animation_curves.end() ? nullptr : &*curve;
                 }
             }
             return nullptr;
         };
-        auto evaluate_animation_points = [](std::span<const AnimationCurvePoint> points, int type, double position) {
+        auto evaluate_animation_points = [](std::span<const AnimationCurvePoint> points, int type,
+                                            double position) {
             if (points.empty())
                 return 0.0;
             if (points.size() == 1 || position <= points.front().x)
                 return points.front().value;
             if (position >= points.back().x)
                 return points.back().value;
-            const auto upper = std::upper_bound(points.begin(), points.end(), position,
-                                                [](double x, const AnimationCurvePoint &point) {
-                                                    return x < point.x;
-                                                });
+            const auto upper =
+                std::upper_bound(points.begin(), points.end(), position,
+                                 [](double x, const AnimationCurvePoint &point) { return x < point.x; });
             const auto right_index = static_cast<std::size_t>(upper - points.begin());
             const auto left_index = right_index - 1;
             const auto &left = points[left_index];
@@ -7216,9 +7242,9 @@ struct GameSession::Impl {
             requested.samples = 512;
             requested.callback = &Impl::recorder_callback;
             requested.userdata = &recorder;
-            const auto device = SDL_OpenAudioDevice(
-                device_name, SDL_TRUE, &requested, &obtained,
-                SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE);
+            const auto device =
+                SDL_OpenAudioDevice(device_name, SDL_TRUE, &requested, &obtained,
+                                    SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE);
             if (!device || obtained.format != AUDIO_S16SYS || obtained.freq <= 0 || obtained.channels == 0) {
                 if (device)
                     SDL_CloseAudioDevice(device);
@@ -7259,7 +7285,8 @@ struct GameSession::Impl {
                 ArrayPtr channels(new ArrayValue);
                 channels->row_lengths[0] = static_cast<std::int32_t>(curve->channels.size());
                 for (std::size_t i = 0; i < curve->channels.size(); ++i)
-                    channels->elements[static_cast<std::int32_t>(i)] = animation_channel_struct(curve->channels[i]);
+                    channels->elements[static_cast<std::int32_t>(i)] =
+                        animation_channel_struct(curve->channels[i]);
                 result->variables["channels"] = std::move(channels);
                 return result;
             }
@@ -7296,7 +7323,8 @@ struct GameSession::Impl {
                 return 0.0;
             const auto type_value = (*channel_ptr)->variables.find("type");
             const auto points_value = (*channel_ptr)->variables.find("points");
-            if (type_value == (*channel_ptr)->variables.end() || points_value == (*channel_ptr)->variables.end())
+            if (type_value == (*channel_ptr)->variables.end() ||
+                points_value == (*channel_ptr)->variables.end())
                 return 0.0;
             const auto *points = std::get_if<ArrayPtr>(&points_value->second);
             if (!points || !*points)
@@ -7318,7 +7346,8 @@ struct GameSession::Impl {
                 values.push_back({value_number(x->second), value_number(y->second)});
             }
             const double position = std::clamp(n(1), 0.0, 1.0);
-            return evaluate_animation_points(values, static_cast<int>(value_number(type_value->second)), position);
+            return evaluate_animation_points(values, static_cast<int>(value_number(type_value->second)),
+                                             position);
         }
         auto audio_falloff_gain = [&](double x, double y, double z, double reference, double maximum,
                                       double factor) {
@@ -7331,11 +7360,10 @@ struct GameSession::Impl {
             if (!std::isfinite(distance) || !std::isfinite(reference) || !std::isfinite(maximum) ||
                 !std::isfinite(factor) || maximum <= reference || reference <= 0)
                 return distance <= std::max(0.0, maximum) ? 1.0 : 0.0;
-            const bool clamped = audio_falloff_model == 2 || audio_falloff_model == 5 ||
-                                 audio_falloff_model == 7;
+            const bool clamped =
+                audio_falloff_model == 2 || audio_falloff_model == 5 || audio_falloff_model == 7;
             const bool scaled = audio_falloff_model == 3 || audio_falloff_model == 8;
-            const double d = clamped ? std::clamp(distance, reference, maximum)
-                                     : std::min(distance, maximum);
+            const double d = clamped ? std::clamp(distance, reference, maximum) : std::min(distance, maximum);
             double gain = 1;
             switch (audio_falloff_model) {
             case 1:
@@ -7368,9 +7396,8 @@ struct GameSession::Impl {
                 if (!audio.playing(voice) && !audio.is_paused(voice))
                     return true;
                 audio.gain(voice, entry.second[0] * emitter.gain *
-                                       audio_falloff_gain(emitter.x, emitter.y, emitter.z,
-                                                          emitter.falloff_ref, emitter.falloff_max,
-                                                          emitter.falloff_factor));
+                                      audio_falloff_gain(emitter.x, emitter.y, emitter.z, emitter.falloff_ref,
+                                                         emitter.falloff_max, emitter.falloff_factor));
                 audio.pitch(voice, entry.second[1] * emitter.pitch);
                 return false;
             });
@@ -7462,9 +7489,8 @@ struct GameSession::Impl {
                 const double base_pitch = args.size() > 6 ? std::max(0.0001, n(6)) : 1.0;
                 emitter.voices[voice] = {base_gain, base_pitch};
                 audio.gain(voice, base_gain * emitter.gain *
-                                      audio_falloff_gain(emitter.x, emitter.y, emitter.z,
-                                                         emitter.falloff_ref, emitter.falloff_max,
-                                                         emitter.falloff_factor));
+                                      audio_falloff_gain(emitter.x, emitter.y, emitter.z, emitter.falloff_ref,
+                                                         emitter.falloff_max, emitter.falloff_factor));
                 audio.pitch(voice, base_pitch * emitter.pitch);
                 if (args.size() > 5)
                     audio.position(voice, n(5));
@@ -7619,7 +7645,8 @@ struct GameSession::Impl {
             if (name == "sprite_get_uvs") {
                 sprite_id = number(args[0]);
                 frame = args.size() > 1 ? n(1) : 0;
-            } else if (const auto texture = sprite_textures.find(number(args[0])); texture != sprite_textures.end()) {
+            } else if (const auto texture = sprite_textures.find(number(args[0]));
+                       texture != sprite_textures.end()) {
                 sprite_id = texture->second.first;
                 frame = texture->second.second;
             }
@@ -7657,7 +7684,7 @@ struct GameSession::Impl {
             if (name == "texture_get_texel_height")
                 return size.second;
             return name == "texture_get_width" ? (size.first > 0 ? 1.0 / size.first : 0.0)
-                                                : (size.second > 0 ? 1.0 / size.second : 0.0);
+                                               : (size.second > 0 ? 1.0 / size.second : 0.0);
         }
         if (name == "gpu_set_texrepeat" || name == "gpu_set_tex_repeat") {
             gpu_texture_repeat = args.empty() || n(0) != 0;
@@ -7683,17 +7710,17 @@ struct GameSession::Impl {
         if (name == "layer_background_destroy") {
             const int layer_id = layer_id_argument(0), element_id = static_cast<int>(n(1));
             if (auto *layer = find_layer(layer_id))
-                std::erase_if(layer->backgrounds,
-                              [element_id](const LayerBackground &background) { return background.id == element_id; });
+                std::erase_if(layer->backgrounds, [element_id](const LayerBackground &background) {
+                    return background.id == element_id;
+                });
             return std::monostate{};
         }
         if (name == "layer_background_get_id" || name == "layer_background_get_sprite" ||
-            name == "layer_background_get_index" ||
-            name == "layer_background_get_blend" || name == "layer_background_get_alpha" ||
-            name == "layer_background_get_htiled" || name == "layer_background_get_vtiled" ||
-            name == "layer_background_get_stretch" || name == "layer_background_get_xscale" ||
-            name == "layer_background_get_yscale" || name == "layer_background_get_visible" ||
-            name == "layer_background_get_speed") {
+            name == "layer_background_get_index" || name == "layer_background_get_blend" ||
+            name == "layer_background_get_alpha" || name == "layer_background_get_htiled" ||
+            name == "layer_background_get_vtiled" || name == "layer_background_get_stretch" ||
+            name == "layer_background_get_xscale" || name == "layer_background_get_yscale" ||
+            name == "layer_background_get_visible" || name == "layer_background_get_speed") {
             const auto background = find_layer_background(static_cast<int>(n(0)));
             if (!background.second)
                 return name == "layer_background_get_id" || name == "layer_background_get_sprite"
@@ -7777,8 +7804,9 @@ struct GameSession::Impl {
         if (name == "layer_get_id") {
             if (current_room >= 0 && static_cast<std::size_t>(current_room) < rooms.size()) {
                 const auto &current = rooms[static_cast<std::size_t>(current_room)];
-                const auto found = std::find_if(current.layers.begin(), current.layers.end(),
-                                                [&](const RoomLayer &layer) { return layer.name == text(0); });
+                const auto found =
+                    std::find_if(current.layers.begin(), current.layers.end(),
+                                 [&](const RoomLayer &layer) { return layer.name == text(0); });
                 if (found != current.layers.end())
                     return std::int32_t{found->id};
             }
@@ -7817,10 +7845,9 @@ struct GameSession::Impl {
                     for (auto &tile : tiles)
                         if (tile.layer_id == layer_id)
                             tile.depth = depth;
-                    std::stable_sort(tiles.begin(), tiles.end(),
-                                     [](const Tile &left, const Tile &right) {
-                                         return left.depth > right.depth;
-                                     });
+                    std::stable_sort(tiles.begin(), tiles.end(), [](const Tile &left, const Tile &right) {
+                        return left.depth > right.depth;
+                    });
                 }
             }
             return std::monostate{};
@@ -7874,17 +7901,18 @@ struct GameSession::Impl {
                 return std::monostate{};
             const auto instance_ids = current.layers[found->second].instances;
             for (const int instance_id : instance_ids) {
-                const auto instance = std::find_if(instances.begin(), instances.end(),
-                                                   [instance_id](const InstancePtr &item) {
-                                                       return item->alive && item->id == instance_id;
-                                                   });
+                const auto instance =
+                    std::find_if(instances.begin(), instances.end(), [instance_id](const InstancePtr &item) {
+                        return item->alive && item->id == instance_id;
+                    });
                 if (instance != instances.end()) {
                     event(*instance, 1, 0);
                     (*instance)->alive = false;
                 }
             }
             std::erase_if(current.tiles, [layer_id](const Tile &tile) { return tile.layer_id == layer_id; });
-            std::erase_if(current.layers, [layer_id](const RoomLayer &layer) { return layer.id == layer_id; });
+            std::erase_if(current.layers,
+                          [layer_id](const RoomLayer &layer) { return layer.id == layer_id; });
             current.layer_indices.clear();
             for (std::size_t i = 0; i < current.layers.size(); ++i)
                 current.layer_indices.try_emplace(current.layers[i].id, i);
@@ -7952,10 +7980,11 @@ struct GameSession::Impl {
             if (tile_index == 0)
                 return std::int32_t{0};
             const double frame_value = std::floor(value_number(args[2]));
-            const auto frame = std::isfinite(frame_value) && frame_value > 0
-                                   ? static_cast<std::size_t>(std::min(
-                                         frame_value, static_cast<double>(std::numeric_limits<std::uint32_t>::max())))
-                                   : std::size_t{0};
+            const auto frame =
+                std::isfinite(frame_value) && frame_value > 0
+                    ? static_cast<std::size_t>(std::min(
+                          frame_value, static_cast<double>(std::numeric_limits<std::uint32_t>::max())))
+                    : std::size_t{0};
             const auto source = assets.background_tile_source(tileset, tile_index, 0, frame);
             if (!source)
                 return std::int32_t{0};
@@ -7979,15 +8008,16 @@ struct GameSession::Impl {
             if (cell_width <= 0 || cell_height <= 0)
                 return std::monostate{};
 
-            const auto elapsed_us = static_cast<std::uint64_t>(
-                std::max(0.0, value_number(engine["current_time"])) * 1000.0);
+            const auto elapsed_us =
+                static_cast<std::uint64_t>(std::max(0.0, value_number(engine["current_time"])) * 1000.0);
             for (const auto &tile : rooms[static_cast<std::size_t>(current_room)].tiles) {
                 if (tile.element_id != tilemap_id || tile.cell_x < 0 || tile.cell_y < 0)
                     continue;
                 int source_x = tile.source_x;
                 int source_y = tile.source_y;
                 if (tile.modern_tileset) {
-                    const auto source = assets.background_tile_source(tile.id, tile.tileset_index, elapsed_us);
+                    const auto source =
+                        assets.background_tile_source(tile.id, tile.tileset_index, elapsed_us);
                     if (!source)
                         continue;
                     source_x = source->x;
@@ -7995,8 +8025,8 @@ struct GameSession::Impl {
                 }
                 assets.draw_tile(current_canvas(), tile.id, source_x, source_y, tile.width, tile.height,
                                  draw_x + static_cast<double>(tile.cell_x) * cell_width,
-                                 draw_y + static_cast<double>(tile.cell_y) * cell_height,
-                                 1, 1, tile.color, tile.tile_data);
+                                 draw_y + static_cast<double>(tile.cell_y) * cell_height, 1, 1, tile.color,
+                                 tile.tile_data);
             }
             return std::monostate{};
         }
@@ -8019,8 +8049,7 @@ struct GameSession::Impl {
                 cell_x = static_cast<int>(std::floor((n(2) - map_x) / layer->tile_width));
                 cell_y = static_cast<int>(std::floor((n(3) - map_y) / layer->tile_height));
             }
-            if (cell_x < 0 || cell_y < 0 || cell_x >= layer->tilemap_width ||
-                cell_y >= layer->tilemap_height)
+            if (cell_x < 0 || cell_y < 0 || cell_x >= layer->tilemap_width || cell_y >= layer->tilemap_height)
                 return false;
             auto &tiles = rooms[static_cast<std::size_t>(current_room)].tiles;
             const auto existing = std::find_if(tiles.begin(), tiles.end(), [&](const Tile &tile) {
@@ -8062,9 +8091,9 @@ struct GameSession::Impl {
                 // The room draw loop consumes this vector in descending depth order.
                 // Keep runtime-created cells in that order too, so a platform swap
                 // cannot make the remaining map draw after unrelated foregrounds.
-                const auto insert_at = std::upper_bound(
-                    tiles.begin(), tiles.end(), tile.depth,
-                    [](int depth, const Tile &entry) { return depth > entry.depth; });
+                const auto insert_at =
+                    std::upper_bound(tiles.begin(), tiles.end(), tile.depth,
+                                     [](int depth, const Tile &entry) { return depth > entry.depth; });
                 tiles.insert(insert_at, std::move(tile));
             } else {
                 *existing = std::move(tile);
@@ -8078,7 +8107,8 @@ struct GameSession::Impl {
                 return std::monostate{};
             if (name == "tilemap_clear") {
                 auto &tiles = rooms[static_cast<std::size_t>(current_room)].tiles;
-                std::erase_if(tiles, [&](const Tile &tile) { return tile.element_id == layer->tile_element_id; });
+                std::erase_if(tiles,
+                              [&](const Tile &tile) { return tile.element_id == layer->tile_element_id; });
                 return std::monostate{};
             }
             if (name == "tilemap_set_width" || name == "tilemap_set_height") {
@@ -8118,10 +8148,10 @@ struct GameSession::Impl {
             return 0.0;
         if (name == "tilemap_get" || name == "tilemap_get_at_pixel" ||
             name == "tilemap_get_cell_x_at_pixel" || name == "tilemap_get_cell_y_at_pixel" ||
-            name == "tilemap_get_tileset" || name == "tilemap_get_width" ||
-            name == "tilemap_get_height" || name == "tilemap_get_tile_width" ||
-            name == "tilemap_get_tile_height" || name == "tilemap_get_x" ||
-            name == "tilemap_get_y" || name == "tilemap_x" || name == "tilemap_y") {
+            name == "tilemap_get_tileset" || name == "tilemap_get_width" || name == "tilemap_get_height" ||
+            name == "tilemap_get_tile_width" || name == "tilemap_get_tile_height" ||
+            name == "tilemap_get_x" || name == "tilemap_get_y" || name == "tilemap_x" ||
+            name == "tilemap_y") {
             auto *layer = find_tilemap_layer(static_cast<int>(n(0)));
             if (!layer)
                 return name == "tilemap_get_tileset" || name == "tilemap_get" ||
@@ -8167,8 +8197,7 @@ struct GameSession::Impl {
                 if (name == "tilemap_get_cell_y_at_pixel")
                     return std::int32_t{cell_y};
             }
-            if (cell_x < 0 || cell_y < 0 || cell_x >= layer->tilemap_width ||
-                cell_y >= layer->tilemap_height)
+            if (cell_x < 0 || cell_y < 0 || cell_x >= layer->tilemap_width || cell_y >= layer->tilemap_height)
                 return std::int32_t{-1};
             const auto &room = rooms[static_cast<std::size_t>(current_room)];
             const auto tile = std::find_if(room.tiles.begin(), room.tiles.end(), [&](const Tile &entry) {
@@ -8211,16 +8240,18 @@ struct GameSession::Impl {
             if (current_room >= 0 && static_cast<std::size_t>(current_room) < rooms.size()) {
                 const auto &current = rooms[static_cast<std::size_t>(current_room)];
                 for (const auto &layer : current.layers)
-                    if (std::find(layer.instances.begin(), layer.instances.end(), id) != layer.instances.end())
+                    if (std::find(layer.instances.begin(), layer.instances.end(), id) !=
+                        layer.instances.end())
                         return std::int32_t{2};
             }
             return std::int32_t{-1};
         }
         if (name == "layer_instance_get_instance") {
             const int element_id = number(args[0]);
-            const auto found = std::find_if(instances.begin(), instances.end(), [&](const InstancePtr &instance) {
-                return instance->alive && instance->id == element_id;
-            });
+            const auto found =
+                std::find_if(instances.begin(), instances.end(), [&](const InstancePtr &instance) {
+                    return instance->alive && instance->id == element_id;
+                });
             return std::int32_t{found == instances.end() ? -1 : (*found)->id};
         }
         if (name == "layer_get_element_layer") {
@@ -8234,7 +8265,8 @@ struct GameSession::Impl {
             if (current_room >= 0 && static_cast<std::size_t>(current_room) < rooms.size()) {
                 const auto &current = rooms[static_cast<std::size_t>(current_room)];
                 for (const auto &layer : current.layers)
-                    if (std::find(layer.instances.begin(), layer.instances.end(), element_id) != layer.instances.end())
+                    if (std::find(layer.instances.begin(), layer.instances.end(), element_id) !=
+                        layer.instances.end())
                         return std::int32_t{layer.id};
             }
             return std::int32_t{-1};
@@ -8263,16 +8295,16 @@ struct GameSession::Impl {
             if (name == "layer_tile_x" || name == "layer_tile_y") {
                 const int layer_id = tile.second->layer_id < 0 ? tile.second->id : tile.second->layer_id;
                 const auto offset = tile_layer_offsets.find(layer_id);
-                const double legacy_offset = offset == tile_layer_offsets.end()
-                                                 ? 0
-                                                 : (name == "layer_tile_x" ? offset->second.first
-                                                                           : offset->second.second);
-                const double layer_offset = tile.first
-                                                ? (name == "layer_tile_x" ? tile.first->x - tile.first->origin_x
-                                                                          : tile.first->y - tile.first->origin_y)
-                                                : 0;
-                const double old_value = (name == "layer_tile_x" ? tile.second->x : tile.second->y) +
-                                         layer_offset + legacy_offset;
+                const double legacy_offset =
+                    offset == tile_layer_offsets.end()
+                        ? 0
+                        : (name == "layer_tile_x" ? offset->second.first : offset->second.second);
+                const double layer_offset =
+                    tile.first ? (name == "layer_tile_x" ? tile.first->x - tile.first->origin_x
+                                                         : tile.first->y - tile.first->origin_y)
+                               : 0;
+                const double old_value =
+                    (name == "layer_tile_x" ? tile.second->x : tile.second->y) + layer_offset + legacy_offset;
                 const double delta = setting - old_value;
                 for (auto &entry : current.tiles)
                     if (entry.element_id == element_id) {
@@ -8297,8 +8329,9 @@ struct GameSession::Impl {
             const auto *layer = find_layer(layer_id_argument(0));
             if (!layer)
                 return std::int32_t{-1};
-            const auto found = std::find_if(layer->sprites.begin(), layer->sprites.end(),
-                                            [&](const LayerSprite &sprite) { return sprite.name == text(1); });
+            const auto found =
+                std::find_if(layer->sprites.begin(), layer->sprites.end(),
+                             [&](const LayerSprite &sprite) { return sprite.name == text(1); });
             return std::int32_t{found == layer->sprites.end() ? -1 : found->id};
         }
         if (name == "layer_sprite_exists") {
@@ -8309,8 +8342,7 @@ struct GameSession::Impl {
             const int id = static_cast<int>(n(0));
             const auto sprite = find_layer_sprite(id);
             if (sprite.first)
-                std::erase_if(sprite.first->sprites,
-                              [id](const LayerSprite &item) { return item.id == id; });
+                std::erase_if(sprite.first->sprites, [id](const LayerSprite &item) { return item.id == id; });
             return std::monostate{};
         }
         if (name == "layer_sprite_get_x" || name == "layer_sprite_get_y") {
@@ -8345,9 +8377,9 @@ struct GameSession::Impl {
             return std::int32_t{sprite.second ? sprite.second->sprite : -1};
         }
         if (name == "layer_sprite_change" || name == "layer_sprite_index" || name == "layer_sprite_speed" ||
-            name == "layer_sprite_x" ||
-            name == "layer_sprite_y" || name == "layer_sprite_xscale" || name == "layer_sprite_yscale" ||
-            name == "layer_sprite_angle" || name == "layer_sprite_alpha" || name == "layer_sprite_blend") {
+            name == "layer_sprite_x" || name == "layer_sprite_y" || name == "layer_sprite_xscale" ||
+            name == "layer_sprite_yscale" || name == "layer_sprite_angle" || name == "layer_sprite_alpha" ||
+            name == "layer_sprite_blend") {
             const auto sprite = find_layer_sprite(static_cast<int>(n(0)));
             if (sprite.second) {
                 if (name == "layer_sprite_change") {
@@ -8372,10 +8404,10 @@ struct GameSession::Impl {
                     sprite.second->rotation = n(1);
                 else if (name == "layer_sprite_alpha")
                     sprite.second->color = (sprite.second->color & 0x00ffffffU) |
-                                            (static_cast<unsigned>(std::clamp(n(1), 0.0, 1.0) * 255) << 24);
+                                           (static_cast<unsigned>(std::clamp(n(1), 0.0, 1.0) * 255) << 24);
                 else
-                    sprite.second->color = (sprite.second->color & 0xff000000U) |
-                                            (static_cast<unsigned>(n(1)) & 0xffffffU);
+                    sprite.second->color =
+                        (sprite.second->color & 0xff000000U) | (static_cast<unsigned>(n(1)) & 0xffffffU);
             }
             return std::monostate{};
         }
@@ -8431,12 +8463,12 @@ struct GameSession::Impl {
             frames->row_lengths[0] = static_cast<std::int32_t>(frame_count);
             frames->elements.reserve_dense(frame_count);
             for (std::size_t frame_index = 0; frame_index < frame_count; ++frame_index) {
-                const auto frame_info = sprite && frame_index < sprite->frames.size()
-                                             ? assets.sprite_frame_info(id, frame_index).value_or(
-                                                   GameAssets::SpriteFrameInfo{0, 0, 0, 0, -1,
-                                                                               sprite_width, sprite_height})
-                                             : GameAssets::SpriteFrameInfo{0, 0, 0, 0, -1,
-                                                                           sprite_width, sprite_height};
+                const auto frame_info =
+                    sprite && frame_index < sprite->frames.size()
+                        ? assets.sprite_frame_info(id, frame_index)
+                              .value_or(
+                                  GameAssets::SpriteFrameInfo{0, 0, 0, 0, -1, sprite_width, sprite_height})
+                        : GameAssets::SpriteFrameInfo{0, 0, 0, 0, -1, sprite_width, sprite_height};
                 StructPtr frame = make_struct();
                 frame->variables["x"] = std::int32_t{frame_info.x};
                 frame->variables["y"] = std::int32_t{frame_info.y};
@@ -8481,15 +8513,8 @@ struct GameSession::Impl {
             const bool smooth = n(6) != 0;
             const int origin_x = static_cast<int>(n(7));
             const int origin_y = static_cast<int>(n(8));
-            return std::int32_t{assets.create_sprite_from_surface(*source,
-                                                                  x,
-                                                                  y,
-                                                                  width,
-                                                                  height,
-                                                                  remove_background,
-                                                                  smooth,
-                                                                  origin_x,
-                                                                  origin_y)};
+            return std::int32_t{assets.create_sprite_from_surface(
+                *source, x, y, width, height, remove_background, smooth, origin_x, origin_y)};
         }
         if (name == "sprite_delete")
             return assets.delete_sprite(number(args[0]));
@@ -8510,7 +8535,8 @@ struct GameSession::Impl {
         if (name == "sprite_get_yoffset")
             return std::int32_t{assets.sprite(static_cast<int>(n(0))).oy};
         if (name == "sprite_set_bbox") {
-            assets.set_sprite_bbox(number(args[0]), number(args[1]), number(args[2]), number(args[3]), number(args[4]));
+            assets.set_sprite_bbox(number(args[0]), number(args[1]), number(args[2]), number(args[3]),
+                                   number(args[4]));
             return std::monostate{};
         }
         if (name == "sprite_set_bbox_mode") {
@@ -8550,10 +8576,8 @@ struct GameSession::Impl {
         if (name == "draw_get_alpha")
             return draw_alpha;
         if (name == "font_add_sprite_ext")
-            return static_cast<std::int32_t>(assets.add_sprite_font(static_cast<int>(n(0)),
-                                                                    text(1),
-                                                                    n(2) != 0,
-                                                                    static_cast<int>(n(3))));
+            return static_cast<std::int32_t>(
+                assets.add_sprite_font(static_cast<int>(n(0)), text(1), n(2) != 0, static_cast<int>(n(3))));
         if (name == "draw_set_font") {
             draw_font = static_cast<int>(n(0));
             return std::monostate{};
@@ -8591,7 +8615,8 @@ struct GameSession::Impl {
             return matrix_value(result);
         }
         if (name == "matrix_build_lookat" || name == "matrix_build_projection_ortho" ||
-            name == "matrix_build_projection_perspective" || name == "matrix_build_projection_perspective_fov") {
+            name == "matrix_build_projection_perspective" ||
+            name == "matrix_build_projection_perspective_fov") {
             Matrix4 result{};
             if (name == "matrix_build_lookat") {
                 if (args.size() < 9)
@@ -8615,9 +8640,22 @@ struct GameSession::Impl {
                 ux = sy * fz - sz * fy;
                 uy = sz * fx - sx * fz;
                 uz = sx * fy - sy * fx;
-                result = {sx, ux, -fx, 0, sy, uy, -fy, 0, sz, uz, -fz, 0,
-                          -(sx * ex + sy * ey + sz * ez), -(ux * ex + uy * ey + uz * ez),
-                          fx * ex + fy * ey + fz * ez, 1};
+                result = {sx,
+                          ux,
+                          -fx,
+                          0,
+                          sy,
+                          uy,
+                          -fy,
+                          0,
+                          sz,
+                          uz,
+                          -fz,
+                          0,
+                          -(sx * ex + sy * ey + sz * ez),
+                          -(ux * ex + uy * ey + uz * ez),
+                          fx * ex + fy * ey + fz * ez,
+                          1};
             } else {
                 const double first = n(0), second = n(1), near_plane = n(2), far_plane = n(3);
                 const double distance = far_plane - near_plane;
@@ -8626,8 +8664,22 @@ struct GameSession::Impl {
                 if (name == "matrix_build_projection_ortho") {
                     if (first == 0 || second == 0)
                         throw Error(ErrorKind::vm, "orthographic projection dimensions cannot be zero");
-                    result = {2 / first, 0, 0, 0, 0, 2 / second, 0, 0,
-                              0, 0, 1 / distance, 0, -1, -1, -near_plane / distance, 1};
+                    result = {2 / first,
+                              0,
+                              0,
+                              0,
+                              0,
+                              2 / second,
+                              0,
+                              0,
+                              0,
+                              0,
+                              1 / distance,
+                              0,
+                              -1,
+                              -1,
+                              -near_plane / distance,
+                              1};
                 } else {
                     double scale_x = 0, scale_y = 0;
                     if (name == "matrix_build_projection_perspective_fov") {
@@ -8641,8 +8693,22 @@ struct GameSession::Impl {
                         scale_x = 2 * near_plane / first;
                         scale_y = 2 * near_plane / second;
                     }
-                    result = {scale_x, 0, 0, 0, 0, scale_y, 0, 0,
-                              0, 0, far_plane / distance, 1, 0, 0, -near_plane * far_plane / distance, 0};
+                    result = {scale_x,
+                              0,
+                              0,
+                              0,
+                              0,
+                              scale_y,
+                              0,
+                              0,
+                              0,
+                              0,
+                              far_plane / distance,
+                              1,
+                              0,
+                              0,
+                              -near_plane * far_plane / distance,
+                              0};
                 }
             }
             if (args.size() > (name == "matrix_build_lookat" ? 9U : 4U)) {
@@ -8728,7 +8794,8 @@ struct GameSession::Impl {
         }
         if (name == "camera_get_view_mat" || name == "camera_get_proj_mat") {
             const auto &camera = camera_for_id(number(args[0]));
-            return matrix_value(name == "camera_get_view_mat" ? camera.view_matrix : camera.projection_matrix);
+            return matrix_value(name == "camera_get_view_mat" ? camera.view_matrix
+                                                              : camera.projection_matrix);
         }
         if (name == "camera_apply") {
             active_camera_id = static_cast<int>(n(0));
@@ -8754,11 +8821,11 @@ struct GameSession::Impl {
             engine["view_object" + view_suffix(view)] = std::int32_t{camera.target};
             return std::monostate{};
         }
-        if (name == "camera_get_view_x" || name == "camera_get_view_y" ||
-            name == "camera_get_view_width" || name == "camera_get_view_height" ||
-            name == "camera_get_view_angle" || name == "camera_get_view_target" ||
-            name == "camera_get_view_border_x" || name == "camera_get_view_border_y" ||
-            name == "camera_get_view_speed_x" || name == "camera_get_view_speed_y") {
+        if (name == "camera_get_view_x" || name == "camera_get_view_y" || name == "camera_get_view_width" ||
+            name == "camera_get_view_height" || name == "camera_get_view_angle" ||
+            name == "camera_get_view_target" || name == "camera_get_view_border_x" ||
+            name == "camera_get_view_border_y" || name == "camera_get_view_speed_x" ||
+            name == "camera_get_view_speed_y") {
             const auto &camera = camera_for_id(static_cast<int>(n(0)));
             if (name == "camera_get_view_x")
                 return camera.x;
@@ -8807,25 +8874,23 @@ struct GameSession::Impl {
         if (name == "view_get_visible" || name == "view_get_xport" || name == "view_get_yport" ||
             name == "view_get_wport" || name == "view_get_hport" || name == "view_get_surface_id") {
             const int view = view_index();
-            const std::string_view field =
-                name == "view_get_visible"     ? "view_visible"
-                : name == "view_get_xport"     ? "view_xport"
-                : name == "view_get_yport"     ? "view_yport"
-                : name == "view_get_wport"     ? "view_wport"
-                : name == "view_get_hport"     ? "view_hport"
-                                              : "view_surface_id";
+            const std::string_view field = name == "view_get_visible" ? "view_visible"
+                                           : name == "view_get_xport" ? "view_xport"
+                                           : name == "view_get_yport" ? "view_yport"
+                                           : name == "view_get_wport" ? "view_wport"
+                                           : name == "view_get_hport" ? "view_hport"
+                                                                      : "view_surface_id";
             return view_value(field, view, std::int32_t{field == "view_surface_id" ? -1 : 0});
         }
         if (name == "view_set_visible" || name == "view_set_xport" || name == "view_set_yport" ||
             name == "view_set_wport" || name == "view_set_hport" || name == "view_set_surface_id") {
             const int view = view_index();
-            const std::string_view field =
-                name == "view_set_visible"     ? "view_visible"
-                : name == "view_set_xport"     ? "view_xport"
-                : name == "view_set_yport"     ? "view_yport"
-                : name == "view_set_wport"     ? "view_wport"
-                : name == "view_set_hport"     ? "view_hport"
-                                              : "view_surface_id";
+            const std::string_view field = name == "view_set_visible" ? "view_visible"
+                                           : name == "view_set_xport" ? "view_xport"
+                                           : name == "view_set_yport" ? "view_yport"
+                                           : name == "view_set_wport" ? "view_wport"
+                                           : name == "view_set_hport" ? "view_hport"
+                                                                      : "view_surface_id";
             engine[std::string(field) + view_suffix(view)] = n(1);
             return std::monostate{};
         }
@@ -8837,26 +8902,27 @@ struct GameSession::Impl {
             return std::int32_t{valign};
         if (name == "draw_text") {
             std::string storage;
-            assets.draw_text(current_canvas(), draw_font, n(0), n(1), text_view(2, storage), draw_color, draw_alpha,
-                             halign, valign);
+            assets.draw_text(current_canvas(), draw_font, n(0), n(1), text_view(2, storage), draw_color,
+                             draw_alpha, halign, valign);
             return std::monostate{};
         }
         if (name == "draw_text_color" || name == "draw_text_colour") {
             const unsigned color = static_cast<unsigned>((n(3) + n(4) + n(5) + n(6)) / 4);
             std::string storage;
-            assets.draw_text(current_canvas(), draw_font, n(0), n(1), text_view(2, storage), color, n(7), halign, valign);
+            assets.draw_text(current_canvas(), draw_font, n(0), n(1), text_view(2, storage), color, n(7),
+                             halign, valign);
             return std::monostate{};
         }
         if (name == "draw_text_transformed") {
             std::string storage;
-            assets.draw_text(current_canvas(), draw_font, n(0), n(1), text_view(2, storage), draw_color, draw_alpha,
-                             halign, valign, n(3), n(4), n(5));
+            assets.draw_text(current_canvas(), draw_font, n(0), n(1), text_view(2, storage), draw_color,
+                             draw_alpha, halign, valign, n(3), n(4), n(5));
             return std::monostate{};
         }
         if (name == "draw_text_transformed_color") {
             std::string storage;
-            assets.draw_text(current_canvas(), draw_font, n(0), n(1), text_view(2, storage), static_cast<unsigned>(n(6)),
-                             draw_alpha, halign, valign, n(3), n(4), n(5));
+            assets.draw_text(current_canvas(), draw_font, n(0), n(1), text_view(2, storage),
+                             static_cast<unsigned>(n(6)), draw_alpha, halign, valign, n(3), n(4), n(5));
             return std::monostate{};
         }
         if (name == "draw_text_ext" || name == "draw_text_ext_transformed") {
@@ -8878,18 +8944,19 @@ struct GameSession::Impl {
                 const double line_offset = line_height * static_cast<double>(line_number);
                 const double x = n(0) + (transformed ? line_offset * sy * sn : 0);
                 const double y = n(1) + (transformed ? line_offset * sy * cs : line_offset);
-                assets.draw_text(current_canvas(), draw_font, x, y, value.substr(line_start, line_end - line_start),
-                                 draw_color, draw_alpha, halign, valign, sx, sy, angle);
+                assets.draw_text(current_canvas(), draw_font, x, y,
+                                 value.substr(line_start, line_end - line_start), draw_color, draw_alpha,
+                                 halign, valign, sx, sy, angle);
                 line_start = line_end;
                 line_width = 0;
                 ++line_number;
             };
             for (std::size_t index = 0; index < value.size(); ++index) {
                 const char ch = value[index];
-                const double char_width = ch == '\n' || ch == '#'
-                                              ? 0
-                                              : assets.text_character_width(
-                                                    draw_font, static_cast<unsigned char>(ch));
+                const double char_width =
+                    ch == '\n' || ch == '#'
+                        ? 0
+                        : assets.text_character_width(draw_font, static_cast<unsigned char>(ch));
                 if ((ch == ' ' && max_width > 0 && line_width + char_width > max_width) || ch == '\n' ||
                     ch == '#') {
                     draw_line(index);
@@ -8923,10 +8990,8 @@ struct GameSession::Impl {
                 return std::monostate{};
             try {
                 video_surface = next_surface++;
-                surfaces.emplace(
-                    std::piecewise_construct,
-                    std::forward_as_tuple(video_surface),
-                    std::forward_as_tuple(video_player.width(), video_player.height()));
+                surfaces.emplace(std::piecewise_construct, std::forward_as_tuple(video_surface),
+                                 std::forward_as_tuple(video_player.width(), video_player.height()));
                 surfaces.at(video_surface).clear_transparent();
             } catch (...) {
                 video_player.close();
@@ -9100,8 +9165,8 @@ struct GameSession::Impl {
             auto &target = current_canvas();
             const auto draw = [&](const Canvas &source_canvas) {
                 target.draw_surface(source_canvas, n(1), n(2), extended ? n(3) : 1, extended ? n(4) : 1,
-                                    extended ? n(5) : 0,
-                                    extended ? static_cast<unsigned>(n(6)) : 0xffffff, extended ? n(7) : 1);
+                                    extended ? n(5) : 0, extended ? static_cast<unsigned>(n(6)) : 0xffffff,
+                                    extended ? n(7) : 1);
             };
             if (&target == source) {
                 const Canvas source_copy = *source;
@@ -9135,8 +9200,8 @@ struct GameSession::Impl {
             const auto draw_tiles = [&](const Canvas &source) {
                 for (double tile_y = start_y; tile_y < target.logical_height(); tile_y += tile_height)
                     for (double tile_x = start_x; tile_x < target.logical_width(); tile_x += tile_width)
-                        target.draw_surface(source, tile_x, tile_y, sx, sy, 0,
-                                            static_cast<unsigned>(n(5)), n(6));
+                        target.draw_surface(source, tile_x, tile_y, sx, sy, 0, static_cast<unsigned>(n(5)),
+                                            n(6));
             };
             if (&target == source_ptr) {
                 const Canvas source_copy = *source_ptr;
@@ -9180,7 +9245,7 @@ struct GameSession::Impl {
             name == "draw_line_width_color" || name == "draw_line_colour" ||
             name == "draw_line_width_colour") {
             const bool thick = name == "draw_line_width" || name == "draw_line_width_color" ||
-                              name == "draw_line_width_colour";
+                               name == "draw_line_width_colour";
             const bool colored = name == "draw_line_color" || name == "draw_line_width_color" ||
                                  name == "draw_line_colour" || name == "draw_line_width_colour";
             if (colored) {
@@ -9197,8 +9262,7 @@ struct GameSession::Impl {
                 draw_color = average_color_arguments(6, 3);
                 current_canvas().color(draw_color);
             }
-            assets.draw_triangle(current_canvas(), n(0), n(1), n(2), n(3), n(4), n(5),
-                                 n(outline_index) != 0);
+            assets.draw_triangle(current_canvas(), n(0), n(1), n(2), n(3), n(4), n(5), n(outline_index) != 0);
             return std::monostate{};
         }
         if (name == "draw_ellipse" || name == "draw_ellipse_color" || name == "draw_ellipse_colour") {
@@ -9225,7 +9289,8 @@ struct GameSession::Impl {
             const double width = std::fabs(n(2) - n(0)), height = std::fabs(n(3) - n(1));
             const double radius_x = extended ? n(4) : std::min(10.0, width / 4);
             const double radius_y = extended ? n(5) : std::min(10.0, height / 4);
-            assets.draw_round_rectangle(current_canvas(), n(0), n(1), n(2), n(3), radius_x, radius_y, outline);
+            assets.draw_round_rectangle(current_canvas(), n(0), n(1), n(2), n(3), radius_x, radius_y,
+                                        outline);
             return std::monostate{};
         }
         if (name == "draw_rectangle_color" || name == "draw_rectangle_colour") {
@@ -9276,8 +9341,7 @@ struct GameSession::Impl {
                 if (length <= 0)
                     continue;
                 const double fraction = std::min(1.0, remaining / length);
-                assets.draw_line(current_canvas(), x + a.x, y + a.y,
-                                 x + a.x + (b.x - a.x) * fraction,
+                assets.draw_line(current_canvas(), x + a.x, y + a.y, x + a.x + (b.x - a.x) * fraction,
                                  y + a.y + (b.y - a.y) * fraction);
                 remaining -= length;
             }
@@ -9391,8 +9455,8 @@ struct GameSession::Impl {
             if (args.empty() || (name == "gpu_set_blendequation_sepalpha" && args.size() < 2))
                 throw Error(ErrorKind::vm, std::string(name) + " requires an equation");
             gpu_blend_equations[0] = number(args[0]);
-            gpu_blend_equations[1] = name == "gpu_set_blendequation_sepalpha" ? number(args[1])
-                                                                                 : gpu_blend_equations[0];
+            gpu_blend_equations[1] =
+                name == "gpu_set_blendequation_sepalpha" ? number(args[1]) : gpu_blend_equations[0];
             configure_blend();
             return std::monostate{};
         }
@@ -9418,7 +9482,8 @@ struct GameSession::Impl {
                 if (args.size() < static_cast<std::size_t>(count))
                     throw Error(ErrorKind::vm, "extended blend mode requires more factors");
                 for (int i = 0; i < count; ++i)
-                    gpu_blend_factors[static_cast<std::size_t>(i)] = number(args[static_cast<std::size_t>(i)]);
+                    gpu_blend_factors[static_cast<std::size_t>(i)] =
+                        number(args[static_cast<std::size_t>(i)]);
                 if (!separate_alpha) {
                     gpu_blend_factors[2] = gpu_blend_factors[0];
                     gpu_blend_factors[3] = gpu_blend_factors[1];
@@ -9446,12 +9511,13 @@ struct GameSession::Impl {
             return std::monostate{};
         }
         if (name == "draw_background_stretched") {
-            assets.draw_background_stretched(current_canvas(), static_cast<int>(n(0)), n(1), n(2), n(3), n(4));
+            assets.draw_background_stretched(current_canvas(), static_cast<int>(n(0)), n(1), n(2), n(3),
+                                             n(4));
             return std::monostate{};
         }
         if (name == "draw_background_part_ext") {
-            assets.draw_background_part_ext(current_canvas(), static_cast<int>(n(0)), n(1), n(2), n(3), n(4), n(5),
-                                            n(6), n(7), n(8), static_cast<unsigned>(n(9)), n(10));
+            assets.draw_background_part_ext(current_canvas(), static_cast<int>(n(0)), n(1), n(2), n(3), n(4),
+                                            n(5), n(6), n(7), n(8), static_cast<unsigned>(n(9)), n(10));
             return std::monostate{};
         }
         if (name == "draw_sprite_tiled_ext") {
@@ -9477,7 +9543,8 @@ struct GameSession::Impl {
         }
         if (name == "draw_sprite") {
             const auto f = n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1);
-            assets.draw_sprite(current_canvas(), static_cast<int>(n(0)), f, n(2), n(3), 1, 1, 0, 0xffffff, draw_alpha);
+            assets.draw_sprite(current_canvas(), static_cast<int>(n(0)), f, n(2), n(3), 1, 1, 0, 0xffffff,
+                               draw_alpha);
             return std::monostate{};
         }
         if (name == "draw_sprite_pos") {
@@ -9500,8 +9567,9 @@ struct GameSession::Impl {
             const auto sprite = static_cast<int>(n(0));
             const auto &info = assets.sprite(sprite);
             const double sx = info.width ? n(4) / info.width : 1, sy = info.height ? n(5) / info.height : 1;
-            assets.draw_sprite(current_canvas(), sprite, n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1),
-                               n(2), n(3), sx, sy, 0, 0xffffff, draw_alpha);
+            assets.draw_sprite(current_canvas(), sprite,
+                               n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1), n(2), n(3), sx,
+                               sy, 0, 0xffffff, draw_alpha);
             return std::monostate{};
         }
         if (name == "draw_sprite_stretched_ext") {
@@ -9528,10 +9596,11 @@ struct GameSession::Impl {
         }
         if (name == "draw_getpixel") {
             const int x = static_cast<int>(n(0)), y = static_cast<int>(n(1));
-            if (x < 0 || y < 0 || x >= current_canvas().logical_width() || y >= current_canvas().logical_height())
+            if (x < 0 || y < 0 || x >= current_canvas().logical_width() ||
+                y >= current_canvas().logical_height())
                 return std::int32_t{-1};
             const auto pixel = current_canvas().pixel(static_cast<int>(x * current_canvas().render_scale()),
-                                            static_cast<int>(y * current_canvas().render_scale()));
+                                                      static_cast<int>(y * current_canvas().render_scale()));
             return std::int32_t{
                 static_cast<int>(((pixel >> 16) & 0xff) | (pixel & 0xff00) | ((pixel & 0xff) << 16))};
         }
@@ -9623,8 +9692,8 @@ struct GameSession::Impl {
                 const auto own_bounds = bounds(*self);
                 for (const auto &candidate : instances) {
                     if (!candidate->alive || candidate == self || collision_sprite(*candidate) < 0 ||
-                        !collides(*self, value_number(self->vars.at("x")),
-                                  value_number(self->vars.at("y")), *candidate))
+                        !collides(*self, value_number(self->vars.at("x")), value_number(self->vars.at("y")),
+                                  *candidate))
                         continue;
                     const auto other_bounds = bounds(*candidate);
                     if (!own_bounds.valid || !other_bounds.valid)
@@ -9635,11 +9704,12 @@ struct GameSession::Impl {
                                              std::max(own_bounds.top, other_bounds.top);
                     if (overlap_x <= 0 || overlap_y <= 0)
                         continue;
-                    const double center_x = (own_bounds.left + own_bounds.right -
-                                             other_bounds.left - other_bounds.right) * 0.5;
-                    const double center_y = (own_bounds.top + own_bounds.bottom -
-                                             other_bounds.top - other_bounds.bottom) * 0.5;
-                    if (overlap_x < overlap_y || (overlap_x == overlap_y && std::fabs(hspeed) >= std::fabs(vspeed)))
+                    const double center_x =
+                        (own_bounds.left + own_bounds.right - other_bounds.left - other_bounds.right) * 0.5;
+                    const double center_y =
+                        (own_bounds.top + own_bounds.bottom - other_bounds.top - other_bounds.bottom) * 0.5;
+                    if (overlap_x < overlap_y ||
+                        (overlap_x == overlap_y && std::fabs(hspeed) >= std::fabs(vspeed)))
                         hspeed = center_x == 0 ? -hspeed : std::copysign(std::fabs(hspeed), center_x);
                     else
                         vspeed = center_y == 0 ? -vspeed : std::copysign(std::fabs(vspeed), center_y);
@@ -9653,8 +9723,8 @@ struct GameSession::Impl {
             self->vars["vspeed"] = vspeed;
             self->vars["speed"] = std::hypot(hspeed, vspeed);
             if (hspeed != 0 || vspeed != 0)
-                self->vars["direction"] = std::fmod(std::atan2(-vspeed, hspeed) * 180 / 3.141592653589793 + 360,
-                                                     360);
+                self->vars["direction"] =
+                    std::fmod(std::atan2(-vspeed, hspeed) * 180 / 3.141592653589793 + 360, 360);
             return std::monostate{};
         }
         if (name == "keyboard_clear") {
@@ -9802,18 +9872,16 @@ struct GameSession::Impl {
                     const auto index = static_cast<std::size_t>(row) * grid.columns + column;
                     current_canvas().color(grid.blocked[index] ? 0x0000ffU : 0x00ff00U);
                     assets.rectangle(current_canvas(), grid.x + column * grid.cell_width,
-                                     grid.y + row * grid.cell_height,
-                                     grid.x + (column + 1) * grid.cell_width,
+                                     grid.y + row * grid.cell_height, grid.x + (column + 1) * grid.cell_width,
                                      grid.y + (row + 1) * grid.cell_height, false);
                 }
             current_canvas().color(saved_color);
             current_canvas().alpha(saved_alpha);
             return true;
         }
-        if (name == "mp_grid_destroy" || name == "mp_grid_clear_all" ||
-            name == "mp_grid_add_cell" || name == "mp_grid_clear_cell" ||
-            name == "mp_grid_add_rectangle" || name == "mp_grid_clear_rectangle" ||
-            name == "mp_grid_add_instances") {
+        if (name == "mp_grid_destroy" || name == "mp_grid_clear_all" || name == "mp_grid_add_cell" ||
+            name == "mp_grid_clear_cell" || name == "mp_grid_add_rectangle" ||
+            name == "mp_grid_clear_rectangle" || name == "mp_grid_add_instances") {
             const int id = number(args[0]);
             auto found = mp_grids.find(id);
             if (name == "mp_grid_destroy") {
@@ -9868,7 +9936,8 @@ struct GameSession::Impl {
         if (name == "mp_grid_path") {
             const int grid_id = number(args[0]), path_id = number(args[1]);
             const auto grid_it = mp_grids.find(grid_id);
-            if (grid_it == mp_grids.end() || path_id < 0 || static_cast<std::size_t>(path_id) >= paths.size() ||
+            if (grid_it == mp_grids.end() || path_id < 0 ||
+                static_cast<std::size_t>(path_id) >= paths.size() ||
                 !paths[static_cast<std::size_t>(path_id)].valid)
                 return false;
             const auto &grid = grid_it->second;
@@ -9911,7 +9980,7 @@ struct GameSession::Impl {
             costs[start] = 0;
             frontier.emplace(heuristic(start_x, start_y), start);
             static constexpr std::array<std::pair<int, int>, 8> neighbors = {
-                std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1},
+                std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1},  std::pair{0, -1},
                 std::pair{1, 1}, std::pair{1, -1}, std::pair{-1, 1}, std::pair{-1, -1}};
             while (!frontier.empty()) {
                 const auto current = frontier.top().second;
@@ -9969,11 +10038,10 @@ struct GameSession::Impl {
             return static_cast<std::int32_t>(paths.size() - 1);
         }
         if (name == "path_exists" || name == "path_delete" || name == "path_clear_points" ||
-            name == "path_add_point" ||
-            name == "path_set_closed" || name == "path_set_kind" || name == "path_set_precision" ||
-            name == "path_get_x" || name == "path_get_y" || name == "path_get_speed" ||
-            name == "path_get_length" || name == "path_get_number" || name == "path_get_point_x" ||
-            name == "path_get_point_y") {
+            name == "path_add_point" || name == "path_set_closed" || name == "path_set_kind" ||
+            name == "path_set_precision" || name == "path_get_x" || name == "path_get_y" ||
+            name == "path_get_speed" || name == "path_get_length" || name == "path_get_number" ||
+            name == "path_get_point_x" || name == "path_get_point_y") {
             const int id = static_cast<int>(n(0));
             const bool exists = id >= 0 && static_cast<std::size_t>(id) < paths.size() &&
                                 paths[static_cast<std::size_t>(id)].valid;
@@ -10070,8 +10138,8 @@ struct GameSession::Impl {
             self->vars["vspeed"] = vspeed;
             self->vars["speed"] = std::hypot(hspeed, vspeed);
             if (hspeed != 0 || vspeed != 0)
-                self->vars["direction"] = std::fmod(
-                    std::atan2(-vspeed, hspeed) * 180 / 3.141592653589793 + 360, 360);
+                self->vars["direction"] =
+                    std::fmod(std::atan2(-vspeed, hspeed) * 180 / 3.141592653589793 + 360, 360);
             return std::monostate{};
         }
         if (name == "move_towards_point") {
@@ -10160,9 +10228,8 @@ struct GameSession::Impl {
             }
             return std::int32_t{static_cast<int>(result)};
         }
-        if (name == "color_get_red" || name == "colour_get_red" ||
-            name == "color_get_green" || name == "colour_get_green" ||
-            name == "color_get_blue" || name == "colour_get_blue") {
+        if (name == "color_get_red" || name == "colour_get_red" || name == "color_get_green" ||
+            name == "colour_get_green" || name == "color_get_blue" || name == "colour_get_blue") {
             const auto color = static_cast<std::uint32_t>(number(args[0]));
             const unsigned shift = name.ends_with("red") ? 0U : name.ends_with("green") ? 8U : 16U;
             return std::int32_t{static_cast<std::int32_t>((color >> shift) & 0xffU)};
@@ -10254,14 +10321,14 @@ struct GameSession::Impl {
                 if (instance != self && collides(*self, x, y, *instance))
                     hits.push_back(instance);
             if (n(4) != 0) {
-                std::stable_sort(hits.begin(), hits.end(), [&](const InstancePtr &left,
-                                                               const InstancePtr &right) {
-                    const double lx = value_number(left->vars.at("x")) - x;
-                    const double ly = value_number(left->vars.at("y")) - y;
-                    const double rx = value_number(right->vars.at("x")) - x;
-                    const double ry = value_number(right->vars.at("y")) - y;
-                    return lx * lx + ly * ly < rx * rx + ry * ry;
-                });
+                std::stable_sort(hits.begin(), hits.end(),
+                                 [&](const InstancePtr &left, const InstancePtr &right) {
+                                     const double lx = value_number(left->vars.at("x")) - x;
+                                     const double ly = value_number(left->vars.at("y")) - y;
+                                     const double rx = value_number(right->vars.at("x")) - x;
+                                     const double ry = value_number(right->vars.at("y")) - y;
+                                     return lx * lx + ly * ly < rx * rx + ry * ry;
+                                 });
             }
             for (const auto &instance : hits)
                 list.emplace_back(std::int32_t{instance->id});
@@ -10305,14 +10372,14 @@ struct GameSession::Impl {
             }
             if (ordered) {
                 const double cx = (x1 + x2) * 0.5, cy = (y1 + y2) * 0.5;
-                std::stable_sort(hits.begin(), hits.end(), [&](const InstancePtr &left,
-                                                               const InstancePtr &right) {
-                    const double lx = value_number(left->vars.at("x")) - cx;
-                    const double ly = value_number(left->vars.at("y")) - cy;
-                    const double rx = value_number(right->vars.at("x")) - cx;
-                    const double ry = value_number(right->vars.at("y")) - cy;
-                    return lx * lx + ly * ly < rx * rx + ry * ry;
-                });
+                std::stable_sort(hits.begin(), hits.end(),
+                                 [&](const InstancePtr &left, const InstancePtr &right) {
+                                     const double lx = value_number(left->vars.at("x")) - cx;
+                                     const double ly = value_number(left->vars.at("y")) - cy;
+                                     const double rx = value_number(right->vars.at("x")) - cx;
+                                     const double ry = value_number(right->vars.at("y")) - cy;
+                                     return lx * lx + ly * ly < rx * rx + ry * ry;
+                                 });
             }
             for (const auto &instance : hits)
                 list.emplace_back(std::int32_t{instance->id});
@@ -10367,8 +10434,9 @@ struct GameSession::Impl {
                     hits.emplace_back(instance, order);
             }
             if (ordered)
-                std::stable_sort(hits.begin(), hits.end(),
-                                 [](const auto &left, const auto &right) { return left.second < right.second; });
+                std::stable_sort(hits.begin(), hits.end(), [](const auto &left, const auto &right) {
+                    return left.second < right.second;
+                });
             for (const auto &[instance, distance] : hits) {
                 (void)distance;
                 list.emplace_back(std::int32_t{instance->id});
@@ -10445,8 +10513,7 @@ struct GameSession::Impl {
                 const auto found = gmrt_instance_values.find(structure->get());
                 return found != gmrt_instance_values.end() && found->second && found->second->alive;
             }
-            if (std::holds_alternative<CallablePtr>(args[0]) ||
-                std::holds_alternative<ArrayPtr>(args[0]))
+            if (std::holds_alternative<CallablePtr>(args[0]) || std::holds_alternative<ArrayPtr>(args[0]))
                 return false;
             return first_target(static_cast<int>(n(0)), self, other) != nullptr;
         }
@@ -10828,9 +10895,9 @@ struct GameSession::Impl {
             const int button = static_cast<int>(n(1)) - 32769;
             if (!gamepad.connected || n(0) != 0 || button < 0 || button >= 16)
                 return false;
-            return name == "gamepad_button_check_pressed" ? gamepad.pressed[button]
+            return name == "gamepad_button_check_pressed"    ? gamepad.pressed[button]
                    : name == "gamepad_button_check_released" ? gamepad_released[button]
-                                                               : gamepad.buttons[button];
+                                                             : gamepad.buttons[button];
         }
         if (name == "gamepad_button_value") {
             const int raw_button = number(args[1]);
@@ -10849,11 +10916,10 @@ struct GameSession::Impl {
                 return 0.0;
             return std::copysign((magnitude - gamepad_axis_deadzone) / (1.0 - gamepad_axis_deadzone), value);
         }
-        if (name == "joystick_check_button" ||
-            name == "joystick_buttons" || name == "joystick_has_pov")
+        if (name == "joystick_check_button" || name == "joystick_buttons" || name == "joystick_has_pov")
             return false;
-        if (name == "joystick_pov" || name == "joystick_direction" ||
-            name == "joystick_xpos" || name == "joystick_ypos")
+        if (name == "joystick_pov" || name == "joystick_direction" || name == "joystick_xpos" ||
+            name == "joystick_ypos")
             return 0.0;
         if (name == "vertex_format_begin") {
             vertex_format_building = true;
@@ -11010,14 +11076,14 @@ struct GameSession::Impl {
                 const double area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
                 if (std::fabs(area) < 1e-12)
                     return;
-                const int left = static_cast<int>(std::clamp(std::floor(std::min({ax, bx, cx})),
-                                                             0.0, static_cast<double>(current_canvas().width())));
-                const int right = static_cast<int>(std::clamp(std::ceil(std::max({ax, bx, cx})),
-                                                              0.0, static_cast<double>(current_canvas().width())));
-                const int top = static_cast<int>(std::clamp(std::floor(std::min({ay, by, cy})),
-                                                            0.0, static_cast<double>(current_canvas().height())));
-                const int bottom = static_cast<int>(std::clamp(std::ceil(std::max({ay, by, cy})),
-                                                               0.0, static_cast<double>(current_canvas().height())));
+                const int left = static_cast<int>(std::clamp(std::floor(std::min({ax, bx, cx})), 0.0,
+                                                             static_cast<double>(current_canvas().width())));
+                const int right = static_cast<int>(std::clamp(std::ceil(std::max({ax, bx, cx})), 0.0,
+                                                              static_cast<double>(current_canvas().width())));
+                const int top = static_cast<int>(std::clamp(std::floor(std::min({ay, by, cy})), 0.0,
+                                                            static_cast<double>(current_canvas().height())));
+                const int bottom = static_cast<int>(std::clamp(
+                    std::ceil(std::max({ay, by, cy})), 0.0, static_cast<double>(current_canvas().height())));
                 std::array<double, 8> uvs{};
                 if (texture)
                     uvs = assets.sprite_uvs(texture->first, texture->second);
@@ -11030,11 +11096,11 @@ struct GameSession::Impl {
                         if (wa < 0 || wb < 0 || wc < 0)
                             continue;
                         const auto channel = [&](unsigned shift) {
-                            return static_cast<unsigned>(std::clamp(
-                                std::lround(wa * ((a.color >> shift) & 255U) +
-                                            wb * ((b.color >> shift) & 255U) +
-                                            wc * ((c.color >> shift) & 255U)),
-                                0L, 255L));
+                            return static_cast<unsigned>(
+                                std::clamp(std::lround(wa * ((a.color >> shift) & 255U) +
+                                                       wb * ((b.color >> shift) & 255U) +
+                                                       wc * ((c.color >> shift) & 255U)),
+                                           0L, 255L));
                         };
                         const unsigned tint = channel(0) | (channel(8) << 8) | (channel(16) << 16);
                         const double alpha = std::clamp(wa * a.alpha + wb * b.alpha + wc * c.alpha, 0.0, 1.0);
@@ -11043,17 +11109,18 @@ struct GameSession::Impl {
                             const double u = wa * a.u + wb * b.u + wc * c.u;
                             const double v = wa * a.v + wb * b.v + wc * c.v;
                             const double tw = uvs[2] - uvs[0], th = uvs[3] - uvs[1];
-                            const double local_u = tw != 0 ? (uvs[4] + (u - uvs[0]) / tw *
-                                                                         (assets.sprite(texture->first).width *
-                                                                          uvs[6])) /
-                                                                    assets.sprite(texture->first).width
-                                                          : 0;
-                            const double local_v = th != 0 ? (uvs[5] + (v - uvs[1]) / th *
-                                                                         (assets.sprite(texture->first).height *
-                                                                          uvs[7])) /
-                                                                    assets.sprite(texture->first).height
-                                                          : 0;
-                            sample = assets.sample_sprite(texture->first, texture->second, local_u, local_v, false);
+                            const double local_u =
+                                tw != 0 ? (uvs[4] + (u - uvs[0]) / tw *
+                                                        (assets.sprite(texture->first).width * uvs[6])) /
+                                              assets.sprite(texture->first).width
+                                        : 0;
+                            const double local_v =
+                                th != 0 ? (uvs[5] + (v - uvs[1]) / th *
+                                                        (assets.sprite(texture->first).height * uvs[7])) /
+                                              assets.sprite(texture->first).height
+                                        : 0;
+                            sample = assets.sample_sprite(texture->first, texture->second, local_u, local_v,
+                                                          false);
                         }
                         current_canvas().rgba_pixel(px, py, sample, tint, alpha);
                     }
@@ -11100,11 +11167,10 @@ struct GameSession::Impl {
         if (name == "switch_accounts_open_user" || name == "switch_accounts_select_account" ||
             name == "switch_controller_support_show" || name == "switch_controller_set_supported_styles" ||
             name == "switch_controller_support_set_defaults" ||
-            name == "switch_controller_support_set_singleplayer_only" ||
-            name == "switch_save_data_commit" || name == "switch_show_store" ||
-            name == "psn_init_np_libs" || name == "psn_init_trophy" || name == "psn_load_modules" ||
-            name == "psn_np_commerce_dialog_tick" || name == "psn_post_uds_event" || name == "psn_tick" ||
-            name == "psn_unlock_trophy")
+            name == "switch_controller_support_set_singleplayer_only" || name == "switch_save_data_commit" ||
+            name == "switch_show_store" || name == "psn_init_np_libs" || name == "psn_init_trophy" ||
+            name == "psn_load_modules" || name == "psn_np_commerce_dialog_tick" ||
+            name == "psn_post_uds_event" || name == "psn_tick" || name == "psn_unlock_trophy")
             return std::monostate{};
         if (name == "psn_get_trophy_unlock_state")
             return std::int32_t{0};
@@ -11190,8 +11256,8 @@ struct GameSession::Impl {
         if (name == "irandom_range") {
             const int first = static_cast<int>(std::floor(n(0)));
             const int second = static_cast<int>(std::floor(n(1)));
-            return std::int32_t{std::uniform_int_distribution<int>(std::min(first, second),
-                                                                    std::max(first, second))(random)};
+            return std::int32_t{
+                std::uniform_int_distribution<int>(std::min(first, second), std::max(first, second))(random)};
         }
         if (name == "random")
             return std::generate_canonical<double, 53>(random) * n(0);
@@ -11214,8 +11280,8 @@ struct GameSession::Impl {
         if (name == "window_set_cursor")
             return std::monostate{};
         if (name == "game_get_speed") {
-            const double fps = value_number(engine.contains("room_speed") ? engine.at("room_speed")
-                                                                          : Value{60.0});
+            const double fps =
+                value_number(engine.contains("room_speed") ? engine.at("room_speed") : Value{60.0});
             return args.empty() || n(0) == 0 ? Value{fps} : Value{fps > 0 ? 1000000.0 / fps : 0.0};
         }
         if (name == "display_set_gui_size") {
@@ -11237,16 +11303,16 @@ struct GameSession::Impl {
             return static_cast<double>(render_height);
         if (name == "display_get_gui_width")
             return engine.contains("gui_width") ? engine.at("gui_width")
-                                                 : Value{static_cast<double>(render_width)};
+                                                : Value{static_cast<double>(render_width)};
         if (name == "display_get_gui_height")
             return engine.contains("gui_height") ? engine.at("gui_height")
-                                                  : Value{static_cast<double>(render_height)};
+                                                 : Value{static_cast<double>(render_height)};
         if (name == "window_get_width")
             return engine.contains("window_width") ? engine.at("window_width")
-                                                    : Value{static_cast<double>(render_width)};
+                                                   : Value{static_cast<double>(render_width)};
         if (name == "window_get_height")
             return engine.contains("window_height") ? engine.at("window_height")
-                                                     : Value{static_cast<double>(render_height)};
+                                                    : Value{static_cast<double>(render_height)};
         if (name == "window_get_x")
             return engine.contains("window_x") ? engine.at("window_x") : Value{0.0};
         if (name == "window_get_y")
@@ -11278,8 +11344,8 @@ struct GameSession::Impl {
             return false;
         if (name == "get_timer")
             return static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
-                                          std::chrono::steady_clock::now() - start_time)
-                                          .count());
+                                           std::chrono::steady_clock::now() - start_time)
+                                           .count());
         if (name == "get_string")
             return args.size() > 1 ? Value{text(1)} : Value{std::string{}};
         if (name == "get_integer")
@@ -11304,8 +11370,8 @@ struct GameSession::Impl {
         if (name == "shader_is_compiled")
             return shader_is_supported(static_cast<int>(n(0)));
         if (name == "shader_get_uniform" || name == "shader_get_sampler_index")
-            return std::int32_t{shader_uniform_handle(static_cast<int>(n(0)), text(1),
-                                                     name == "shader_get_sampler_index")};
+            return std::int32_t{
+                shader_uniform_handle(static_cast<int>(n(0)), text(1), name == "shader_get_sampler_index")};
         if (name == "shader_current")
             return std::int32_t{active_shader};
         if (name == "shader_set") {
@@ -11329,8 +11395,7 @@ struct GameSession::Impl {
                 const auto uniform = shader_uniforms.find(sampler);
                 if (uniform != shader_uniforms.end() && uniform->second.sampler && texture >= 0 &&
                     (sprite_textures.contains(texture) ||
-                     (texture_surfaces.contains(texture) &&
-                      surface_exists(texture_surfaces.at(texture)))))
+                     (texture_surfaces.contains(texture) && surface_exists(texture_surfaces.at(texture)))))
                     shader_texture_stages[sampler] = texture;
                 else
                     shader_texture_stages.erase(sampler);
@@ -11652,10 +11717,9 @@ struct GameSession::Impl {
                 if (timer.due_frame <= completed_frame)
                     due_callbacks.push_back(timer.id);
             for (const int timer_id : due_callbacks) {
-                const auto found = std::find_if(delayed_calls.begin(), delayed_calls.end(),
-                                                [timer_id](const DelayedCall &timer) {
-                                                    return timer.id == timer_id;
-                                                });
+                const auto found =
+                    std::find_if(delayed_calls.begin(), delayed_calls.end(),
+                                 [timer_id](const DelayedCall &timer) { return timer.id == timer_id; });
                 if (found == delayed_calls.end())
                     continue;
                 const auto timer = *found;
@@ -11678,9 +11742,8 @@ struct GameSession::Impl {
                 const double vw = value_number(engine.at("view_wview[0]")),
                              vh = value_number(engine.at("view_hview[0]"));
                 if (target >= 0 && vw > 0 && vh > 0) {
-                    auto tracked = std::find_if(instances.begin(), instances.end(), [&](const auto &i) {
-                        return i->alive && i->id == target;
-                    });
+                    auto tracked = std::find_if(instances.begin(), instances.end(),
+                                                [&](const auto &i) { return i->alive && i->id == target; });
                     if (tracked == instances.end())
                         tracked = std::find_if(instances.begin(), instances.end(), [&](const auto &i) {
                             return i->alive && i->object == target;
@@ -11735,8 +11798,7 @@ struct GameSession::Impl {
                 const double screen_width = canvas.logical_width();
                 const double screen_height = canvas.logical_height();
                 if (port_x == 0 && port_y == 0 && std::fabs(port_width - screen_width) < 0.5 &&
-                    port_height < screen_height &&
-                    std::fabs(w / h - screen_width / screen_height) < 0.001) {
+                    port_height < screen_height && std::fabs(w / h - screen_width / screen_height) < 0.001) {
                     port_height = screen_height;
                     engine["view_hport[0]"] = port_height;
                 }
@@ -11778,7 +11840,8 @@ struct GameSession::Impl {
                 if (hidden_tile_layers.contains(layer_id))
                     return;
                 double layer_x = 0, layer_y = 0;
-                if (const auto found = room.layer_indices.find(t.layer_id); found != room.layer_indices.end()) {
+                if (const auto found = room.layer_indices.find(t.layer_id);
+                    found != room.layer_indices.end()) {
                     const auto &layer = room.layers[found->second];
                     if (!layer.visible)
                         return;
@@ -11803,8 +11866,8 @@ struct GameSession::Impl {
                                             t.x + ox + layer_x, t.y + oy + layer_y, t.sx, t.sy,
                                             t.color & 0xffffffU, static_cast<double>(t.color >> 24) / 255.0);
                 } else {
-                    assets.draw_tile(canvas, t.id, source_x, source_y, t.width, t.height,
-                                     t.x + ox + layer_x, t.y + oy + layer_y, t.sx, t.sy, t.color, t.transform);
+                    assets.draw_tile(canvas, t.id, source_x, source_y, t.width, t.height, t.x + ox + layer_x,
+                                     t.y + oy + layer_y, t.sx, t.sy, t.color, t.transform);
                 }
             };
             struct LayerVisualEntry {
@@ -11820,7 +11883,7 @@ struct GameSession::Impl {
                     layer_visuals.push_back({static_cast<double>(layer.depth), layer.id, sprite.id, false});
                 for (const auto &background : layer.backgrounds)
                     layer_visuals.push_back({background.foreground ? std::numeric_limits<double>::lowest()
-                                                                  : static_cast<double>(layer.depth),
+                                                                   : static_cast<double>(layer.depth),
                                              layer.id, background.id, true});
             }
             std::stable_sort(layer_visuals.begin(), layer_visuals.end(),
@@ -11841,11 +11904,11 @@ struct GameSession::Impl {
                     return;
                 const double ox = layer.x - layer.origin_x, oy = layer.y - layer.origin_y;
                 if (entry.background) {
-                    const auto found = std::find_if(layer.backgrounds.begin(), layer.backgrounds.end(),
-                                                    [&](const LayerBackground &item) {
-                                                        return item.id == entry.element;
-                                                    });
-                    if (found == layer.backgrounds.end() || !found->visible || !assets.sprite_exists(found->sprite))
+                    const auto found =
+                        std::find_if(layer.backgrounds.begin(), layer.backgrounds.end(),
+                                     [&](const LayerBackground &item) { return item.id == entry.element; });
+                    if (found == layer.backgrounds.end() || !found->visible ||
+                        !assets.sprite_exists(found->sprite))
                         return;
                     auto &background = *found;
                     const auto &sprite = assets.sprite(background.sprite);
@@ -11866,16 +11929,16 @@ struct GameSession::Impl {
                     if (background.vtiled)
                         while (y > 0)
                             y -= step_y;
-                    const int columns = background.htiled
-                                            ? std::clamp(static_cast<int>(std::ceil((room.width - x) /
-                                                                                     std::fabs(step_x))),
-                                                         1, 256)
-                                            : 1;
-                    const int rows = background.vtiled
-                                         ? std::clamp(static_cast<int>(std::ceil((room.height - y) /
-                                                                                std::fabs(step_y))),
-                                                      1, 256)
-                                         : 1;
+                    const int columns =
+                        background.htiled
+                            ? std::clamp(static_cast<int>(std::ceil((room.width - x) / std::fabs(step_x))), 1,
+                                         256)
+                            : 1;
+                    const int rows =
+                        background.vtiled
+                            ? std::clamp(static_cast<int>(std::ceil((room.height - y) / std::fabs(step_y))),
+                                         1, 256)
+                            : 1;
                     const auto tint = background.color & 0xffffffU;
                     const double alpha = static_cast<double>(background.color >> 24) / 255.0;
                     for (int row = 0; row < rows && row * columns < 4096; ++row)
@@ -11885,28 +11948,28 @@ struct GameSession::Impl {
                     const double frame_count = static_cast<double>(sprite.frames.size());
                     if (frame_count > 0) {
                         const double fps = value_number(engine.at("room_speed"));
-                        const double advance = background.speed_type == 0 ? background.speed / fps
-                                                                          : background.speed;
-                        background.frame = std::fmod(std::fmod(background.frame + advance, frame_count) +
-                                                         frame_count,
-                                                     frame_count);
+                        const double advance =
+                            background.speed_type == 0 ? background.speed / fps : background.speed;
+                        background.frame = std::fmod(
+                            std::fmod(background.frame + advance, frame_count) + frame_count, frame_count);
                     }
                     return;
                 }
-                const auto found = std::find_if(layer.sprites.begin(), layer.sprites.end(),
-                                                [&](const LayerSprite &item) { return item.id == entry.element; });
+                const auto found =
+                    std::find_if(layer.sprites.begin(), layer.sprites.end(),
+                                 [&](const LayerSprite &item) { return item.id == entry.element; });
                 if (found == layer.sprites.end() || !assets.sprite_exists(found->sprite))
                     return;
                 auto &sprite = *found;
-                assets.draw_sprite(canvas, sprite.sprite, sprite.frame, sprite.x + ox, sprite.y + oy, sprite.sx,
-                                   sprite.sy, sprite.rotation, sprite.color & 0xffffffU,
+                assets.draw_sprite(canvas, sprite.sprite, sprite.frame, sprite.x + ox, sprite.y + oy,
+                                   sprite.sx, sprite.sy, sprite.rotation, sprite.color & 0xffffffU,
                                    static_cast<double>(sprite.color >> 24) / 255.0);
                 const double frame_count = static_cast<double>(assets.sprite(sprite.sprite).frames.size());
                 if (frame_count > 0 && sprite.speed != 0) {
                     const double fps = value_number(engine.at("room_speed"));
                     const double advance = sprite.speed_type == 0 ? sprite.speed / fps : sprite.speed;
-                    sprite.frame = std::fmod(std::fmod(sprite.frame + advance, frame_count) + frame_count,
-                                             frame_count);
+                    sprite.frame =
+                        std::fmod(std::fmod(sprite.frame + advance, frame_count) + frame_count, frame_count);
                 }
             };
             auto run_layer_script = [&](const Value &script, const InstancePtr &context) {
@@ -11915,14 +11978,15 @@ struct GameSession::Impl {
                 const auto old_event_type = engine.find("event_type");
                 const auto old_event_number = engine.find("event_number");
                 const std::optional<Value> saved_event_type =
-                    old_event_type == engine.end() ? std::nullopt : std::optional<Value>{old_event_type->second};
-                const std::optional<Value> saved_event_number = old_event_number == engine.end()
-                                                                   ? std::nullopt
-                                                                   : std::optional<Value>{old_event_number->second};
+                    old_event_type == engine.end() ? std::nullopt
+                                                   : std::optional<Value>{old_event_type->second};
+                const std::optional<Value> saved_event_number =
+                    old_event_number == engine.end() ? std::nullopt
+                                                     : std::optional<Value>{old_event_number->second};
                 engine["event_type"] = std::int32_t{8};
                 engine["event_number"] = std::int32_t{0};
-                if (const auto *callable = std::get_if<CallablePtr>(&script); callable && *callable &&
-                    (*callable)->invoke)
+                if (const auto *callable = std::get_if<CallablePtr>(&script);
+                    callable && *callable && (*callable)->invoke)
                     (*callable)->invoke(std::span<const Value>{},
                                         context ? std::optional<int>{context->id} : std::nullopt);
                 else if (const auto *function = std::get_if<FunctionReference>(&script))
@@ -11943,7 +12007,8 @@ struct GameSession::Impl {
             auto instance_draw_depth = [&](const InstancePtr &instance) {
                 if (!instance->manual_depth) {
                     const int layer_id = number(instance->vars.at("layer"));
-                    if (const auto layer = room.layer_indices.find(layer_id); layer != room.layer_indices.end())
+                    if (const auto layer = room.layer_indices.find(layer_id);
+                        layer != room.layer_indices.end())
                         return static_cast<double>(room.layers[layer->second].depth);
                 }
                 return value_number(instance->vars.at("depth"));
@@ -11979,13 +12044,16 @@ struct GameSession::Impl {
             auto draw_world_before = [&](double depth) {
                 while ((tile < room.tiles.size() && room.tiles[tile].depth >= depth) ||
                        (layer_visual < layer_visuals.size() && layer_visuals[layer_visual].depth >= depth) ||
-                       (particle_visual < particle_visuals.size() && particle_visuals[particle_visual].first >= depth)) {
+                       (particle_visual < particle_visuals.size() &&
+                        particle_visuals[particle_visual].first >= depth)) {
                     if (tile < room.tiles.size() && room.tiles[tile].depth >= depth &&
-                        (layer_visual >= layer_visuals.size() || room.tiles[tile].depth >= layer_visuals[layer_visual].depth) &&
+                        (layer_visual >= layer_visuals.size() ||
+                         room.tiles[tile].depth >= layer_visuals[layer_visual].depth) &&
                         (particle_visual >= particle_visuals.size() ||
                          room.tiles[tile].depth >= particle_visuals[particle_visual].first))
                         draw_tile(room.tiles[tile++]);
-                    else if (layer_visual < layer_visuals.size() && layer_visuals[layer_visual].depth >= depth &&
+                    else if (layer_visual < layer_visuals.size() &&
+                             layer_visuals[layer_visual].depth >= depth &&
                              (particle_visual >= particle_visuals.size() ||
                               layer_visuals[layer_visual].depth >= particle_visuals[particle_visual].first))
                         draw_layer_visual(layer_visuals[layer_visual++]);
@@ -12093,7 +12161,8 @@ struct GameSession::Impl {
             gui_draw_active = false;
             assets.view(0, 0, 1, 1, 0, 0);
             if (profile_tick_timing)
-                last_draw_ms = std::chrono::duration<double, std::milli>(ProfileClock::now() - draw_start).count();
+                last_draw_ms =
+                    std::chrono::duration<double, std::milli>(ProfileClock::now() - draw_start).count();
             std::erase_if(instances, [](const auto &i) { return !i->alive; });
             ++frame;
             engine["current_time"] = static_cast<double>(frame) * 1000.0 / value_number(engine["room_speed"]);

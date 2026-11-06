@@ -12,9 +12,8 @@ bool variable_reference(const Instruction &ins) {
             ins.type1 == DataType::variable);
 }
 bool optional_function_reference(const Instruction &ins, std::uint8_t version) {
-    return version == 17 &&
-           ((ins.opcode() == Opcode::push && ins.type1 == DataType::int32) ||
-            (ins.opcode() == Opcode::extended && ins.type1 == DataType::int32));
+    return version == 17 && ((ins.opcode() == Opcode::push && ins.type1 == DataType::int32) ||
+                             (ins.opcode() == Opcode::extended && ins.type1 == DataType::int32));
 }
 bool function_reference(const Instruction &ins, std::uint8_t version) {
     return ins.opcode() == Opcode::call || optional_function_reference(ins, version);
@@ -50,8 +49,7 @@ LinkedPackage link_legacy_package(const Package &package,
         const auto padding_size = records_size % 20;
         if (padding_size != 0) {
             const bool aligned_v17_padding =
-                version == 17 && padding_size <= 15 &&
-                (chunk.data_offset % 16 + chunk.size % 16) % 16 == 0 &&
+                version == 17 && padding_size <= 15 && (chunk.data_offset % 16 + chunk.size % 16) % 16 == 0 &&
                 std::all_of(bytes.end() - static_cast<std::ptrdiff_t>(padding_size), bytes.end(),
                             [](std::uint8_t byte) { return byte == 0; });
             if (!aligned_v17_padding)
@@ -115,8 +113,8 @@ LinkedPackage link_legacy_package(const Package &package,
             result.program_code_entries.push_back(i);
         }
         const auto bytes = package.code_bytes(i);
-        auto program = decode(BinaryView(bytes, entry.bytecode_offset), version,
-                              {1'000'000, build_instruction_index});
+        auto program =
+            decode(BinaryView(bytes, entry.bytecode_offset), version, {1'000'000, build_instruction_index});
         result.instruction_count += program.instructions.size();
         // check the total package size too; per-program limits aren't enough
         if (result.instruction_count > 10'000'000)
@@ -274,8 +272,8 @@ LinkedPackage link_legacy_package(const Package &package,
                     address += next;
                 } else {
                     const auto string_id = next & 0xffffffU;
-                    if (version != 17 &&
-                        (string_id >= package.strings().size() || package.string_at(string_id) != symbol.name))
+                    if (version != 17 && (string_id >= package.strings().size() ||
+                                          package.string_at(string_id) != symbol.name))
                         throw Error(ErrorKind::malformed,
                                     "reference chain terminal name does not match symbol", address + 4);
                 }
@@ -409,8 +407,8 @@ void LinkedPackage::release_programs(std::span<const std::size_t> active_program
     std::size_t retained_count = 0, retained_bytes = 0;
     auto retain = [&](std::size_t index, bool required) {
         if (index >= programs.size() ||
-            std::find(retained.begin(), retained.begin() + static_cast<std::ptrdiff_t>(retained_count), index) !=
-                retained.begin() + static_cast<std::ptrdiff_t>(retained_count))
+            std::find(retained.begin(), retained.begin() + static_cast<std::ptrdiff_t>(retained_count),
+                      index) != retained.begin() + static_cast<std::ptrdiff_t>(retained_count))
             return;
         const auto &program = programs[index];
         const auto bytes = program.instructions.capacity() * sizeof(Instruction) +
@@ -430,7 +428,8 @@ void LinkedPackage::release_programs(std::span<const std::size_t> active_program
     std::sort(retained.begin(), retained.begin() + static_cast<std::ptrdiff_t>(retained_count));
     for (std::size_t i = 0; i < programs.size(); ++i)
         if (!programs[i].instructions.empty() &&
-            !std::binary_search(retained.begin(), retained.begin() + static_cast<std::ptrdiff_t>(retained_count), i))
+            !std::binary_search(retained.begin(),
+                                retained.begin() + static_cast<std::ptrdiff_t>(retained_count), i))
             release_program(i);
 #else
     for (std::size_t i = 0; i < programs.size(); ++i)

@@ -47,11 +47,8 @@ class GameAssets {
                                    bool smooth,
                                    int origin_x,
                                    int origin_y);
-    int create_sprite_from_file(const std::filesystem::path &path,
-                                bool remove_background,
-                                bool smooth,
-                                int origin_x,
-                                int origin_y);
+    int create_sprite_from_file(
+        const std::filesystem::path &path, bool remove_background, bool smooth, int origin_x, int origin_y);
     [[nodiscard]] std::size_t sprite_count() const noexcept { return sprites_.size(); }
     bool mask_pixel(int id, double frame, int x, int y) const;
     [[nodiscard]] std::span<const std::uint8_t> mask_frame(int id, std::size_t frame) const;
@@ -72,11 +69,11 @@ class GameAssets {
     struct TileSource {
         int x = 0, y = 0, width = 0, height = 0;
     };
-    [[nodiscard]] std::optional<TileSource> background_tile_source(int id,
-                                                                   std::uint32_t tile,
-                                                                   std::uint64_t elapsed_us = 0,
-                                                                   std::optional<std::size_t> animation_frame =
-                                                                       std::nullopt) const;
+    [[nodiscard]] std::optional<TileSource>
+    background_tile_source(int id,
+                           std::uint32_t tile,
+                           std::uint64_t elapsed_us = 0,
+                           std::optional<std::size_t> animation_frame = std::nullopt) const;
     void prefetch(int id);
     void prefetch(int id, double frame);
     bool prefetch_texture_group(std::string_view name);
@@ -117,12 +114,9 @@ class GameAssets {
                      double angle = 0,
                      unsigned color = 0xffffff,
                      double alpha = 1);
-    void draw_sprite_pos(Canvas &canvas, int id, double frame, const std::array<double, 8> &corners, double alpha);
-    [[nodiscard]] std::uint32_t sample_sprite(int id,
-                                              double frame,
-                                              double u,
-                                              double v,
-                                              bool repeat = true);
+    void
+    draw_sprite_pos(Canvas &canvas, int id, double frame, const std::array<double, 8> &corners, double alpha);
+    [[nodiscard]] std::uint32_t sample_sprite(int id, double frame, double u, double v, bool repeat = true);
     void draw_sprite_part(Canvas &canvas,
                           int id,
                           double frame,
@@ -156,14 +150,8 @@ class GameAssets {
     std::array<double, 2> transform_point(double x, double y) const noexcept;
     void draw_circle(Canvas &canvas, double x, double y, double radius, bool outline) const;
     void draw_line(Canvas &canvas, double x1, double y1, double x2, double y2, double width = 1) const;
-    void draw_triangle(Canvas &canvas,
-                       double x1,
-                       double y1,
-                       double x2,
-                       double y2,
-                       double x3,
-                       double y3,
-                       bool outline) const;
+    void draw_triangle(
+        Canvas &canvas, double x1, double y1, double x2, double y2, double x3, double y3, bool outline) const;
     void draw_ellipse(Canvas &canvas, double x1, double y1, double x2, double y2, bool outline) const;
     void draw_round_rectangle(Canvas &canvas,
                               double x1,

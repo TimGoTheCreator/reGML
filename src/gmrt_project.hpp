@@ -103,7 +103,9 @@ class GmrtProject {
     [[nodiscard]] const std::vector<GmrtRoomResource> &rooms() const noexcept { return rooms_; }
     [[nodiscard]] const std::vector<GmrtSpriteResource> &sprites() const noexcept { return sprites_; }
     [[nodiscard]] const std::vector<int> &room_order() const noexcept { return room_order_; }
-    [[nodiscard]] const std::vector<std::string> &event_global_names() const noexcept { return event_indices_; }
+    [[nodiscard]] const std::vector<std::string> &event_global_names() const noexcept {
+        return event_indices_;
+    }
     [[nodiscard]] int start_room() const noexcept { return start_room_; }
     [[nodiscard]] int width() const noexcept { return width_; }
     [[nodiscard]] int height() const noexcept { return height_; }

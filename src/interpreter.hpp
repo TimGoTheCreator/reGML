@@ -88,8 +88,16 @@ class ArrayPtr {
   private:
     ArrayValue *value_ = nullptr;
 };
-using Value = std::variant<std::int32_t, double, bool, std::string, PackageString, std::monostate, ArrayPtr,
-                           FunctionReference, CallablePtr, StructPtr>;
+using Value = std::variant<std::int32_t,
+                           double,
+                           bool,
+                           std::string,
+                           PackageString,
+                           std::monostate,
+                           ArrayPtr,
+                           FunctionReference,
+                           CallablePtr,
+                           StructPtr>;
 struct CallableValue {
     std::size_t references = 1;
     std::function<Value(std::span<const Value>, std::optional<int>)> invoke;
@@ -105,7 +113,9 @@ inline CallablePtr::~CallablePtr() {
     if (value_ && --value_->references == 0)
         delete value_;
 }
-inline CallablePtr make_callable() { return CallablePtr{new CallableValue}; }
+inline CallablePtr make_callable() {
+    return CallablePtr{new CallableValue};
+}
 inline bool value_is_string(const Value &value) noexcept {
     return std::holds_alternative<std::string>(value) || std::holds_alternative<PackageString>(value);
 }
@@ -294,7 +304,9 @@ inline StructPtr::~StructPtr() {
     if (value_ && --value_->references == 0)
         delete value_;
 }
-inline StructPtr make_struct() { return StructPtr{new StructValue}; }
+inline StructPtr make_struct() {
+    return StructPtr{new StructValue};
+}
 enum class VariableScope { local, self, global };
 struct VariableBinding {
     VariableScope scope;

@@ -194,8 +194,8 @@ void Canvas::rgba_pixel(int x, int y, std::uint32_t rgba, std::uint32_t bgr, dou
     rgba_pixel_tinted(x, y, rgba, to_rgb(bgr), opacity);
 }
 void Canvas::store_pixel(int x, int y, std::uint32_t rgba) noexcept {
-    auto &dest = pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) +
-                         static_cast<std::size_t>(x)];
+    auto &dest =
+        pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
     if (color_write_all()) {
         dest = rgba;
         return;
@@ -255,8 +255,8 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
         const unsigned green = ((rgba >> 8) & 255) * ((tint >> 8) & 255) / 255;
         const unsigned blue = (rgba & 255) * (tint & 255) / 255;
         const std::array<unsigned, 4> source = {red, green, blue, source_alpha};
-        const std::array<unsigned, 4> destination = {(dest >> 16) & 255, (dest >> 8) & 255,
-                                                      dest & 255, dest >> 24};
+        const std::array<unsigned, 4> destination = {(dest >> 16) & 255, (dest >> 8) & 255, dest & 255,
+                                                     dest >> 24};
         auto factor = [&](int type, std::size_t channel) -> unsigned {
             const unsigned src = source[channel], dst = destination[channel];
             // These are the 1-based GML bm_* factor constants.
@@ -515,8 +515,8 @@ bool Canvas::blit_rgba_scaled_opaque(std::span<const std::uint32_t> source,
     const bool repeated_x = std::adjacent_find(source_x.begin(), source_x.end()) != source_x.end();
     for (std::size_t row = 0; row < source_y.size(); ++row) {
         const auto *src = source.data() + static_cast<std::size_t>(source_y[row]) * source_width;
-        auto *dst = pixels_.data() + static_cast<std::size_t>(destination_y + static_cast<int>(row)) * width_ +
-                    destination_x;
+        auto *dst = pixels_.data() +
+                    static_cast<std::size_t>(destination_y + static_cast<int>(row)) * width_ + destination_x;
         if (source_alpha == 255 && repeated_x) {
             for (std::size_t column = 0; column < source_x.size();) {
                 const int x = source_x[column];
@@ -539,21 +539,21 @@ bool Canvas::blit_rgba_scaled_opaque(std::span<const std::uint32_t> source,
             if (destination_alpha == 255) {
                 unsigned result = 0xff000000;
                 for (unsigned shift : {0U, 8U, 16U})
-                    result |= (((pixel >> shift & 255) * source_alpha +
-                               (previous >> shift & 255) * inverse + 127) /
-                              255)
-                             << shift;
+                    result |=
+                        (((pixel >> shift & 255) * source_alpha + (previous >> shift & 255) * inverse + 127) /
+                         255)
+                        << shift;
                 dst[column] = result;
                 continue;
             }
-            const unsigned output_alpha =
-                source_alpha + (destination_alpha * inverse + 127) / 255;
+            const unsigned output_alpha = source_alpha + (destination_alpha * inverse + 127) / 255;
             unsigned result = output_alpha << 24;
             for (unsigned shift : {0U, 8U, 16U}) {
                 const unsigned source_channel = (pixel >> shift) & 255;
                 const unsigned destination_channel = (previous >> shift) & 255;
-                const unsigned premultiplied = source_channel * source_alpha +
-                                               (destination_channel * destination_alpha * inverse + 127) / 255;
+                const unsigned premultiplied =
+                    source_channel * source_alpha +
+                    (destination_channel * destination_alpha * inverse + 127) / 255;
                 result |= ((premultiplied + output_alpha / 2) / output_alpha) << shift;
             }
             dst[column] = result;
@@ -562,11 +562,11 @@ bool Canvas::blit_rgba_scaled_opaque(std::span<const std::uint32_t> source,
     return true;
 }
 bool Canvas::blit_rgba_scaled_binary_alpha(std::span<const std::uint32_t> source,
-                                          int source_width,
-                                          std::span<const int> source_x,
-                                          std::span<const int> source_y,
-                                          int destination_x,
-                                          int destination_y) noexcept {
+                                           int source_width,
+                                           std::span<const int> source_x,
+                                           std::span<const int> source_y,
+                                           int destination_x,
+                                           int destination_y) noexcept {
     // Binary-alpha sprite pixels can only be transparent or opaque. On the
     // common software path, avoid the full blend-state and channel math for
     // each scaled pixel; transparent samples leave the framebuffer untouched.
@@ -935,15 +935,15 @@ void Canvas::ellipse(double x1, double y1, double x2, double y2, bool outline) {
 #if REGML_PS2
     if (gpu_) {
         if (!alpha_test_enabled_ || alpha_ > alpha_test_ref_)
-            ps2_gpu_ellipse(left_edge, top_edge, right_edge, bottom_edge, outline,
-                            (alpha_ << 24) | rgb_);
+            ps2_gpu_ellipse(left_edge, top_edge, right_edge, bottom_edge, outline, (alpha_ << 24) | rgb_);
         return;
     }
 #endif
     const int left = static_cast<int>(std::clamp(std::floor(left_edge), 0.0, static_cast<double>(width_)));
     const int right = static_cast<int>(std::clamp(std::ceil(right_edge), 0.0, static_cast<double>(width_)));
     const int top = static_cast<int>(std::clamp(std::floor(top_edge), 0.0, static_cast<double>(height_)));
-    const int bottom = static_cast<int>(std::clamp(std::ceil(bottom_edge), 0.0, static_cast<double>(height_)));
+    const int bottom =
+        static_cast<int>(std::clamp(std::ceil(bottom_edge), 0.0, static_cast<double>(height_)));
     const double inner_x = std::max(0.0, radius_x - 1.0);
     const double inner_y = std::max(0.0, radius_y - 1.0);
     for (int y = top; y < bottom; ++y) {
@@ -962,13 +962,8 @@ void Canvas::ellipse(double x1, double y1, double x2, double y2, bool outline) {
         }
     }
 }
-void Canvas::round_rectangle(double x1,
-                             double y1,
-                             double x2,
-                             double y2,
-                             double x_radius,
-                             double y_radius,
-                             bool outline) {
+void Canvas::round_rectangle(
+    double x1, double y1, double x2, double y2, double x_radius, double y_radius, bool outline) {
     CoordinateScale coordinates(coordinate_scale_);
     x1 *= coordinates.factor;
     y1 *= coordinates.factor;
@@ -999,8 +994,8 @@ void Canvas::round_rectangle(double x1,
 #if REGML_PS2
     if (gpu_) {
         if (!alpha_test_enabled_ || alpha_ > alpha_test_ref_)
-            ps2_gpu_round_rectangle(left_edge, top_edge, right_edge, bottom_edge, x_radius, y_radius,
-                                    outline, (alpha_ << 24) | rgb_);
+            ps2_gpu_round_rectangle(left_edge, top_edge, right_edge, bottom_edge, x_radius, y_radius, outline,
+                                    (alpha_ << 24) | rgb_);
         return;
     }
 #endif
@@ -1009,7 +1004,8 @@ void Canvas::round_rectangle(double x1,
     const int left = static_cast<int>(std::clamp(std::floor(left_edge), 0.0, static_cast<double>(width_)));
     const int right = static_cast<int>(std::clamp(std::ceil(right_edge), 0.0, static_cast<double>(width_)));
     const int top = static_cast<int>(std::clamp(std::floor(top_edge), 0.0, static_cast<double>(height_)));
-    const int bottom = static_cast<int>(std::clamp(std::ceil(bottom_edge), 0.0, static_cast<double>(height_)));
+    const int bottom =
+        static_cast<int>(std::clamp(std::ceil(bottom_edge), 0.0, static_cast<double>(height_)));
     const auto contains = [&](double px, double py, double inset) {
         const double rx = std::max(0.0, x_radius - inset);
         const double ry = std::max(0.0, y_radius - inset);

@@ -120,8 +120,8 @@ class FrameProfileLog {
               << draw_builtin_ms_ / count << ',' << draw_text_builtin_ms_ / count << ','
               << draw_image_builtin_ms_ / count << ',' << draw_primitive_builtin_ms_ / count << ','
               << draw_other_builtin_ms_ / count << ',' << max_draw_builtin_call_ms_ << ','
-              << std::quoted(slowest_draw_builtin_) << ','
-              << std::quoted(slowest_draw_builtin_details_) << '\n';
+              << std::quoted(slowest_draw_builtin_) << ',' << std::quoted(slowest_draw_builtin_details_)
+              << '\n';
         file_.flush();
         samples_ = instructions_ = 0;
         frame_ms_ = tick_ms_ = present_ms_ = logic_ms_ = draw_ms_ = max_tick_ms_ = max_present_ms_ = 0;
@@ -218,13 +218,13 @@ class VideoWindow {
             throw Error(ErrorKind::io, std::string("window creation: ") + SDL_GetError());
         // Sync the software-composited game frame to the display. Without this, the window
         // can present while the monitor is scanning out, making moving scenes visibly tear.
-        renderer_.reset(SDL_CreateRenderer(window_.get(), -1,
-                                           SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC));
+        renderer_.reset(
+            SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC));
         if (!renderer_)
             renderer_.reset(SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_ACCELERATED));
         if (!renderer_)
-            renderer_.reset(SDL_CreateRenderer(window_.get(), -1,
-                                               SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC));
+            renderer_.reset(
+                SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC));
         if (!renderer_)
             renderer_.reset(SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_SOFTWARE));
         if (!renderer_)
@@ -342,14 +342,14 @@ class VideoWindow {
         if (canvas.width() != render_width || canvas.height() != render_height) {
             present_pixels_.resize(static_cast<std::size_t>(render_width) * render_height);
             for (int y = 0; y < render_height; ++y) {
-                const int source_y = static_cast<int>(static_cast<std::int64_t>(y) * canvas.height() /
-                                                      render_height);
-                const auto *source_row = canvas.pixels().data() +
-                                         static_cast<std::size_t>(source_y) * canvas.width();
+                const int source_y =
+                    static_cast<int>(static_cast<std::int64_t>(y) * canvas.height() / render_height);
+                const auto *source_row =
+                    canvas.pixels().data() + static_cast<std::size_t>(source_y) * canvas.width();
                 auto *target_row = present_pixels_.data() + static_cast<std::size_t>(y) * render_width;
                 for (int x = 0; x < render_width; ++x) {
-                    const int source_x = static_cast<int>(static_cast<std::int64_t>(x) * canvas.width() /
-                                                          render_width);
+                    const int source_x =
+                        static_cast<int>(static_cast<std::int64_t>(x) * canvas.width() / render_width);
                     target_row[x] = source_row[source_x];
                 }
             }
@@ -425,8 +425,8 @@ class VideoWindow {
             auto redraw = [&] {
                 canvas.clear(0x000000);
                 canvas.color(0xffffff);
-                canvas.text(16, 12, title == "Runner Error" ? "reGML RUNTIME ERROR" : "reGML ERROR",
-                            2, 2, 0, 0, 0);
+                canvas.text(16, 12, title == "Runner Error" ? "reGML RUNTIME ERROR" : "reGML ERROR", 2, 2, 0,
+                            0, 0);
                 canvas.text(16, 38, "The run stopped. Report details:", 1, 1, 0, 0, 0);
                 for (int row = 0; row < visible_lines; ++row) {
                     const auto index = static_cast<std::size_t>(scroll + row);
@@ -455,7 +455,8 @@ class VideoWindow {
 #endif
         } catch (...) {
         }
-    }    void tick_game(GameSession &session,
+    }
+    void tick_game(GameSession &session,
                    const KeyboardState *replay,
                    const KeyboardState *replay_pressed = nullptr) {
 #if REGML_PS4
@@ -506,11 +507,12 @@ class VideoWindow {
         OrbisPadData data{};
         const bool connected = pad_ >= 0 && scePadReadState(pad_, &data) >= 0 && data.connected;
         static constexpr std::array<std::uint32_t, 16> masks = {
-            ORBIS_PAD_BUTTON_CROSS, ORBIS_PAD_BUTTON_CIRCLE, ORBIS_PAD_BUTTON_SQUARE,
-            ORBIS_PAD_BUTTON_TRIANGLE, ORBIS_PAD_BUTTON_L1, ORBIS_PAD_BUTTON_R1,
-            ORBIS_PAD_BUTTON_L2, ORBIS_PAD_BUTTON_R2, ORBIS_PAD_BUTTON_TOUCH_PAD,
-            ORBIS_PAD_BUTTON_OPTIONS, ORBIS_PAD_BUTTON_L3, ORBIS_PAD_BUTTON_R3,
-            ORBIS_PAD_BUTTON_UP, ORBIS_PAD_BUTTON_DOWN, ORBIS_PAD_BUTTON_LEFT, ORBIS_PAD_BUTTON_RIGHT};
+            ORBIS_PAD_BUTTON_CROSS,    ORBIS_PAD_BUTTON_CIRCLE, ORBIS_PAD_BUTTON_SQUARE,
+            ORBIS_PAD_BUTTON_TRIANGLE, ORBIS_PAD_BUTTON_L1,     ORBIS_PAD_BUTTON_R1,
+            ORBIS_PAD_BUTTON_L2,       ORBIS_PAD_BUTTON_R2,     ORBIS_PAD_BUTTON_TOUCH_PAD,
+            ORBIS_PAD_BUTTON_OPTIONS,  ORBIS_PAD_BUTTON_L3,     ORBIS_PAD_BUTTON_R3,
+            ORBIS_PAD_BUTTON_UP,       ORBIS_PAD_BUTTON_DOWN,   ORBIS_PAD_BUTTON_LEFT,
+            ORBIS_PAD_BUTTON_RIGHT};
         gamepad_.connected = connected;
         for (std::size_t i = 0; i < masks.size(); ++i) {
             const bool down = connected && (data.buttons & masks[i]);
@@ -525,10 +527,11 @@ class VideoWindow {
         };
         gamepad_.axes = {axis(data.leftStick.x), axis(data.leftStick.y), axis(data.rightStick.x),
                          axis(data.rightStick.y)};
-        const std::array<std::pair<int, int>, 7> keys = {{{'Z', 0}, {'X', 1}, {'C', 2}, {13, 9},
-                                                           {38, 12}, {40, 13}, {37, 14}}};
+        const std::array<std::pair<int, int>, 7> keys = {
+            {{'Z', 0}, {'X', 1}, {'C', 2}, {13, 9}, {38, 12}, {40, 13}, {37, 14}}};
         for (const auto &[key, button] : keys)
-            update_source_key(joystick_buttons_held_, joystick_buttons_pressed_, key, gamepad_.buttons[button]);
+            update_source_key(joystick_buttons_held_, joystick_buttons_pressed_, key,
+                              gamepad_.buttons[button]);
         update_source_key(joystick_buttons_held_, joystick_buttons_pressed_, 39, gamepad_.buttons[15]);
         update_source_key(joystick_axes_held_, joystick_axes_pressed_, 37, gamepad_.axes[0] < -0.35);
         update_source_key(joystick_axes_held_, joystick_axes_pressed_, 39, gamepad_.axes[0] > 0.35);

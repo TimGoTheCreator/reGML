@@ -1,12 +1,12 @@
 #include "lookup.hpp"
 #include "platform/ps2/frontend.hpp"
 #include "play.hpp"
-#include <cxxabi.h>
 #include <cstdint>
-#include <filesystem>
-#include <exception>
 #include <cstdio>
 #include <cstdlib>
+#include <cxxabi.h>
+#include <exception>
+#include <filesystem>
 #include <iostream>
 #include <malloc.h>
 
@@ -24,14 +24,13 @@ int main(int argc, char **argv) {
             std::setvbuf(log, nullptr, _IONBF, 0);
             const auto *type = abi::__cxa_current_exception_type();
             const auto memory = mallinfo();
-            std::fprintf(log, "terminate type=%s code=%.*s pc=%u opcode=%u symbol=%u heap=%u free=%u arena=%u\n",
-                         type ? type->name() : "none",
-                         static_cast<int>(regml_ps2_active_code_name_length), regml_ps2_active_code_name,
-                         static_cast<unsigned>(regml_ps2_active_pc),
-                         static_cast<unsigned>(regml_ps2_active_opcode),
-                         static_cast<unsigned>(regml_ps2_active_symbol),
-                         static_cast<unsigned>(memory.uordblks), static_cast<unsigned>(memory.fordblks),
-                         static_cast<unsigned>(memory.arena));
+            std::fprintf(
+                log, "terminate type=%s code=%.*s pc=%u opcode=%u symbol=%u heap=%u free=%u arena=%u\n",
+                type ? type->name() : "none", static_cast<int>(regml_ps2_active_code_name_length),
+                regml_ps2_active_code_name, static_cast<unsigned>(regml_ps2_active_pc),
+                static_cast<unsigned>(regml_ps2_active_opcode),
+                static_cast<unsigned>(regml_ps2_active_symbol), static_cast<unsigned>(memory.uordblks),
+                static_cast<unsigned>(memory.fordblks), static_cast<unsigned>(memory.arena));
             std::fclose(log);
         }
         std::_Exit(1);

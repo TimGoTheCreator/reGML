@@ -244,18 +244,17 @@ std::string inspect_ogg_headers(std::span<const std::uint8_t> bytes) {
         if (packets == 3)
             break;
     }
-    const auto result = "pages=" + std::to_string(pages) + " packets=" + std::to_string(packets) +
-                        " serial=" + std::to_string(serial) + " pagein=" +
-                        std::to_string(pagein_result) + " packetout=" + std::to_string(packet_result) +
-                        " raw=" + std::to_string(raw_serial) + " stream=" +
-                        std::to_string(stream.serialno) + " sizes=" + std::to_string(sizeof(long)) + "/" +
-                        std::to_string(sizeof(int)) + "/" + std::to_string(sizeof(void *)) +
-                        " init=" + std::to_string(init_result) + " page_serial=" +
-                        std::to_string(page_serial) + " match=" + std::to_string(serial_matches) +
-                        " version=" + std::to_string(page_version) +
-                        " headers=" + std::to_string(header_results[0]) + "," +
-                        std::to_string(header_results[1]) + "," + std::to_string(header_results[2]) +
-                        " format=" + std::to_string(info.channels) + "ch/" + std::to_string(info.rate);
+    const auto result =
+        "pages=" + std::to_string(pages) + " packets=" + std::to_string(packets) +
+        " serial=" + std::to_string(serial) + " pagein=" + std::to_string(pagein_result) +
+        " packetout=" + std::to_string(packet_result) + " raw=" + std::to_string(raw_serial) +
+        " stream=" + std::to_string(stream.serialno) + " sizes=" + std::to_string(sizeof(long)) + "/" +
+        std::to_string(sizeof(int)) + "/" + std::to_string(sizeof(void *)) +
+        " init=" + std::to_string(init_result) + " page_serial=" + std::to_string(page_serial) +
+        " match=" + std::to_string(serial_matches) + " version=" + std::to_string(page_version) +
+        " headers=" + std::to_string(header_results[0]) + "," + std::to_string(header_results[1]) + "," +
+        std::to_string(header_results[2]) + " format=" + std::to_string(info.channels) + "ch/" +
+        std::to_string(info.rate);
     if (stream_ready)
         ogg_stream_clear(&stream);
     vorbis_comment_clear(&comment);
@@ -553,8 +552,7 @@ std::optional<int> GameAudio::find_sound_id(std::string_view filename) const {
     return std::nullopt;
 }
 bool GameAudio::sound_exists(int sound) const noexcept {
-    return (sound >= 0 && static_cast<std::size_t>(sound) < sounds_.size()) ||
-           stream_sounds_.contains(sound);
+    return (sound >= 0 && static_cast<std::size_t>(sound) < sounds_.size()) || stream_sounds_.contains(sound);
 }
 std::string_view GameAudio::sound_name(int sound) const noexcept {
     if (sound >= 0 && static_cast<std::size_t>(sound) < sounds_.size())
@@ -608,12 +606,11 @@ std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::vector<std::uint8_t> own
         OggVorbis_File file{};
         const int open_result = ov_open_callbacks(&reader, &file, nullptr, 0, callbacks);
         if (open_result < 0)
-            throw Error(ErrorKind::malformed, "Ogg audio decode initialization failed (code " +
-                                                    std::to_string(open_result) + ", read " +
-                                                    std::to_string(reader.position) + "/" +
-                                                    std::to_string(bytes.size()) + ", pages " +
-                                                    (ogg_first_pages_valid(bytes) ? "ok" : "bad") + ", " +
-                                                    inspect_ogg_headers(bytes) + ")");
+            throw Error(ErrorKind::malformed,
+                        "Ogg audio decode initialization failed (code " + std::to_string(open_result) +
+                            ", read " + std::to_string(reader.position) + "/" + std::to_string(bytes.size()) +
+                            ", pages " + (ogg_first_pages_valid(bytes) ? "ok" : "bad") + ", " +
+                            inspect_ogg_headers(bytes) + ")");
         struct Guard {
             OggVorbis_File &f;
             ~Guard() { ov_clear(&f); }
@@ -742,7 +739,7 @@ GameAudio::Clip *GameAudio::load(int id) {
         return sound.clip.get();
     const auto data = audio_data(sound);
     const auto path = !data && !sound.filename.empty() ? resolve_audio_file(directory_, sound.filename)
-                                                        : std::filesystem::path{};
+                                                       : std::filesystem::path{};
 #if REGML_WII || REGML_PS2
     if (!data && !path.empty()) {
         std::ifstream input(path, std::ios::binary);
@@ -812,7 +809,8 @@ GameAudio::Clip *GameAudio::load(int id) {
     }
 #endif
     if (data) {
-        const auto signature = data->package->read_bytes(data->offset, std::min<std::size_t>(data->length, 4));
+        const auto signature =
+            data->package->read_bytes(data->offset, std::min<std::size_t>(data->length, 4));
         if (signature.size() == 4 && std::memcmp(signature.data(), "OggS", 4) == 0) {
 #if REGML_PS2
             auto clip = decode(data->package->read_bytes(data->offset, data->length));
@@ -836,7 +834,8 @@ GameAudio::Clip *GameAudio::load(int id) {
 #endif
             if (!probe.rate || probe.channels < 1 || probe.channels > 2 || total <= 0 ||
                 total > 100'000'000 / probe.channels)
-                throw Error(ErrorKind::unsupported, "audio-group Ogg duration exceeds clip limit", data->offset);
+                throw Error(ErrorKind::unsupported, "audio-group Ogg duration exceeds clip limit",
+                            data->offset);
             clip->streamed_frames = static_cast<std::size_t>(static_cast<double>(total) * 48000 /
                                                              static_cast<double>(probe.rate));
             if (clip->streamed_frames > 50'000'000)
@@ -928,17 +927,13 @@ int GameAudio::play(int sound, bool loop, double priority) {
     if (!clip && !async_->pending(sound)) {
         const auto &resource = sound_at(sound);
         const auto data = audio_data(resource);
-        const auto audio_path = data ? std::filesystem::path{}
-                                     : find_audio_file(directory_, resource.filename)
-                                           .value_or(directory_ / resource.filename);
+        const auto audio_path =
+            data ? std::filesystem::path{}
+                 : find_audio_file(directory_, resource.filename).value_or(directory_ / resource.filename);
         const auto &source_package = data ? *data->package : package_;
         try {
-            async_->request(sound,
-                            audio_path,
-                            source_package,
-                            data ? data->offset : 0,
-                            data ? data->length : 0,
-                            data.has_value());
+            async_->request(sound, audio_path, source_package, data ? data->offset : 0,
+                            data ? data->length : 0, data.has_value());
         } catch (...) {
             voices_.erase(id);
             throw;
@@ -1024,8 +1019,7 @@ double GameAudio::length(int id) {
     std::scoped_lock lock(voices_mutex_);
     if (auto it = voices_.find(id); it != voices_.end() && it->second.clip)
         return static_cast<double>(it->second.clip->frames()) / 48000;
-    if (((id >= 100'000 && id < next_stream_) || (id >= 1'000'000 && id < next_voice_)) &&
-        !find_sound(id))
+    if (((id >= 100'000 && id < next_stream_) || (id >= 1'000'000 && id < next_voice_)) && !find_sound(id))
         return 0.0;
     return static_cast<double>(load(id)->frames()) / 48000;
 }
@@ -1109,9 +1103,8 @@ void GameAudio::mix(std::span<float> out, double playback_rate) noexcept {
                 v.frame = static_cast<double>(length);
                 break;
             }
-            const auto group_volume = f < group_frames_left
-                                          ? group_start + group_step * static_cast<double>(f + 1)
-                                          : group_target;
+            const auto group_volume =
+                f < group_frames_left ? group_start + group_step * static_cast<double>(f + 1) : group_target;
             for (std::size_t c = 0; c < 2; ++c) {
                 const auto sample = (v.stream ? streamed[c] : v.clip->stereo[source * 2 + c]) *
                                     static_cast<float>(v.gain * v.clip->gain * group_volume);

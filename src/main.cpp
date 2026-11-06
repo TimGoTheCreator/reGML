@@ -1,5 +1,5 @@
-#include "gmrt_vm.hpp"
 #include "bit_cast.hpp"
+#include "gmrt_vm.hpp"
 #include "gmrt_wad.hpp"
 #include "interpreter.hpp"
 #include "linker.hpp"
@@ -40,32 +40,33 @@ std::string escaped(std::string_view text, std::size_t limit = 160) {
     return out.str();
 }
 void help() {
-    std::cout << "reGML " << regml::version
-              << " - GameMaker VM runner\n"
-                 "Usage:\n"
-                 "  regml inspect <data.win> [--strings] [--code]\n"
-                 "  regml disasm <data.win> <code-index> [--linked]\n"
-                 "  regml audit <data.win> [--functions]\n"
-                 "  regml gmrt inspect <game.wad>\n"
-                 "  regml gmrt extract <game.wad> <output-directory>\n"
-                 "  regml gmrt run-function <game.wad> <module-index> <function-index> [--trace]\n"
-                 "  regml gmrt run-ir-function <module.gmir> <function-index> [--trace]\n"
-                 "  regml vm-demo [--trace]\n"
-                 "  regml run <data.win|game.wad> [--frames N] [--headless | --hidden]\n"
-                 "                  [--screenshot output.bmp] [--input-script file]\n"
-                 "                  [--seed N] [--save-dir directory] [--speed Nx] [--speed-control]\n"
-                 "                  [--debug-overlay]\n"
-                 "                  [--profile-log file]\n"
-                 "                  --speed-control enables [ / ] to halve or double speed during play.\n"
-                 "                  Speed affects real-time playback; hidden/headless runs are unthrottled.\n"
-                 "  regml --help | --version\n\n"
-                 "Inspection is read-only. Resource tables: v14-v17 prefix/layout.\n"
-                 "Instruction decoding: v15/v16/v17. VM demo: numeric scalar subset.\n"
-                 "GMRT support: WAD/GMIR parsing, cross-module calls, and a boot path for indexed sample projects; "
-                 "game compatibility is incomplete.\n"
-                 "Native game execution is experimental and compatibility is incomplete.\n"
-                 "Undertale has been tested on Windows and in Cemu; no full playthrough\n"
-                 "is verified. F10 closes the native game window.\n";
+    std::cout
+        << "reGML " << regml::version
+        << " - GameMaker VM runner\n"
+           "Usage:\n"
+           "  regml inspect <data.win> [--strings] [--code]\n"
+           "  regml disasm <data.win> <code-index> [--linked]\n"
+           "  regml audit <data.win> [--functions]\n"
+           "  regml gmrt inspect <game.wad>\n"
+           "  regml gmrt extract <game.wad> <output-directory>\n"
+           "  regml gmrt run-function <game.wad> <module-index> <function-index> [--trace]\n"
+           "  regml gmrt run-ir-function <module.gmir> <function-index> [--trace]\n"
+           "  regml vm-demo [--trace]\n"
+           "  regml run <data.win|game.wad> [--frames N] [--headless | --hidden]\n"
+           "                  [--screenshot output.bmp] [--input-script file]\n"
+           "                  [--seed N] [--save-dir directory] [--speed Nx] [--speed-control]\n"
+           "                  [--debug-overlay]\n"
+           "                  [--profile-log file]\n"
+           "                  --speed-control enables [ / ] to halve or double speed during play.\n"
+           "                  Speed affects real-time playback; hidden/headless runs are unthrottled.\n"
+           "  regml --help | --version\n\n"
+           "Inspection is read-only. Resource tables: v14-v17 prefix/layout.\n"
+           "Instruction decoding: v15/v16/v17. VM demo: numeric scalar subset.\n"
+           "GMRT support: WAD/GMIR parsing, cross-module calls, and a boot path for indexed sample projects; "
+           "game compatibility is incomplete.\n"
+           "Native game execution is experimental and compatibility is incomplete.\n"
+           "Undertale has been tested on Windows and in Cemu; no full playthrough\n"
+           "is verified. F10 closes the native game window.\n";
 }
 void print_instruction(const regml::Instruction &ins, std::size_t origin, bool resolved = false) {
     std::cout << "  0x" << std::hex << std::setw(8) << std::setfill('0') << origin + ins.offset << "  "
@@ -226,8 +227,8 @@ int command(int argc, char **argv) {
                     continue;
                 std::cout << "FUNCTION\t" << function.occurrences << "\t0x" << std::hex
                           << function.first_address << std::dec << "\t"
-                          << (defined_names.contains(function.name) ? "1" : "0") << "\t"
-                          << function.name << '\n';
+                          << (defined_names.contains(function.name) ? "1" : "0") << "\t" << function.name
+                          << '\n';
             }
             return 0;
         }
