@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -22,9 +23,50 @@ struct FunctionReference {
     std::uint32_t symbol_id = 0;
 };
 struct StructValue;
-using StructPtr = std::shared_ptr<StructValue>;
+// GML structs are owned and copied by the VM thread. A small intrusive pointer
+// avoids atomic shared_ptr refcounts in the Wii U runtime.
+class StructPtr {
+  public:
+    StructPtr() = default;
+    explicit StructPtr(StructValue *value) noexcept : value_(value) {}
+    StructPtr(const StructPtr &other) noexcept;
+    StructPtr(StructPtr &&other) noexcept : value_(std::exchange(other.value_, nullptr)) {}
+    ~StructPtr();
+    StructPtr &operator=(StructPtr other) noexcept {
+        std::swap(value_, other.value_);
+        return *this;
+    }
+    StructValue *get() const noexcept { return value_; }
+    StructValue &operator*() const noexcept { return *value_; }
+    StructValue *operator->() const noexcept { return value_; }
+    explicit operator bool() const noexcept { return value_ != nullptr; }
+
+  private:
+    StructValue *value_ = nullptr;
+};
 struct CallableValue;
-using CallablePtr = std::shared_ptr<CallableValue>;
+// GML callables are created, copied, and invoked by the VM thread only.
+// Keep their reference count non-atomic for console targets where atomic
+// shared_ptr increments are not reliably emulated.
+class CallablePtr {
+  public:
+    CallablePtr() = default;
+    explicit CallablePtr(CallableValue *value) noexcept : value_(value) {}
+    CallablePtr(const CallablePtr &other) noexcept;
+    CallablePtr(CallablePtr &&other) noexcept : value_(std::exchange(other.value_, nullptr)) {}
+    ~CallablePtr();
+    CallablePtr &operator=(CallablePtr other) noexcept {
+        std::swap(value_, other.value_);
+        return *this;
+    }
+    CallableValue *get() const noexcept { return value_; }
+    CallableValue &operator*() const noexcept { return *value_; }
+    CallableValue *operator->() const noexcept { return value_; }
+    explicit operator bool() const noexcept { return value_ != nullptr; }
+
+  private:
+    CallableValue *value_ = nullptr;
+};
 // not thread safe; the VM thread owns the arrays
 class ArrayPtr {
   public:
@@ -49,11 +91,21 @@ class ArrayPtr {
 using Value = std::variant<std::int32_t, double, bool, std::string, PackageString, std::monostate, ArrayPtr,
                            FunctionReference, CallablePtr, StructPtr>;
 struct CallableValue {
-    std::function<Value(std::span<const Value>)> invoke;
+    std::size_t references = 1;
+    std::function<Value(std::span<const Value>, std::optional<int>)> invoke;
     std::uint32_t symbol_id = Instruction::no_symbol;
     StructPtr bound_struct;
     StructPtr properties;
 };
+inline CallablePtr::CallablePtr(const CallablePtr &other) noexcept : value_(other.value_) {
+    if (value_)
+        ++value_->references;
+}
+inline CallablePtr::~CallablePtr() {
+    if (value_ && --value_->references == 0)
+        delete value_;
+}
+inline CallablePtr make_callable() { return CallablePtr{new CallableValue}; }
 inline bool value_is_string(const Value &value) noexcept {
     return std::holds_alternative<std::string>(value) || std::holds_alternative<PackageString>(value);
 }
@@ -231,8 +283,18 @@ class VariableStore : public std::unordered_map<std::string_view, Value, Variabl
     }
 };
 struct StructValue {
+    std::size_t references = 1;
     VariableStore variables;
 };
+inline StructPtr::StructPtr(const StructPtr &other) noexcept : value_(other.value_) {
+    if (value_)
+        ++value_->references;
+}
+inline StructPtr::~StructPtr() {
+    if (value_ && --value_->references == 0)
+        delete value_;
+}
+inline StructPtr make_struct() { return StructPtr{new StructValue}; }
 enum class VariableScope { local, self, global };
 struct VariableBinding {
     VariableScope scope;

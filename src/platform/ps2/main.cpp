@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <malloc.h>
 
 extern "C" {
 extern volatile std::uint32_t regml_ps2_active_pc;
@@ -22,12 +23,15 @@ int main(int argc, char **argv) {
         if (auto *log = std::fopen("host:reGML/regml-terminate.log", "a")) {
             std::setvbuf(log, nullptr, _IONBF, 0);
             const auto *type = abi::__cxa_current_exception_type();
-            std::fprintf(log, "terminate type=%s code=%.*s pc=%u opcode=%u symbol=%u\n",
+            const auto memory = mallinfo();
+            std::fprintf(log, "terminate type=%s code=%.*s pc=%u opcode=%u symbol=%u heap=%u free=%u arena=%u\n",
                          type ? type->name() : "none",
                          static_cast<int>(regml_ps2_active_code_name_length), regml_ps2_active_code_name,
                          static_cast<unsigned>(regml_ps2_active_pc),
                          static_cast<unsigned>(regml_ps2_active_opcode),
-                         static_cast<unsigned>(regml_ps2_active_symbol));
+                         static_cast<unsigned>(regml_ps2_active_symbol),
+                         static_cast<unsigned>(memory.uordblks), static_cast<unsigned>(memory.fordblks),
+                         static_cast<unsigned>(memory.arena));
             std::fclose(log);
         }
         std::_Exit(1);
@@ -38,7 +42,7 @@ int main(int argc, char **argv) {
         if (argc > 1) {
             package = argv[1];
         } else {
-            // PCSX2 can use the ELF folder as host:, so we don't need to fake a USB path
+            // we dont need to fake a usb path
             const std::filesystem::path host_package = "host:reGML/data.win";
             std::error_code error;
             package = std::filesystem::exists(host_package, error) && !error ? host_package

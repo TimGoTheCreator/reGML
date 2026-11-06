@@ -34,6 +34,11 @@ class Canvas {
     void color(std::uint32_t gml_bgr) noexcept;
     void alpha(double alpha);
     void blend_enable(bool enabled) noexcept { blend_enabled_ = enabled; }
+    void blend_mode(int source_rgb, int destination_rgb, int source_alpha, int destination_alpha,
+                    int equation_rgb = 0, int equation_alpha = 0) noexcept {
+        blend_factors_ = {source_rgb, destination_rgb, source_alpha, destination_alpha};
+        blend_equations_ = {equation_rgb, equation_alpha};
+    }
     void alpha_test_enable(bool enabled) noexcept { alpha_test_enabled_ = enabled; }
     void alpha_test_ref(unsigned value) noexcept { alpha_test_ref_ = value > 255 ? 255 : value; }
     void color_write_enable(bool red, bool green, bool blue, bool alpha) noexcept {
@@ -69,6 +74,19 @@ class Canvas {
                    unsigned tint,
                    double opacity,
                    std::int8_t source_alpha_mode = 0) noexcept;
+    bool blit_rgba_scaled_opaque(std::span<const std::uint32_t> source,
+                                 int source_width,
+                                 std::span<const int> source_x,
+                                 std::span<const int> source_y,
+                                 int destination_x,
+                                 int destination_y,
+                                 double opacity) noexcept;
+    bool blit_rgba_scaled_binary_alpha(std::span<const std::uint32_t> source,
+                                       int source_width,
+                                       std::span<const int> source_x,
+                                       std::span<const int> source_y,
+                                       int destination_x,
+                                       int destination_y) noexcept;
     void text(double x, double y, std::string_view text);
     void text(double x,
               double y,
@@ -83,6 +101,7 @@ class Canvas {
     void rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, double opacity) noexcept;
     void rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tint, double opacity) noexcept;
     void save_bmp(const std::filesystem::path &path) const;
+    void save_png(const std::filesystem::path &path) const;
     [[nodiscard]] std::uint64_t hash() const noexcept;
 
   private:
@@ -90,6 +109,9 @@ class Canvas {
     void store_pixel(int x, int y, std::uint32_t rgba) noexcept;
     bool color_write_all() const noexcept {
         return color_write_[0] && color_write_[1] && color_write_[2] && color_write_[3];
+    }
+    bool standard_blend() const noexcept {
+        return blend_factors_ == std::array<int, 4>{5, 6, 5, 6} && blend_equations_ == std::array<int, 2>{0, 0};
     }
     struct CoordinateScale {
         double &active;
@@ -102,6 +124,8 @@ class Canvas {
     bool gpu_ = false;
     bool profile_text_ = false;
     bool blend_enabled_ = true;
+    std::array<int, 4> blend_factors_{5, 6, 5, 6};
+    std::array<int, 2> blend_equations_{0, 0};
     bool alpha_test_enabled_ = false;
     unsigned alpha_test_ref_ = 0;
     std::array<bool, 4> color_write_{true, true, true, true};

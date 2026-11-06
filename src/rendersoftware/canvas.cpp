@@ -3,9 +3,11 @@
 #include "platform/wii/gpu.hpp"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <png.h>
 namespace regml {
 namespace {
 std::uint32_t to_rgb(std::uint32_t bgr) {
@@ -246,10 +248,73 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
         store_pixel(x, y, (source_alpha << 24) | (red << 16) | (green << 8) | blue);
         return;
     }
-    if (source_alpha == 0)
-        return;
     auto &dest =
         pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
+    if (!standard_blend()) {
+        const unsigned red = ((rgba >> 16) & 255) * ((tint >> 16) & 255) / 255;
+        const unsigned green = ((rgba >> 8) & 255) * ((tint >> 8) & 255) / 255;
+        const unsigned blue = (rgba & 255) * (tint & 255) / 255;
+        const std::array<unsigned, 4> source = {red, green, blue, source_alpha};
+        const std::array<unsigned, 4> destination = {(dest >> 16) & 255, (dest >> 8) & 255,
+                                                      dest & 255, dest >> 24};
+        auto factor = [&](int type, std::size_t channel) -> unsigned {
+            const unsigned src = source[channel], dst = destination[channel];
+            // These are the 1-based GML bm_* factor constants.
+            switch (type) {
+            case 1:
+                return 0;
+            case 2:
+                return 255;
+            case 3:
+                return src;
+            case 4:
+                return 255 - src;
+            case 5:
+                return source_alpha;
+            case 6:
+                return 255 - source_alpha;
+            case 7:
+                return destination[3];
+            case 8:
+                return 255 - destination[3];
+            case 9:
+                return dst;
+            case 10:
+                return 255 - dst;
+            case 11:
+                return channel == 3 ? 255 : std::min(source_alpha, 255 - destination[3]);
+            default:
+                return 0;
+            }
+        };
+        unsigned result = 0;
+        constexpr std::array<unsigned, 4> shifts{16, 8, 0, 24};
+        for (std::size_t channel = 0; channel < source.size(); ++channel) {
+            const int equation = blend_equations_[channel == 3 ? 1 : 0];
+            unsigned output = 0;
+            if (equation == 3)
+                output = std::min(source[channel], destination[channel]);
+            else if (equation == 4)
+                output = std::max(source[channel], destination[channel]);
+            else {
+                const auto source_factor = factor(blend_factors_[channel == 3 ? 2 : 0], channel);
+                const auto destination_factor = factor(blend_factors_[channel == 3 ? 3 : 1], channel);
+                const auto source_term = (source[channel] * source_factor + 127) / 255;
+                const auto destination_term = (destination[channel] * destination_factor + 127) / 255;
+                if (equation == 1)
+                    output = destination_term > source_term ? destination_term - source_term : 0;
+                else if (equation == 2)
+                    output = source_term > destination_term ? source_term - destination_term : 0;
+                else
+                    output = std::min(source_term + destination_term, 255U);
+            }
+            result |= std::min(output, 255U) << shifts[channel];
+        }
+        store_pixel(x, y, result);
+        return;
+    }
+    if (source_alpha == 0)
+        return;
     if (source_alpha == 255) {
         if (tint == 0xffffff) {
             store_pixel(x, y, rgba);
@@ -295,7 +360,7 @@ void Canvas::rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tin
     x = std::max(x, 0);
     if (x >= end)
         return;
-    if (!color_write_all() || !blend_enabled_ || alpha_test_enabled_) {
+    if (!color_write_all() || !blend_enabled_ || alpha_test_enabled_ || !standard_blend()) {
         for (int px = x; px < end; ++px)
             rgba_pixel_tinted(px, y, rgba, tint, opacity);
         return;
@@ -351,7 +416,7 @@ void Canvas::blit_rgba(std::span<const std::uint32_t> source,
                        std::int8_t source_alpha_mode) noexcept {
     if (opacity <= 0)
         return;
-    if (!color_write_all() || !blend_enabled_ || alpha_test_enabled_) {
+    if (!color_write_all() || !blend_enabled_ || alpha_test_enabled_ || !standard_blend()) {
         for (int row = 0; row < height; ++row)
             for (int column = 0; column < width; ++column)
                 rgba_pixel_tinted(
@@ -421,6 +486,131 @@ void Canvas::blit_rgba(std::span<const std::uint32_t> source,
         }
     }
 }
+bool Canvas::blit_rgba_scaled_opaque(std::span<const std::uint32_t> source,
+                                     int source_width,
+                                     std::span<const int> source_x,
+                                     std::span<const int> source_y,
+                                     int destination_x,
+                                     int destination_y,
+                                     double opacity) noexcept {
+    if (gpu_ || !color_write_all() || !blend_enabled_ || alpha_test_enabled_ || !standard_blend() ||
+        pixel_shader_ || source_width <= 0 || destination_x < 0 || destination_y < 0 ||
+        destination_x > width_ || destination_y > height_ || opacity <= 0 ||
+        source_x.size() > static_cast<std::size_t>(width_ - destination_x) ||
+        source_y.size() > static_cast<std::size_t>(height_ - destination_y))
+        return false;
+
+    for (const int x : source_x)
+        if (x < 0 || x >= source_width)
+            return false;
+    for (const int y : source_y)
+        if (y < 0 || static_cast<std::size_t>(y) * static_cast<std::size_t>(source_width) + source_width >
+                         source.size())
+            return false;
+
+    const unsigned source_alpha = static_cast<unsigned>(255.0 * std::clamp(opacity, 0.0, 1.0) + 0.5);
+    if (source_alpha == 0)
+        return true;
+    const unsigned inverse = 255 - source_alpha;
+    const bool repeated_x = std::adjacent_find(source_x.begin(), source_x.end()) != source_x.end();
+    for (std::size_t row = 0; row < source_y.size(); ++row) {
+        const auto *src = source.data() + static_cast<std::size_t>(source_y[row]) * source_width;
+        auto *dst = pixels_.data() + static_cast<std::size_t>(destination_y + static_cast<int>(row)) * width_ +
+                    destination_x;
+        if (source_alpha == 255 && repeated_x) {
+            for (std::size_t column = 0; column < source_x.size();) {
+                const int x = source_x[column];
+                std::size_t end = column + 1;
+                while (end < source_x.size() && source_x[end] == x)
+                    ++end;
+                std::fill_n(dst + column, end - column, src[x]);
+                column = end;
+            }
+            continue;
+        }
+        for (std::size_t column = 0; column < source_x.size(); ++column) {
+            const auto pixel = src[source_x[column]];
+            if (source_alpha == 255) {
+                dst[column] = pixel;
+                continue;
+            }
+            const auto previous = dst[column];
+            const unsigned destination_alpha = previous >> 24;
+            if (destination_alpha == 255) {
+                unsigned result = 0xff000000;
+                for (unsigned shift : {0U, 8U, 16U})
+                    result |= (((pixel >> shift & 255) * source_alpha +
+                               (previous >> shift & 255) * inverse + 127) /
+                              255)
+                             << shift;
+                dst[column] = result;
+                continue;
+            }
+            const unsigned output_alpha =
+                source_alpha + (destination_alpha * inverse + 127) / 255;
+            unsigned result = output_alpha << 24;
+            for (unsigned shift : {0U, 8U, 16U}) {
+                const unsigned source_channel = (pixel >> shift) & 255;
+                const unsigned destination_channel = (previous >> shift) & 255;
+                const unsigned premultiplied = source_channel * source_alpha +
+                                               (destination_channel * destination_alpha * inverse + 127) / 255;
+                result |= ((premultiplied + output_alpha / 2) / output_alpha) << shift;
+            }
+            dst[column] = result;
+        }
+    }
+    return true;
+}
+bool Canvas::blit_rgba_scaled_binary_alpha(std::span<const std::uint32_t> source,
+                                          int source_width,
+                                          std::span<const int> source_x,
+                                          std::span<const int> source_y,
+                                          int destination_x,
+                                          int destination_y) noexcept {
+    // Binary-alpha sprite pixels can only be transparent or opaque. On the
+    // common software path, avoid the full blend-state and channel math for
+    // each scaled pixel; transparent samples leave the framebuffer untouched.
+    if (gpu_ || !color_write_all() || !blend_enabled_ || alpha_test_enabled_ || !standard_blend() ||
+        pixel_shader_ || source_width <= 0 || destination_x < 0 || destination_y < 0 ||
+        destination_x > width_ || destination_y > height_ ||
+        source_x.size() > static_cast<std::size_t>(width_ - destination_x) ||
+        source_y.size() > static_cast<std::size_t>(height_ - destination_y))
+        return false;
+
+    for (const int x : source_x)
+        if (x < 0 || x >= source_width)
+            return false;
+    for (const int y : source_y)
+        if (y < 0 || static_cast<std::size_t>(y) * static_cast<std::size_t>(source_width) + source_width >
+                         source.size())
+            return false;
+
+    const bool repeated_x = std::adjacent_find(source_x.begin(), source_x.end()) != source_x.end();
+    for (std::size_t row = 0; row < source_y.size(); ++row) {
+        const auto *src = source.data() + static_cast<std::size_t>(source_y[row]) * source_width;
+        auto *dst = pixels_.data() +
+                    static_cast<std::size_t>(destination_y + static_cast<int>(row)) * width_ + destination_x;
+        if (repeated_x) {
+            for (std::size_t column = 0; column < source_x.size();) {
+                const int x = source_x[column];
+                std::size_t end = column + 1;
+                while (end < source_x.size() && source_x[end] == x)
+                    ++end;
+                const auto pixel = src[x];
+                if (pixel >> 24)
+                    std::fill_n(dst + column, end - column, pixel);
+                column = end;
+            }
+            continue;
+        }
+        for (std::size_t column = 0; column < source_x.size(); ++column) {
+            const auto pixel = src[source_x[column]];
+            if (pixel >> 24)
+                dst[column] = pixel;
+        }
+    }
+    return true;
+}
 void Canvas::draw_surface(const Canvas &source,
                           double x,
                           double y,
@@ -489,7 +679,7 @@ void Canvas::draw_surface(const Canvas &source,
         return;
     }
     // use the general path when a blit overlaps itself
-    if (color_write_all() && blend_enabled_ && !alpha_test_enabled_ && this != &source && sx == 1 &&
+    if (color_write_all() && blend_enabled_ && !alpha_test_enabled_ && standard_blend() && this != &source &&
         sy == 1 && angle == 0 && tint == 0xffffff && opacity == 1) {
         // clip first, before converting the coordinates to int
         if (x < -static_cast<double>(source.width_) - 1 || x > width_ + 1.0 ||
@@ -541,7 +731,7 @@ void Canvas::draw_surface(const Canvas &source,
     for (int py = 0; py < source.height_; ++py) {
         for (int px = 0; px < source.width_; ++px) {
             const auto rgba = source.pixels_[static_cast<std::size_t>(py) * source.width_ + px];
-            if ((rgba >> 24) == 0 && blend_enabled_)
+            if ((rgba >> 24) == 0 && blend_enabled_ && standard_blend())
                 continue;
             const double u = px * sx, v = py * sy;
             const int dx = static_cast<int>(std::lround(x + u * cs + v * sn));
@@ -582,6 +772,10 @@ void Canvas::plot(int x, int y) {
         pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
     if (!blend_enabled_) {
         store_pixel(x, y, (alpha_ << 24) | rgb_);
+        return;
+    }
+    if (!standard_blend()) {
+        rgba_pixel_tinted(x, y, (alpha_ << 24) | rgb_, 0xffffff, 1);
         return;
     }
     if (alpha_ == 255) {
@@ -627,7 +821,7 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
     }
 #endif
     const auto span = [&](int y, int first, int last) {
-        if (!color_write_all() || !blend_enabled_ || alpha_test_enabled_) {
+        if (!color_write_all() || !blend_enabled_ || alpha_test_enabled_ || !standard_blend()) {
             const auto rgba = (alpha_ << 24) | rgb_;
             for (int x = first; x < last; ++x)
                 rgba_pixel_tinted(x, y, rgba, 0xffffff, 1);
@@ -1241,5 +1435,21 @@ void Canvas::save_bmp(const std::filesystem::path &path) const {
     file.close();
     if (!file)
         throw Error(ErrorKind::io, "screenshot write failed");
+}
+void Canvas::save_png(const std::filesystem::path &path) const {
+    png_image image{};
+    image.version = PNG_IMAGE_VERSION;
+    image.width = static_cast<png_uint_32>(width_);
+    image.height = static_cast<png_uint_32>(height_);
+    if constexpr (std::endian::native == std::endian::little)
+        image.format = PNG_FORMAT_BGRA;
+    else
+        image.format = PNG_FORMAT_ARGB;
+    const auto filename = path.string();
+    if (!png_image_write_to_file(&image, filename.c_str(), 0,
+                                 reinterpret_cast<const unsigned char *>(pixels_.data()), 0, nullptr))
+        throw Error(ErrorKind::io, "screenshot PNG write failed" +
+                                       (image.message[0] ? ": " + std::string(image.message) : ""));
+    png_image_free(&image);
 }
 } // namespace regml

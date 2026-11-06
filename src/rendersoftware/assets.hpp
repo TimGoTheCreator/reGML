@@ -24,11 +24,19 @@ class GameAssets {
     struct Sprite {
         std::string_view name;
         int width = 0, height = 0, ox = 0, oy = 0, left = 0, right = 0, top = 0, bottom = 0;
+        int bbox_mode = 0, auto_left = 0, auto_right = 0, auto_top = 0, auto_bottom = 0;
         std::span<const std::uint32_t> frames;
         bool precise = false;
+        bool dynamic = false, valid = true;
         std::size_t mask_offset = 0, mask_count = 0;
     };
+    struct SpriteFrameInfo {
+        int x = 0, y = 0, width = 0, height = 0, texture = -1;
+        int original_width = 0, original_height = 0, crop_width = 0, crop_height = 0;
+        int x_offset = 0, y_offset = 0;
+    };
     const Sprite &sprite(int id) const;
+    [[nodiscard]] std::optional<SpriteFrameInfo> sprite_frame_info(int id, std::size_t frame) const;
     bool set_sprite_offset(int id, int x, int y);
     int create_sprite_from_surface(const Canvas &surface,
                                    int x,
@@ -39,21 +47,36 @@ class GameAssets {
                                    bool smooth,
                                    int origin_x,
                                    int origin_y);
+    int create_sprite_from_file(const std::filesystem::path &path,
+                                bool remove_background,
+                                bool smooth,
+                                int origin_x,
+                                int origin_y);
     [[nodiscard]] std::size_t sprite_count() const noexcept { return sprites_.size(); }
     bool mask_pixel(int id, double frame, int x, int y) const;
     [[nodiscard]] std::span<const std::uint8_t> mask_frame(int id, std::size_t frame) const;
     [[nodiscard]] bool sprite_exists(int id) const noexcept {
         id = unpack_sprite_reference(id);
-        return id >= 0 && static_cast<std::size_t>(id) < sprites_.size();
+        return id >= 0 && static_cast<std::size_t>(id) < sprites_.size() &&
+               sprites_[static_cast<std::size_t>(id)].valid;
     }
     [[nodiscard]] std::string_view sprite_name(int id) const { return sprite(id).name; }
+    [[nodiscard]] std::array<double, 8> sprite_uvs(int id, double frame);
+    [[nodiscard]] std::pair<double, double> texture_texel_size(int id, double frame);
+    int duplicate_sprite(int id);
+    bool delete_sprite(int id);
+    bool set_sprite_bbox(int id, int left, int top, int right, int bottom);
+    bool set_sprite_bbox_mode(int id, int mode);
+    [[nodiscard]] int sprite_bbox_mode(int id) const;
     [[nodiscard]] std::pair<int, int> background_size(int id) const;
     struct TileSource {
         int x = 0, y = 0, width = 0, height = 0;
     };
     [[nodiscard]] std::optional<TileSource> background_tile_source(int id,
                                                                    std::uint32_t tile,
-                                                                   std::uint64_t elapsed_us = 0) const;
+                                                                   std::uint64_t elapsed_us = 0,
+                                                                   std::optional<std::size_t> animation_frame =
+                                                                       std::nullopt) const;
     void prefetch(int id);
     void prefetch(int id, double frame);
     void draw_background(Canvas &canvas, int id, double x, double y);
@@ -92,6 +115,7 @@ class GameAssets {
                      double angle = 0,
                      unsigned color = 0xffffff,
                      double alpha = 1);
+    void draw_sprite_pos(Canvas &canvas, int id, double frame, const std::array<double, 8> &corners, double alpha);
     [[nodiscard]] std::uint32_t sample_sprite(int id,
                                               double frame,
                                               double u,
@@ -145,6 +169,7 @@ class GameAssets {
         std::filesystem::path external_file;
         std::size_t last_used = 0;
         std::vector<std::uint32_t> pixels;
+        bool generated = false;
     };
     struct Region {
         int x = 0, y = 0, w = 0, h = 0, tx = 0, ty = 0, tw = 0, th = 0, page = 0;
@@ -196,12 +221,21 @@ class GameAssets {
     std::size_t dynamic_sprite_count_ = 0;
     std::size_t dynamic_sprite_bytes_ = 0;
     std::vector<std::size_t> backgrounds_;
-#if REGML_PS2
+#if REGML_PS2 && REGML_LOW_MEMORY
+    static constexpr std::size_t page_cache_limit_ = 256ULL * 1024;
+    static constexpr std::size_t region_cache_limit_ = 256ULL * 1024;
+#elif REGML_PS2
     static constexpr std::size_t page_cache_limit_ = 1ULL * 1024 * 1024;
     static constexpr std::size_t region_cache_limit_ = 1ULL * 1024 * 1024;
 #elif REGML_WII
     static constexpr std::size_t page_cache_limit_ = 4ULL * 1024 * 1024;
     static constexpr std::size_t region_cache_limit_ = 1ULL * 1024 * 1024;
+#elif REGML_WIIU
+    // Wii U has enough memory to retain large decoded texture pages. A tiny
+    // low-memory cache repeatedly inflates the same font atlas once per glyph
+    // during transformed text draws, stalling transitions for seconds.
+    static constexpr std::size_t page_cache_limit_ = 32ULL * 1024 * 1024;
+    static constexpr std::size_t region_cache_limit_ = 8ULL * 1024 * 1024;
 #elif REGML_LOW_MEMORY
     static constexpr std::size_t page_cache_limit_ = 2ULL * 1024 * 1024;
     static constexpr std::size_t region_cache_limit_ = 512ULL * 1024;

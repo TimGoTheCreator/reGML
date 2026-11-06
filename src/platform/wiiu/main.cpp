@@ -4,8 +4,17 @@
 #include <filesystem>
 #include <iostream>
 #include <string_view>
+#include <whb/sdcard.h>
 
 int main(int argc, char **argv) {
+    if (!WHBMountSdCard()) {
+        std::cerr << "reGML Wii U error: failed to mount the SD card\n";
+        return 1;
+    }
+    struct SdCardUnmount {
+        ~SdCardUnmount() { WHBUnmountSdCard(); }
+    } sd_card_unmount;
+
     const std::filesystem::path package = argc > 1 ? argv[1] : "/vol/external01/reGML/data.win";
     regml::PlayOptions options;
     options.save_directory = regml::wiiu_save_directory();

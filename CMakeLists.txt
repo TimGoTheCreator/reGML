@@ -212,6 +212,21 @@ if(REGML_SDL2 AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_PS4 AND NOT REG
     find_package(SDL2 REQUIRED)
 endif()
 
+# Video decoding is optional so the smaller console toolchains can keep using
+# their native SDKs. Desktop builds use FFmpeg when its development packages
+# are present; video built-ins remain available and fail cleanly otherwise.
+set(REGML_FFMPEG_AVAILABLE OFF)
+if(NOT REGML_ANDROID AND NOT REGML_WEB AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_PS4 AND NOT PS2)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(REGML_FFMPEG QUIET IMPORTED_TARGET
+            libavformat libavcodec libavutil libswscale)
+        if(REGML_FFMPEG_FOUND)
+            set(REGML_FFMPEG_AVAILABLE ON)
+        endif()
+    endif()
+endif()
+
 file(GLOB REGML_ENGINE_SOURCES
     CONFIGURE_DEPENDS
     "src/*.cpp"
@@ -219,6 +234,7 @@ file(GLOB REGML_ENGINE_SOURCES
     "src/platform/wii/*.cpp"
     "src/platform/ps2/*.cpp"
     "src/rendersoftware/*.cpp"
+    "src/video/*.cpp"
 )
 file(GLOB REGML_AUDIO_SOURCES CONFIGURE_DEPENDS "src/audio/sdl/*.cpp")
 list(APPEND REGML_ENGINE_SOURCES ${REGML_AUDIO_SOURCES})
@@ -293,6 +309,21 @@ elseif(REGML_PS4)
         message(WARNING "PS4 BZip2 port not found; BZ2-QOI textures are unavailable")
         target_compile_definitions(${REGML_TARGET} PRIVATE REGML_HAS_BZIP2=0)
     endif()
+elseif(REGML_WIIU OR REGML_WII)
+    find_path(REGML_PPC_BZIP2_INCLUDE_DIR NAMES bzlib.h
+        HINTS "$ENV{DEVKITPRO}/portlibs/ppc/include" "$ENV{DEVKITPRO}/portlibs/wiiu/include"
+              "$ENV{DEVKITPRO}/portlibs/wii/include")
+    find_library(REGML_PPC_BZIP2_LIBRARY NAMES bz2
+        HINTS "$ENV{DEVKITPRO}/portlibs/ppc/lib" "$ENV{DEVKITPRO}/portlibs/wiiu/lib"
+              "$ENV{DEVKITPRO}/portlibs/wii/lib")
+    if(REGML_PPC_BZIP2_INCLUDE_DIR AND REGML_PPC_BZIP2_LIBRARY)
+        target_include_directories(${REGML_TARGET} SYSTEM PRIVATE "${REGML_PPC_BZIP2_INCLUDE_DIR}")
+        target_compile_definitions(${REGML_TARGET} PRIVATE REGML_HAS_BZIP2=1)
+        target_link_libraries(${REGML_TARGET} PUBLIC "${REGML_PPC_BZIP2_LIBRARY}")
+    else()
+        message(WARNING "devkitPro ppc-bzip2 port not found; BZ2-QOI textures are unavailable")
+        target_compile_definitions(${REGML_TARGET} PRIVATE REGML_HAS_BZIP2=0)
+    endif()
 else()
     if(NOT REGML_ANDROID AND NOT REGML_WEB AND NOT REGML_WIIU AND NOT REGML_WII)
         find_package(BZip2 QUIET)
@@ -310,6 +341,7 @@ target_compile_definitions(${REGML_TARGET} PUBLIC
     REGML_240P=$<BOOL:${REGML_240P}>
     REGML_PS2_NTSC=$<BOOL:${REGML_PS2_NTSC}>
     REGML_LOW_MEMORY=$<BOOL:${REGML_LOW_MEMORY}>
+    REGML_WITH_FFMPEG=$<BOOL:${REGML_FFMPEG_AVAILABLE}>
 )
 
 target_include_directories(${REGML_TARGET} PUBLIC
@@ -387,6 +419,9 @@ else()
         regml_vorbis
         regml_ogg
     )
+endif()
+if(REGML_FFMPEG_AVAILABLE)
+    target_link_libraries(${REGML_TARGET} PUBLIC PkgConfig::REGML_FFMPEG)
 endif()
 
 if(PS2)

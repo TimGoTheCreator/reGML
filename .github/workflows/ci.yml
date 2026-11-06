@@ -456,7 +456,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Wii libraries
-        run: dkp-pacman -S --noconfirm --needed wii-dev ppc-libpng ppc-libvorbis ppc-zlib
+        run: dkp-pacman -S --noconfirm --needed wii-dev ppc-libpng ppc-libvorbis ppc-zlib ppc-bzip2
       - name: Build DOL
         run: |
           /opt/devkitpro/portlibs/wii/bin/powerpc-eabi-cmake -S . -B build/wii \
@@ -475,7 +475,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Wii U libraries
-        run: dkp-pacman -S --noconfirm --needed wiiu-dev wiiu-sdl2 ppc-libpng ppc-libvorbis
+        run: dkp-pacman -S --noconfirm --needed wiiu-dev wiiu-sdl2 ppc-libpng ppc-libvorbis ppc-bzip2
       - name: Build RPX
         run: |
           /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake -S . -B build/wiiu \
@@ -501,7 +501,8 @@ jobs:
         run: |
           export PATH="$PS2DEV/bin:$PS2DEV/ee/bin:$PS2DEV/iop/bin:$PS2DEV/dvp/bin:$PS2SDK/bin:$PATH"
           cmake -S . -B build/ps2 -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$PS2DEV/share/ps2dev.cmake" -DPS2=ON -DBUILD_TESTING=OFF
+            -DCMAKE_TOOLCHAIN_FILE="$PS2DEV/share/ps2dev.cmake" -DPS2=ON \
+            -DREGML_LOW_MEMORY=ON -DBUILD_TESTING=OFF
           cmake --build build/ps2 --parallel
       - uses: actions/upload-artifact@v4
         with:

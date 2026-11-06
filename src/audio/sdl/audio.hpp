@@ -14,6 +14,8 @@ class GameAudio {
     GameAudio(const Package &package, std::filesystem::path directory);
     ~GameAudio();
     std::optional<int> find_sound_id(std::string_view filename) const;
+    bool sound_exists(int sound) const noexcept;
+    std::string_view sound_name(int sound) const noexcept;
     int create_stream(std::string_view filename);
     bool destroy_stream(int id);
     bool load_group(int id);
@@ -24,6 +26,7 @@ class GameAudio {
     void stop(int id);
     void pause(int id, bool paused);
     bool playing(int id) const;
+    bool is_paused(int id) const;
     double gain(int id);
     void gain(int id, double value);
     void pitch(int id, double value);

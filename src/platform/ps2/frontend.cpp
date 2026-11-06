@@ -145,6 +145,16 @@ bool Ps2Frontend::poll(double *speed_multiplier) {
     return !(down(PAD_L3) && down(PAD_R3));
 }
 
+bool Ps2Frontend::poll_error_dismiss() {
+    if (!poll())
+        return true;
+    const auto pressed = take_pressed();
+    for (const bool key : pressed)
+        if (key)
+            return true;
+    return false;
+}
+
 KeyboardState Ps2Frontend::take_pressed() noexcept {
     KeyboardState result{};
     for (const std::size_t key : kMappedKeys) {

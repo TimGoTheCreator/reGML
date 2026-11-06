@@ -306,7 +306,7 @@ int command(int argc, char **argv) {
                 modules.push_back(regml::GmrtModule::parse(wad.read_module(i)));
             const auto &module = modules[module_index];
             regml::GmrtExecutionContext context;
-            context.self = std::make_shared<regml::StructValue>();
+            context.self = regml::make_struct();
             regml::GmrtVmOptions options;
             if (trace)
                 options.trace = [](const regml::GmrtFunction &function, const regml::GmrtBlock &block,
@@ -330,7 +330,7 @@ int command(int argc, char **argv) {
             const auto module = regml::GmrtModule::load(argv[3]);
             const auto function_index = parse_index(argv[4]);
             regml::GmrtExecutionContext context;
-            context.self = std::make_shared<regml::StructValue>();
+            context.self = regml::make_struct();
             regml::GmrtVmOptions options;
             if (trace)
                 options.trace = [](const regml::GmrtFunction &function, const regml::GmrtBlock &block,

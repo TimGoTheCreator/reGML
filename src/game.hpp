@@ -27,6 +27,7 @@ class GameSession {
         double draw_other_builtin_ms = 0;
         double max_draw_builtin_call_ms = 0;
         std::string_view slowest_draw_builtin;
+        std::string slowest_draw_builtin_details;
         double image_ms = 0;
         double text_ms = 0;
         std::uint64_t image_calls = 0;

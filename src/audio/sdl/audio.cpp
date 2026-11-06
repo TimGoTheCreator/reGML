@@ -552,6 +552,16 @@ std::optional<int> GameAudio::find_sound_id(std::string_view filename) const {
             return id;
     return std::nullopt;
 }
+bool GameAudio::sound_exists(int sound) const noexcept {
+    return (sound >= 0 && static_cast<std::size_t>(sound) < sounds_.size()) ||
+           stream_sounds_.contains(sound);
+}
+std::string_view GameAudio::sound_name(int sound) const noexcept {
+    if (sound >= 0 && static_cast<std::size_t>(sound) < sounds_.size())
+        return sounds_[static_cast<std::size_t>(sound)].name;
+    const auto found = stream_sounds_.find(sound);
+    return found == stream_sounds_.end() ? std::string_view{} : std::string_view{found->second.name};
+}
 std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::vector<std::uint8_t> owned_bytes) {
 #if REGML_PS2
     if (owned_bytes.size() >= 4 && std::memcmp(owned_bytes.data(), "OggS", 4) == 0)
@@ -896,7 +906,9 @@ int GameAudio::play(int sound, bool loop, double priority) {
 #else
     auto *clip = load(sound);
 #endif
-    if (!clip || clip->frames() == 0)
+    // On Wii U, an uncached sound has no Clip yet: keep a pending voice so the
+    // asynchronous decoder can attach the decoded clip when it completes.
+    if (clip && clip->frames() == 0)
         return -1;
     std::scoped_lock lock(voices_mutex_);
     if (voices_.size() >= static_cast<std::size_t>(channels_)) {
@@ -952,6 +964,13 @@ bool GameAudio::playing(int id) const {
             return true;
     return false;
 }
+bool GameAudio::is_paused(int id) const {
+    std::scoped_lock lock(voices_mutex_);
+    for (const auto &[voice, v] : voices_)
+        if ((voice == id || v.sound == id) && v.paused)
+            return true;
+    return false;
+}
 double GameAudio::gain(int id) {
     std::scoped_lock lock(voices_mutex_);
     if (id < 0)
@@ -980,8 +999,9 @@ void GameAudio::gain(int id, double value) {
         load(id)->gain = value;
 }
 void GameAudio::pitch(int id, double value) {
-    if (!std::isfinite(value) || value <= 0 || value > 16)
-        throw Error(ErrorKind::vm, "invalid audio pitch");
+    if (std::isnan(value))
+        value = 1.0;
+    value = std::clamp(value, 1.0 / 256.0, 256.0);
     std::scoped_lock lock(voices_mutex_);
     for (auto &[voice, v] : voices_)
         if (voice == id || v.sound == id)

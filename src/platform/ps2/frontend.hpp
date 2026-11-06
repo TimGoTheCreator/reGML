@@ -21,6 +21,7 @@ class Ps2Frontend {
     Ps2Frontend &operator=(const Ps2Frontend &) = delete;
 
     bool poll(double *speed_multiplier = nullptr);
+    bool poll_error_dismiss();
     void tick_game(GameSession &session,
                    const KeyboardState *replay,
                    const KeyboardState *replay_pressed = nullptr);

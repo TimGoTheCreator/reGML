@@ -15,7 +15,7 @@ class GmrtInterpreter {
         if (module_index >= modules_.size() || function_index >= modules_[module_index].functions.size())
             throw Error(ErrorKind::usage, "GMIR function index is out of range");
         if (!context.globals)
-            context.globals = std::make_shared<StructValue>();
+            context.globals = make_struct();
         if (std::holds_alternative<std::monostate>(context.scope))
             context.scope = context.self;
         GmrtVmResult result;
@@ -135,7 +135,7 @@ class GmrtInterpreter {
         if (name == "@@GML_GetUserGlobal@@")
             return context.globals;
         if (name == "@@GML_NewObject@@")
-            return std::make_shared<StructValue>();
+            return make_struct();
         if (name == "@@GML_NewArray@@") {
             ArrayPtr array(new ArrayValue());
             array->elements.reserve_dense(arguments.size());
@@ -280,7 +280,7 @@ class GmrtInterpreter {
                     }
                     if (const auto *callable = std::get_if<CallablePtr>(&object); callable && *callable) {
                         if (!(*callable)->properties)
-                            (*callable)->properties = std::make_shared<StructValue>();
+                            (*callable)->properties = make_struct();
                         (*callable)->properties->variables[name] = value;
                         return;
                     }
@@ -455,7 +455,7 @@ class GmrtInterpreter {
                     if (instruction.opcode == 22) {
                         if (const auto *callable = std::get_if<CallablePtr>(&dynamic_callee);
                             callable && *callable && (*callable)->invoke)
-                            registers[destination] = (*callable)->invoke(call_arguments);
+                            registers[destination] = (*callable)->invoke(call_arguments, std::nullopt);
                         else if (!name.empty())
                             registers[destination] = call(instruction, name, flags, call_arguments, self,
                                                           other, scope, context, module_index, depth);
