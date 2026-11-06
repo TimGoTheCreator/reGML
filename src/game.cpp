@@ -5410,8 +5410,9 @@ struct GameSession::Impl {
                 if (insertion_count > 32000 ||
                     static_cast<std::size_t>(std::max<std::int32_t>(length, index)) + insertion_count > 32000)
                     throw Error(ErrorKind::vm, "array_insert exceeds the one-dimensional array limit");
-                const int old_length = length;
-                const int new_length = std::max(old_length, index) + static_cast<int>(insertion_count);
+                const std::int32_t old_length = length;
+                const std::int32_t new_length =
+                    std::max<std::int32_t>(old_length, index) + static_cast<std::int32_t>(insertion_count);
                 std::vector<Value> contents(static_cast<std::size_t>(new_length), Value{std::int32_t{0}});
                 for (int destination = 0; destination < index && destination < old_length; ++destination)
                     if (const auto *value = elements.find(destination))
