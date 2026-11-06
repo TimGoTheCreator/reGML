@@ -5403,11 +5403,12 @@ struct GameSession::Impl {
             if (name == "array_insert") {
                 if (args.size() < 3)
                     throw Error(ErrorKind::vm, "array_insert requires at least one value");
-                const int raw_index = number(n(1));
-                const int index = std::max(0, raw_index < 0 ? length + raw_index : raw_index);
+                const std::int32_t raw_index = number(n(1));
+                const std::int32_t index =
+                    std::max<std::int32_t>(0, raw_index < 0 ? length + raw_index : raw_index);
                 const auto insertion_count = args.size() - 2;
                 if (insertion_count > 32000 ||
-                    static_cast<std::size_t>(std::max(length, index)) + insertion_count > 32000)
+                    static_cast<std::size_t>(std::max<std::int32_t>(length, index)) + insertion_count > 32000)
                     throw Error(ErrorKind::vm, "array_insert exceeds the one-dimensional array limit");
                 const int old_length = length;
                 const int new_length = std::max(old_length, index) + static_cast<int>(insertion_count);
