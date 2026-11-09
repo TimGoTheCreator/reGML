@@ -393,11 +393,19 @@ void rebuild_path(Path &path) {
         path.points[i].distance = path.length;
     }
 }
+struct SpatialCellMembership {
+    std::uint64_t cell = 0;
+    std::size_t slot = 0;
+};
 struct Instance {
     int id = 0, object = 0;
     std::size_t references = 0;
+    std::size_t spatial_order = 0;
+    std::uint32_t spatial_query_generation = 0;
     bool alive = true, outside_room = false, deactivated = false, manual_depth = false, destroying = false;
+    bool spatial_large = false;
     VariableStore vars;
+    std::vector<SpatialCellMembership> spatial_cells;
 };
 using InstancePtr = regml::IntrusivePtr<Instance>;
 struct GameBuffer {
@@ -726,6 +734,20 @@ struct GameSession::Impl {
     std::vector<CollisionRoute> tick_collision_routes;
     std::vector<std::uint32_t> tick_collision_route_stamps;
     std::uint32_t tick_collision_route_generation = 0;
+    struct CollisionGridEntry {
+        std::uint64_t cell = 0;
+        std::size_t instance_index = 0;
+    };
+    std::vector<CollisionGridEntry> collision_grid_entries;
+    std::vector<std::size_t> collision_grid_large_instances, collision_query_indices;
+    std::vector<std::uint32_t> collision_candidate_stamps;
+    std::vector<bool> collision_targetable_objects;
+    bool collision_targetable_objects_ready = false;
+    std::size_t collision_target_instance_count = 0;
+    std::uint32_t collision_candidate_generation = 0;
+    bool collision_grid_dirty = true;
+    bool collision_pass_active = false;
+    std::uint64_t collision_geometry_generation = 0;
     std::vector<Room> rooms;
     std::unordered_map<int, Camera> cameras;
     std::array<Matrix4, 3> transform_matrices{identity_matrix(), identity_matrix(), identity_matrix()};
@@ -733,7 +755,18 @@ struct GameSession::Impl {
     std::vector<int> order, scripts, global_initializers;
     std::unordered_map<std::string_view, int, VariableStoreHash, std::equal_to<>> code_ids;
     std::unordered_map<std::string, int, VariableStoreHash, std::equal_to<>> script_names;
+    std::unordered_map<std::string, std::uint8_t, VariableStoreHash, std::equal_to<>> builtin_dispatch_groups;
     std::vector<InstancePtr> instances;
+    std::vector<std::vector<std::size_t>> object_instance_indices;
+    std::unordered_map<int, std::size_t> instance_id_indices;
+    std::unordered_map<const VariableStore *, Instance *> instance_store_owners;
+    std::vector<std::uint32_t> object_ancestry_stamps;
+    std::uint32_t object_ancestry_generation = 0;
+    bool object_instance_index_dirty = true;
+    std::unordered_map<std::uint64_t, std::vector<Instance *>> spatial_grid;
+    std::vector<Instance *> spatial_large_instances, spatial_query_candidates;
+    std::uint32_t spatial_query_generation = 0;
+    bool spatial_grid_built = false;
     std::vector<InstancePtr> tick_instances;
     std::vector<InstancePtr> frame_instances;
     std::vector<InstancePtr> collision_instances;
@@ -744,7 +777,20 @@ struct GameSession::Impl {
         std::size_t order;
         const Instance *instance;
     };
+    struct LayerVisualEntry {
+        double depth = 0;
+        std::size_t layer_index = 0, element_index = 0, order = 0;
+        int layer_id = -1, element_id = -1;
+        bool background = false;
+    };
+    struct ParticleVisualEntry {
+        double depth = 0;
+        int system = -1;
+        std::size_t order = 0;
+    };
     std::vector<DrawEntry> draw_entries;
+    std::vector<LayerVisualEntry> layer_visuals;
+    std::vector<ParticleVisualEntry> particle_visuals;
     struct SavedRoom {
         std::vector<InstancePtr> instances;
         VariableStore engine;
@@ -967,10 +1013,15 @@ struct GameSession::Impl {
             std::uint32_t generation = 0;
             std::uint32_t engine_size = 0;
         };
+        struct BranchCacheEntry {
+            std::uint32_t offset = std::numeric_limits<std::uint32_t>::max();
+            std::uint32_t instruction_index = 0;
+        };
         std::vector<Value> stack, arguments;
         std::vector<InstancePtr> targets;
         std::vector<DataType> stack_types;
         std::array<VariableCacheEntry, 64> variable_cache{};
+        std::array<BranchCacheEntry, 8> branch_cache{};
         std::uint32_t variable_cache_generation = 0;
         struct Environment {
             InstancePtr saved, saved_other;
@@ -2010,6 +2061,17 @@ struct GameSession::Impl {
         for (const auto name : alarm_variables)
             inst->vars[name] = std::int32_t{-1};
         instances.push_back(inst);
+        inst->spatial_order = instances.size() - 1;
+        register_instance_store(inst);
+        if (!object_instance_index_dirty && object_instance_indices.size() == objects.size()) {
+            const auto index = instances.size() - 1;
+            instance_id_indices.try_emplace(inst->id, index);
+            add_instance_to_object_index(index);
+        } else {
+            object_instance_index_dirty = true;
+        }
+        if (spatial_grid_built)
+            insert_spatial_instance(*inst);
         return inst;
     }
     struct Bounds {
@@ -2122,6 +2184,326 @@ struct GameSession::Impl {
                     return true;
         return false;
     }
+    void prepare_collision_target_objects() {
+        if (collision_targetable_objects_ready && collision_targetable_objects.size() == objects.size())
+            return;
+
+        std::vector<bool> event_target_objects(objects.size(), false);
+        for (const auto &object : objects)
+            if (object.has_collision_events)
+                for (const auto &owner : object.event_owners)
+                    if (owner.key.first == 4 && owner.key.second >= 0 &&
+                        static_cast<std::size_t>(owner.key.second) < objects.size())
+                        event_target_objects[static_cast<std::size_t>(owner.key.second)] = true;
+
+        std::vector<std::uint8_t> targetable_state(objects.size(), 0);
+        std::vector<std::uint32_t> visit_stamps(objects.size(), 0);
+        std::vector<std::size_t> path;
+        path.reserve(objects.size());
+        std::uint32_t generation = 0;
+        for (std::size_t object = 0; object < objects.size(); ++object) {
+            if (targetable_state[object] != 0)
+                continue;
+            if (++generation == 0) {
+                std::fill(visit_stamps.begin(), visit_stamps.end(), 0);
+                ++generation;
+            }
+            path.clear();
+            bool targetable = false;
+            int ancestor = static_cast<int>(object);
+            for (std::size_t guard = 0; guard < objects.size(); ++guard) {
+                if (ancestor < 0 || static_cast<std::size_t>(ancestor) >= objects.size())
+                    break;
+                const auto index = static_cast<std::size_t>(ancestor);
+                if (event_target_objects[index]) {
+                    targetable = true;
+                    break;
+                }
+                if (targetable_state[index] != 0) {
+                    targetable = targetable_state[index] == 1;
+                    break;
+                }
+                if (visit_stamps[index] == generation)
+                    break;
+                visit_stamps[index] = generation;
+                path.push_back(index);
+                const int parent = objects[index].parent;
+                if (parent == ancestor)
+                    break;
+                ancestor = parent;
+            }
+            for (const auto index : path)
+                targetable_state[index] = targetable ? 1 : 2;
+        }
+        collision_targetable_objects.resize(objects.size());
+        for (std::size_t object = 0; object < objects.size(); ++object)
+            collision_targetable_objects[object] = targetable_state[object] == 1;
+        collision_targetable_objects_ready = true;
+    }
+    static std::uint64_t collision_cell_key(std::int32_t x, std::int32_t y) noexcept {
+        return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(x)) << 32) |
+               static_cast<std::uint32_t>(y);
+    }
+    static bool collision_cell_coordinate(double coordinate, std::int32_t &cell) noexcept {
+        const double value = std::floor(coordinate / 64.0);
+        if (!std::isfinite(value) || value < std::numeric_limits<std::int32_t>::min() ||
+            value > std::numeric_limits<std::int32_t>::max())
+            return false;
+        cell = static_cast<std::int32_t>(value);
+        return true;
+    }
+    static bool collision_cell_range(const Bounds &box,
+                                     std::int32_t &left,
+                                     std::int32_t &right,
+                                     std::int32_t &top,
+                                     std::int32_t &bottom) noexcept {
+        return collision_cell_coordinate(box.left, left) && collision_cell_coordinate(box.right, right) &&
+               collision_cell_coordinate(box.top, top) && collision_cell_coordinate(box.bottom, bottom);
+    }
+    static bool collision_cell_count(std::int32_t left,
+                                     std::int32_t right,
+                                     std::int32_t top,
+                                     std::int32_t bottom,
+                                     std::size_t &count) noexcept {
+        constexpr std::size_t max_cells = 256;
+        const auto columns = static_cast<std::int64_t>(right) - left + 1;
+        const auto rows = static_cast<std::int64_t>(bottom) - top + 1;
+        if (columns <= 0 || rows <= 0 || columns > static_cast<std::int64_t>(max_cells) ||
+            rows > static_cast<std::int64_t>(max_cells) ||
+            columns * rows > static_cast<std::int64_t>(max_cells))
+            return false;
+        count = static_cast<std::size_t>(columns * rows);
+        return true;
+    }
+    void remove_spatial_instance(Instance &instance) {
+        for (const auto &membership : instance.spatial_cells) {
+            const auto found = spatial_grid.find(membership.cell);
+            if (found == spatial_grid.end())
+                continue;
+            auto &bucket = found->second;
+            std::size_t slot = membership.slot;
+            if (slot >= bucket.size() || bucket[slot] != &instance) {
+                const auto entry = std::find(bucket.begin(), bucket.end(), &instance);
+                if (entry == bucket.end())
+                    continue;
+                slot = static_cast<std::size_t>(entry - bucket.begin());
+            }
+            const auto last = bucket.size() - 1;
+            if (slot != last) {
+                auto *moved = bucket[last];
+                bucket[slot] = moved;
+                for (auto &moved_membership : moved->spatial_cells)
+                    if (moved_membership.cell == membership.cell) {
+                        moved_membership.slot = slot;
+                        break;
+                    }
+            }
+            bucket.pop_back();
+            if (bucket.empty())
+                spatial_grid.erase(found);
+        }
+        instance.spatial_cells.clear();
+        if (instance.spatial_large) {
+            const auto found =
+                std::find(spatial_large_instances.begin(), spatial_large_instances.end(), &instance);
+            if (found != spatial_large_instances.end())
+                spatial_large_instances.erase(found);
+            instance.spatial_large = false;
+        }
+    }
+    void insert_spatial_instance(Instance &instance) {
+        instance.spatial_cells.clear();
+        instance.spatial_large = false;
+        if (!instance.alive)
+            return;
+        const int sprite = collision_sprite(instance);
+        if (sprite < 0)
+            return;
+        if (!assets.sprite_exists(sprite)) {
+            instance.spatial_large = true;
+            spatial_large_instances.push_back(&instance);
+            return;
+        }
+        const auto box = bounds(instance);
+        if (!box.valid)
+            return;
+        std::int32_t left = 0, right = 0, top = 0, bottom = 0;
+        std::size_t cell_count = 0;
+        if (!collision_cell_range(box, left, right, top, bottom) ||
+            !collision_cell_count(left, right, top, bottom, cell_count)) {
+            instance.spatial_large = true;
+            spatial_large_instances.push_back(&instance);
+            return;
+        }
+        instance.spatial_cells.reserve(cell_count);
+        for (std::int64_t y = top; y <= bottom; ++y)
+            for (std::int64_t x = left; x <= right; ++x) {
+                const auto cell =
+                    collision_cell_key(static_cast<std::int32_t>(x), static_cast<std::int32_t>(y));
+                auto &bucket = spatial_grid[cell];
+                instance.spatial_cells.push_back({cell, bucket.size()});
+                bucket.push_back(&instance);
+            }
+    }
+    void update_spatial_instance(Instance &instance) {
+        if (!spatial_grid_built)
+            return;
+        remove_spatial_instance(instance);
+        insert_spatial_instance(instance);
+    }
+    void rebuild_spatial_grid() {
+        spatial_grid_built = false;
+        spatial_grid.clear();
+        spatial_large_instances.clear();
+        spatial_query_candidates.clear();
+        for (std::size_t index = 0; index < instances.size(); ++index) {
+            auto &instance = *instances[index];
+            instance.spatial_cells.clear();
+            instance.spatial_large = false;
+            instance.spatial_order = index;
+            instance.spatial_query_generation = 0;
+        }
+        for (const auto &instance : instances)
+            insert_spatial_instance(*instance);
+        spatial_grid_built = true;
+    }
+    bool collect_spatial_candidates(const Bounds &box, const Bounds *additional_box = nullptr) {
+        spatial_query_candidates.clear();
+        if (gmrt_project || instances.size() < 48)
+            return false;
+        if (!spatial_grid_built)
+            rebuild_spatial_grid();
+        if (++spatial_query_generation == 0) {
+            for (const auto &instance : instances)
+                instance->spatial_query_generation = 0;
+            ++spatial_query_generation;
+        }
+        const auto add_candidate = [&](Instance *instance) {
+            if (instance->spatial_query_generation != spatial_query_generation) {
+                instance->spatial_query_generation = spatial_query_generation;
+                spatial_query_candidates.push_back(instance);
+            }
+        };
+        const auto append_box = [&](const Bounds &query) {
+            if (!query.valid)
+                return true;
+            std::int32_t left = 0, right = 0, top = 0, bottom = 0;
+            std::size_t cell_count = 0;
+            if (!collision_cell_range(query, left, right, top, bottom) ||
+                !collision_cell_count(left, right, top, bottom, cell_count))
+                return false;
+            (void)cell_count;
+            for (auto *instance : spatial_large_instances)
+                add_candidate(instance);
+            for (std::int64_t y = top; y <= bottom; ++y)
+                for (std::int64_t x = left; x <= right; ++x) {
+                    const auto key =
+                        collision_cell_key(static_cast<std::int32_t>(x), static_cast<std::int32_t>(y));
+                    const auto found = spatial_grid.find(key);
+                    if (found != spatial_grid.end())
+                        for (auto *instance : found->second)
+                            add_candidate(instance);
+                }
+            return true;
+        };
+        if (!append_box(box) || (additional_box && !append_box(*additional_box)))
+            return false;
+        std::sort(spatial_query_candidates.begin(), spatial_query_candidates.end(),
+                  [](const Instance *left, const Instance *right) {
+                      return left->spatial_order < right->spatial_order;
+                  });
+        return true;
+    }
+    static bool spatial_geometry_variable(std::string_view name) noexcept {
+        return name == "x" || name == "y" || name == "sprite_index" || name == "mask_index" ||
+               name == "image_xscale" || name == "image_yscale" || name == "image_angle";
+    }
+    void note_instance_geometry_write(const VariableStore *store, std::string_view name) {
+        if (spatial_geometry_variable(name)) {
+            note_collision_geometry_change();
+            if (const auto found = instance_store_owners.find(store); found != instance_store_owners.end())
+                update_spatial_instance(*found->second);
+        } else if (name == "image_index") {
+            note_collision_geometry_change();
+        }
+    }
+    void note_collision_geometry_change() noexcept {
+        if (collision_pass_active)
+            ++collision_geometry_generation;
+    }
+    void rebuild_collision_grid() {
+        prepare_collision_target_objects();
+        collision_target_instance_count = 0;
+        collision_grid_entries.clear();
+        collision_grid_large_instances.clear();
+        for (std::size_t index = 0; index < collision_instances.size(); ++index) {
+            const auto &instance = collision_instances[index];
+            if (!instance->alive || instance->object < 0 ||
+                static_cast<std::size_t>(instance->object) >= collision_targetable_objects.size() ||
+                !collision_targetable_objects[static_cast<std::size_t>(instance->object)])
+                continue;
+            ++collision_target_instance_count;
+            const auto box = bounds(*instance);
+            if (!box.valid)
+                continue;
+            std::int32_t left = 0, right = 0, top = 0, bottom = 0;
+            std::size_t cell_count = 0;
+            if (!collision_cell_range(box, left, right, top, bottom) ||
+                !collision_cell_count(left, right, top, bottom, cell_count)) {
+                collision_grid_large_instances.push_back(index);
+                continue;
+            }
+            (void)cell_count;
+            for (std::int64_t y = top; y <= bottom; ++y)
+                for (std::int64_t x = left; x <= right; ++x)
+                    collision_grid_entries.push_back(
+                        {collision_cell_key(static_cast<std::int32_t>(x), static_cast<std::int32_t>(y)),
+                         index});
+        }
+        std::sort(collision_grid_entries.begin(), collision_grid_entries.end(),
+                  [](const CollisionGridEntry &left, const CollisionGridEntry &right) {
+                      return left.cell != right.cell ? left.cell < right.cell
+                                                     : left.instance_index < right.instance_index;
+                  });
+        collision_candidate_stamps.resize(collision_instances.size());
+        collision_grid_dirty = false;
+    }
+    bool collect_collision_candidates(const Bounds &box) {
+        collision_query_indices.clear();
+        if (!box.valid)
+            return true;
+
+        std::int32_t left = 0, right = 0, top = 0, bottom = 0;
+        std::size_t cell_count = 0;
+        if (!collision_cell_range(box, left, right, top, bottom) ||
+            !collision_cell_count(left, right, top, bottom, cell_count))
+            return false;
+        (void)cell_count;
+        if (++collision_candidate_generation == 0) {
+            std::fill(collision_candidate_stamps.begin(), collision_candidate_stamps.end(), 0);
+            ++collision_candidate_generation;
+        }
+        const auto add_candidate = [&](std::size_t index) {
+            if (collision_candidate_stamps[index] != collision_candidate_generation) {
+                collision_candidate_stamps[index] = collision_candidate_generation;
+                collision_query_indices.push_back(index);
+            }
+        };
+        for (const auto index : collision_grid_large_instances)
+            add_candidate(index);
+        for (std::int64_t y = top; y <= bottom; ++y)
+            for (std::int64_t x = left; x <= right; ++x) {
+                const auto key =
+                    collision_cell_key(static_cast<std::int32_t>(x), static_cast<std::int32_t>(y));
+                const auto first = std::lower_bound(
+                    collision_grid_entries.begin(), collision_grid_entries.end(), key,
+                    [](const CollisionGridEntry &entry, std::uint64_t cell) { return entry.cell < cell; });
+                for (auto entry = first; entry != collision_grid_entries.end() && entry->cell == key; ++entry)
+                    add_candidate(entry->instance_index);
+            }
+        std::sort(collision_query_indices.begin(), collision_query_indices.end());
+        return true;
+    }
     bool matches(const Instance &i, int object) const {
         if (object == -3 || object == i.id)
             return true;
@@ -2133,6 +2515,110 @@ struct GameSession::Impl {
             n = objects[static_cast<std::size_t>(n)].parent;
         }
         return false;
+    }
+    void add_instance_to_object_index(std::size_t instance_index) {
+        if (object_ancestry_stamps.size() != objects.size()) {
+            object_ancestry_stamps.assign(objects.size(), 0);
+            object_ancestry_generation = 0;
+        }
+        if (++object_ancestry_generation == 0) {
+            std::fill(object_ancestry_stamps.begin(), object_ancestry_stamps.end(), 0);
+            ++object_ancestry_generation;
+        }
+        int object = instances[instance_index]->object;
+        for (std::size_t guard = 0;
+             object >= 0 && static_cast<std::size_t>(object) < objects.size() && guard < objects.size();
+             ++guard) {
+            const auto index = static_cast<std::size_t>(object);
+            if (object_ancestry_stamps[index] == object_ancestry_generation)
+                break;
+            object_ancestry_stamps[index] = object_ancestry_generation;
+            object_instance_indices[index].push_back(instance_index);
+            const int parent = objects[index].parent;
+            if (parent == object)
+                break;
+            object = parent;
+        }
+    }
+    void rebuild_object_instance_index() {
+        object_instance_indices.resize(objects.size());
+        for (auto &indices : object_instance_indices)
+            indices.clear();
+        instance_id_indices.clear();
+        instance_id_indices.reserve(instances.size());
+        for (std::size_t index = 0; index < instances.size(); ++index) {
+            instance_id_indices.try_emplace(instances[index]->id, index);
+            add_instance_to_object_index(index);
+        }
+        object_instance_index_dirty = false;
+    }
+    void ensure_object_instance_index() {
+        if (object_instance_index_dirty || object_instance_indices.size() != objects.size())
+            rebuild_object_instance_index();
+    }
+    InstancePtr find_alive_instance_by_id(int id) {
+        ensure_object_instance_index();
+        const auto found = instance_id_indices.find(id);
+        if (found != instance_id_indices.end() && found->second < instances.size() &&
+            instances[found->second]->id == id && instances[found->second]->alive)
+            return instances[found->second];
+        // IDs are unique in GameMaker. Keep a fallback for malformed projects that
+        // assign the same explicit ID to more than one live placement.
+        for (const auto &instance : instances)
+            if (instance->alive && instance->id == id)
+                return instance;
+        return {};
+    }
+    InstancePtr find_first_alive_exact_object(int object) {
+        ensure_object_instance_index();
+        if (object < 0 || static_cast<std::size_t>(object) >= object_instance_indices.size())
+            return {};
+        for (const auto index : object_instance_indices[static_cast<std::size_t>(object)])
+            if (instances[index]->alive && instances[index]->object == object)
+                return instances[index];
+        return {};
+    }
+    template <typename Visitor> bool visit_target_candidates(int target, Visitor &&visitor) {
+        if (target == -3) {
+            for (const auto &instance : instances)
+                if (visitor(instance))
+                    return true;
+            return false;
+        }
+        ensure_object_instance_index();
+        const std::vector<std::size_t> *object_instances = nullptr;
+        if (target >= 0 && static_cast<std::size_t>(target) < object_instance_indices.size())
+            object_instances = &object_instance_indices[static_cast<std::size_t>(target)];
+        const auto id = instance_id_indices.find(target);
+        bool id_emitted = false;
+        const auto emit_id_if_before = [&](std::size_t index) {
+            if (id != instance_id_indices.end() && !id_emitted && id->second < index) {
+                id_emitted = true;
+                return visitor(instances[id->second]);
+            }
+            return false;
+        };
+        if (object_instances) {
+            for (const auto index : *object_instances) {
+                if (emit_id_if_before(index))
+                    return true;
+                if (id != instance_id_indices.end() && index == id->second)
+                    id_emitted = true;
+                if (visitor(instances[index]))
+                    return true;
+            }
+        }
+        if (id != instance_id_indices.end() && !id_emitted && visitor(instances[id->second]))
+            return true;
+        return false;
+    }
+    void register_instance_store(const InstancePtr &instance) {
+        if (instance)
+            instance_store_owners.insert_or_assign(&instance->vars, instance.get());
+    }
+    void unregister_instance_store(const InstancePtr &instance) {
+        if (instance)
+            instance_store_owners.erase(&instance->vars);
     }
     std::vector<InstancePtr> &targets(int target, const InstancePtr &self, const InstancePtr &other) {
         auto &out = depth == 0 ? target_fallback : vm_scratch[depth - 1].targets;
@@ -2149,9 +2635,11 @@ struct GameSession::Impl {
         }
         if (out.capacity() < std::min(instances.size(), std::size_t{64}))
             out.reserve(std::min(instances.size(), std::size_t{64}));
-        for (auto &i : instances)
-            if (i->alive && !i->deactivated && matches(*i, target))
-                out.push_back(i);
+        visit_target_candidates(target, [&](const InstancePtr &instance) {
+            if (instance->alive && !instance->deactivated)
+                out.push_back(instance);
+            return false;
+        });
         return out;
     }
     Instance *first_target(int target, const InstancePtr &self, const InstancePtr &other) {
@@ -2159,30 +2647,43 @@ struct GameSession::Impl {
             return self.get();
         if (target == -2)
             return other && other->alive ? other.get() : nullptr;
-        for (const auto &i : instances)
-            if (i->alive && !i->deactivated && matches(*i, target))
-                return i.get();
-        return nullptr;
+        Instance *found = nullptr;
+        visit_target_candidates(target, [&](const InstancePtr &instance) {
+            if (instance->alive && !instance->deactivated) {
+                found = instance.get();
+                return true;
+            }
+            return false;
+        });
+        return found;
     }
     Instance *first_target_for_variable(int target, const InstancePtr &self, const InstancePtr &other) {
-        if (auto *active = first_target(target, self, other))
-            return active;
         if (target == -1)
             return self.get();
         if (target == -2)
             return other.get();
-        for (const auto &i : instances)
-            if (i->alive && matches(*i, target))
-                return i.get();
         // instance_destroy marks an instance dead immediately, but GameMaker keeps
         // its variables available until the calling event unwinds.  Destroyed
         // instances remain in this vector until the end of the frame, so allow a
         // direct variable read to resolve that pending instance during nested
         // event/script calls.
-        for (const auto &i : instances)
-            if (matches(*i, target))
-                return i.get();
-        return nullptr;
+        Instance *first_alive = nullptr;
+        Instance *first_any = nullptr;
+        Instance *first_active = nullptr;
+        visit_target_candidates(target, [&](const InstancePtr &instance) {
+            if (!first_any)
+                first_any = instance.get();
+            if (!instance->alive)
+                return false;
+            if (!first_alive)
+                first_alive = instance.get();
+            if (!instance->deactivated) {
+                first_active = instance.get();
+                return true;
+            }
+            return false;
+        });
+        return first_active ? first_active : (first_alive ? first_alive : first_any);
     }
     CollisionRoute collision_event(int source, int target) {
         const auto key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(source)) << 32) |
@@ -2458,8 +2959,14 @@ struct GameSession::Impl {
             } else
                 saved_rooms.erase(current_room);
         }
-        std::erase_if(instances,
-                      [](const auto &i) { return !i->alive || number(i->vars.at("persistent")) == 0; });
+        object_instance_index_dirty = true;
+        spatial_grid_built = false;
+        std::erase_if(instances, [&](const auto &i) {
+            const bool remove = !i->alive || number(i->vars.at("persistent")) == 0;
+            if (remove)
+                unregister_instance_store(i);
+            return remove;
+        });
 #if REGML_LOW_MEMORY
         // only the current room needs its placements, views, and tiles loaded
         if (current_room >= 0) {
@@ -2515,6 +3022,8 @@ struct GameSession::Impl {
         const auto saved = saved_rooms.find(id);
         if (saved != saved_rooms.end()) {
             instances.insert(instances.end(), saved->second.instances.begin(), saved->second.instances.end());
+            for (const auto &instance : saved->second.instances)
+                register_instance_store(instance);
             for (const auto &[key, value] : saved->second.engine)
                 engine[key] = value;
             saved_rooms.erase(saved);
@@ -2906,6 +3415,23 @@ struct GameSession::Impl {
         if (!entry_instruction)
             throw Error(ErrorKind::vm, "code entry is not an instruction boundary", program.origin + pc);
         std::size_t instruction_index = *entry_instruction;
+        scratch.branch_cache.fill(VmScratch::BranchCacheEntry{});
+        const auto instruction_at = [&](std::size_t offset) -> std::optional<std::size_t> {
+            if constexpr (build_instruction_index) {
+                return program.instruction_at(offset);
+            } else {
+                if (offset > std::numeric_limits<std::uint32_t>::max())
+                    return program.instruction_at(offset);
+                const auto cache_offset = static_cast<std::uint32_t>(offset);
+                auto &cached = scratch.branch_cache[(offset / 4) % scratch.branch_cache.size()];
+                if (cached.offset == cache_offset)
+                    return cached.instruction_index;
+                const auto found = program.instruction_at(offset);
+                if (found)
+                    cached = {cache_offset, static_cast<std::uint32_t>(*found)};
+                return found;
+            }
+        };
         auto &environments = scratch.environments;
         auto &environment_count = scratch.environment_count;
         DataType current_stack_type = DataType::variable;
@@ -2939,10 +3465,23 @@ struct GameSession::Impl {
             ~InstructionCountGuard() { total += executed; }
         } instruction_count_guard{instruction_count, executed_in_code};
         std::size_t last_instruction_pc = pc;
+#if REGML_PS2
+        const auto update_active_vm = [&](std::size_t active_pc, std::size_t active_instruction) {
+            if (active_instruction >= program.instructions.size())
+                return;
+            const auto &active = program.instructions[active_instruction];
+            regml_ps2_active_pc = static_cast<std::uint32_t>(active_pc);
+            regml_ps2_active_opcode = static_cast<std::uint32_t>(active.opcode());
+            regml_ps2_active_symbol = active.symbol_id;
+        };
+#endif
         try {
             while (pc < program.byte_length) {
                 last_instruction_pc = pc;
-                if (++event_budget > 2'000'000)
+                ++event_budget;
+                // Check the runaway-event budget in batches to keep the guard
+                // cheaper in the opcode loop. Overshoot is bounded to 63 ops.
+                if ((event_budget & 63U) == 0 && event_budget > 2'000'000)
                     throw Error(ErrorKind::vm, "event instruction budget exhausted", program.origin + pc);
                 ++executed_in_code;
 #if REGML_PS2
@@ -2968,9 +3507,8 @@ struct GameSession::Impl {
                         " pc=" + std::to_string(pc) + " opcode=" + std::string(opcode_name(opcode)));
 #endif
 #if REGML_PS2
-                regml_ps2_active_pc = static_cast<std::uint32_t>(pc);
-                regml_ps2_active_opcode = static_cast<std::uint32_t>(opcode);
-                regml_ps2_active_symbol = ins.symbol_id;
+                if ((executed_in_code & 63U) == 1U)
+                    update_active_vm(pc, instruction_index);
 #endif
                 current_stack_type =
                     opcode == Opcode::call || opcode == Opcode::call_v || opcode == Opcode::extended
@@ -3037,6 +3575,7 @@ struct GameSession::Impl {
                                 if (cached.store == &self->vars && cached.engine_size == engine.size()) {
                                     if (writing) {
                                         *cached.value = value;
+                                        note_instance_geometry_write(&self->vars, linked.variables[id].name);
                                         return value;
                                     }
                                     return *cached.value;
@@ -3252,6 +3791,9 @@ struct GameSession::Impl {
                             Value &destination = *destination_pointer;
                             destination = value;
                             if (!struct_store && !static_store && store != &engine && store != &globals &&
+                                store != &locals)
+                                note_instance_geometry_write(store, name);
+                            if (!struct_store && !static_store && store != &engine && store != &globals &&
                                 store != &locals && (name == "depth" || name == "layer")) {
                                 const bool manual_depth = name == "depth";
                                 bool marked = false;
@@ -3264,11 +3806,9 @@ struct GameSession::Impl {
                                 mark_instance(self);
                                 mark_instance(other);
                                 if (!marked)
-                                    for (const auto &instance : instances)
-                                        if (instance && &instance->vars == store) {
-                                            instance->manual_depth = manual_depth;
-                                            break;
-                                        }
+                                    if (const auto found = instance_store_owners.find(store);
+                                        found != instance_store_owners.end())
+                                        found->second->manual_depth = manual_depth;
                             }
                             if (cacheable)
                                 cached = {store, &destination, static_cast<std::uint32_t>(id),
@@ -3317,12 +3857,13 @@ struct GameSession::Impl {
                     };
                     if (multi_target) {
                         bool found = false;
-                        for (const auto &target : instances) {
-                            if (target->alive && !target->deactivated && matches(*target, scope)) {
+                        visit_target_candidates(scope, [&](const InstancePtr &target) {
+                            if (target->alive && !target->deactivated) {
                                 access(&target->vars);
                                 found = true;
                             }
-                        }
+                            return false;
+                        });
                         if (!found)
                             return value;
                         return value;
@@ -3759,7 +4300,7 @@ struct GameSession::Impl {
                             environment.saved_other.reset();
                             environment.saved_struct = {};
                             next = ins.branch_target_value();
-                            const auto found = program.instruction_at(next);
+                            const auto found = instruction_at(next);
                             if (found) {
                                 const auto &end = program.instructions.at(*found);
                                 if (end.opcode() == Opcode::pop_env)
@@ -3775,16 +4316,18 @@ struct GameSession::Impl {
                         if (other && other->alive)
                             environment.choices.push_back(other);
                     } else {
-                        for (const auto &instance : instances)
-                            if (instance->alive && !instance->deactivated && matches(*instance, target))
+                        visit_target_candidates(target, [&](const InstancePtr &instance) {
+                            if (instance->alive && !instance->deactivated)
                                 environment.choices.push_back(instance);
+                            return false;
+                        });
                     }
                     if (environment.choices.empty()) {
                         environment.saved.reset();
                         environment.saved_other.reset();
                         environment.saved_struct = {};
                         next = ins.branch_target_value();
-                        const auto found = program.instruction_at(next);
+                        const auto found = instruction_at(next);
                         if (found) {
                             const auto &end = program.instructions.at(*found);
                             if (end.opcode() == Opcode::pop_env)
@@ -3894,7 +4437,7 @@ struct GameSession::Impl {
                                 "native opcode pending: " + std::string(opcode_name(opcode)));
                 }
                 if (next != pc + ins.size && next != program.byte_length) {
-                    const auto target = program.instruction_at(next);
+                    const auto target = instruction_at(next);
                     if (!target)
                         throw Error(ErrorKind::vm, "program counter is not an instruction boundary",
                                     program.origin + next);
@@ -3907,6 +4450,9 @@ struct GameSession::Impl {
             current_code = code;
             current_vm_address = program.origin + last_instruction_pc;
         } catch (const Error &e) {
+#if REGML_PS2
+            update_active_vm(last_instruction_pc, instruction_index);
+#endif
             if (!e.offset() ||
                 (*e.offset() >= program.origin && *e.offset() < program.origin + program.byte_length))
                 current_code = code;
@@ -3933,6 +4479,9 @@ struct GameSession::Impl {
                             std::string(package.code_name(static_cast<std::size_t>(code))),
                         e.offset().value_or(program.origin + pc));
         } catch (const std::bad_alloc &) {
+#if REGML_PS2
+            update_active_vm(last_instruction_pc, instruction_index);
+#endif
             current_code = code;
             current_vm_address = program.origin + pc;
 #if REGML_PS2
@@ -3947,6 +4496,9 @@ struct GameSession::Impl {
                         "out of memory in " + std::string(package.code_name(static_cast<std::size_t>(code))),
                         program.origin + pc);
         } catch (const std::out_of_range &e) {
+#if REGML_PS2
+            update_active_vm(last_instruction_pc, instruction_index);
+#endif
             current_code = code;
             current_vm_address = program.origin + pc;
             throw Error(ErrorKind::vm,
@@ -3978,10 +4530,7 @@ struct GameSession::Impl {
             return self;
         if (id == -2)
             return other;
-        for (const auto &instance : instances)
-            if (instance->alive && instance->id == id)
-                return instance;
-        return {};
+        return find_alive_instance_by_id(id);
     }
     Value invoke_function(std::uint32_t symbol_id,
                           std::span<const Value> args,
@@ -4546,6 +5095,24 @@ struct GameSession::Impl {
             current_canvas().color(previous_color);
             current_canvas().alpha(previous_alpha);
         };
+        const auto cached_builtin = builtin_dispatch_groups.find(name);
+        std::optional<std::uint8_t> cached_builtin_group;
+        if (cached_builtin != builtin_dispatch_groups.end())
+            cached_builtin_group = cached_builtin->second;
+        const auto dispatch_builtin = [&](std::uint8_t group, auto &&dispatcher) -> std::optional<Value> {
+            if (cached_builtin_group && *cached_builtin_group != group)
+                return std::nullopt;
+            if (auto handled = dispatcher()) {
+                if (!cached_builtin_group)
+                    builtin_dispatch_groups.try_emplace(std::string(name), group);
+                return std::move(handled);
+            }
+            if (cached_builtin_group) {
+                builtin_dispatch_groups.erase(std::string(name));
+                cached_builtin_group.reset();
+            }
+            return std::nullopt;
+        };
         auto dispatch_builtins_0 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "@@This@@") {
                 if (struct_self)
@@ -4627,11 +5194,7 @@ struct GameSession::Impl {
                                            std::span<const Value> call_args, std::optional<int> other_id) {
                         InstancePtr call_other;
                         if (other_id)
-                            for (const auto &instance : instances)
-                                if (instance->alive && instance->id == *other_id) {
-                                    call_other = instance;
-                                    break;
-                                }
+                            call_other = find_alive_instance_by_id(*other_id);
                         return invoke_function(symbol_id, call_args, target, call_other, target_struct);
                     };
                 else
@@ -5098,7 +5661,7 @@ struct GameSession::Impl {
             }
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_0())
+        if (auto handled = dispatch_builtin(0, dispatch_builtins_0))
             return std::move(*handled);
         auto dispatch_builtins_1 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "room_exists" || name == "object_exists") {
@@ -5182,12 +5745,8 @@ struct GameSession::Impl {
                     append_names(globals);
                 } else {
                     const int id = number(args[0]);
-                    const auto found =
-                        std::find_if(instances.begin(), instances.end(), [&](const InstancePtr &instance) {
-                            return instance->alive && instance->id == id;
-                        });
-                    if (found != instances.end())
-                        append_names((*found)->vars);
+                    if (const auto instance = find_alive_instance_by_id(id))
+                        append_names(instance->vars);
                 }
                 std::sort(names.begin(), names.end());
                 ArrayPtr result(new ArrayValue);
@@ -5814,10 +6373,12 @@ struct GameSession::Impl {
             if (name == "variable_instance_set") {
                 const auto found = first_target(static_cast<int>(n(0)), self, other);
                 if (found) {
-                    found->vars[text(1)] = args[2];
-                    if (text(1) == "depth")
+                    const auto variable_name = text(1);
+                    found->vars[variable_name] = args[2];
+                    note_instance_geometry_write(&found->vars, variable_name);
+                    if (variable_name == "depth")
                         found->manual_depth = true;
-                    else if (text(1) == "layer")
+                    else if (variable_name == "layer")
                         found->manual_depth = false;
                 }
                 return std::monostate{};
@@ -5830,7 +6391,7 @@ struct GameSession::Impl {
             }
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_1())
+        if (auto handled = dispatch_builtin(1, dispatch_builtins_1))
             return std::move(*handled);
         auto dispatch_builtins_2 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "ds_priority_create" || name == "ds_priority_create_managed") {
@@ -6421,7 +6982,7 @@ struct GameSession::Impl {
             }
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_2())
+        if (auto handled = dispatch_builtin(2, dispatch_builtins_2))
             return std::move(*handled);
         auto dispatch_builtins_3 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "buffer_exists")
@@ -7129,7 +7690,7 @@ struct GameSession::Impl {
             }
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_3())
+        if (auto handled = dispatch_builtin(3, dispatch_builtins_3))
             return std::move(*handled);
         auto dispatch_builtins_4 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "steam_initialised" || name == "steam_is_overlay_enabled" ||
@@ -7669,7 +8230,7 @@ struct GameSession::Impl {
             }
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_4())
+        if (auto handled = dispatch_builtin(4, dispatch_builtins_4))
             return std::move(*handled);
         auto dispatch_builtins_5 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "texture_prefetch") {
@@ -7760,7 +8321,7 @@ struct GameSession::Impl {
                 return gpu_texture_repeat;
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_5())
+        if (auto handled = dispatch_builtin(5, dispatch_builtins_5))
             return std::move(*handled);
         auto dispatch_builtins_6 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "layer_background_create") {
@@ -7973,13 +8534,10 @@ struct GameSession::Impl {
                     return std::monostate{};
                 const auto instance_ids = current.layers[found->second].instances;
                 for (const int instance_id : instance_ids) {
-                    const auto instance = std::find_if(instances.begin(), instances.end(),
-                                                       [instance_id](const InstancePtr &item) {
-                                                           return item->alive && item->id == instance_id;
-                                                       });
-                    if (instance != instances.end()) {
-                        event(*instance, 1, 0);
-                        (*instance)->alive = false;
+                    const auto instance = find_alive_instance_by_id(instance_id);
+                    if (instance) {
+                        event(instance, 1, 0);
+                        instance->alive = false;
                     }
                 }
                 std::erase_if(current.tiles,
@@ -8327,11 +8885,8 @@ struct GameSession::Impl {
             }
             if (name == "layer_instance_get_instance") {
                 const int element_id = number(args[0]);
-                const auto found =
-                    std::find_if(instances.begin(), instances.end(), [&](const InstancePtr &instance) {
-                        return instance->alive && instance->id == element_id;
-                    });
-                return std::int32_t{found == instances.end() ? -1 : (*found)->id};
+                const auto instance = find_alive_instance_by_id(element_id);
+                return std::int32_t{instance ? instance->id : -1};
             }
             if (name == "layer_get_element_layer") {
                 const int element_id = number(args[0]);
@@ -9056,7 +9611,7 @@ struct GameSession::Impl {
             }
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_6())
+        if (auto handled = dispatch_builtin(6, dispatch_builtins_6))
             return std::move(*handled);
         auto dispatch_builtins_7 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "video_open") {
@@ -9715,7 +10270,7 @@ struct GameSession::Impl {
             }
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_7())
+        if (auto handled = dispatch_builtin(7, dispatch_builtins_7))
             return std::move(*handled);
         auto dispatch_builtins_8 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "collision_line") {
@@ -9768,44 +10323,72 @@ struct GameSession::Impl {
                 const double x = std::floor(n(0)), y = std::floor(n(1));
                 if (collision_sprite(*self) < 0)
                     return true;
-                for (const auto &instance : instances) {
-                    if (!instance->alive || instance->deactivated || instance == self ||
-                        value_number(instance->vars.at("solid")) == 0 || collision_sprite(*instance) < 0)
-                        continue;
-                    if (collides(*self, x, y, *instance))
-                        return false;
+                const auto blocked_by = [&](const Instance &instance) {
+                    return instance.alive && !instance.deactivated && &instance != self.get() &&
+                           value_number(instance.vars.at("solid")) != 0 && collision_sprite(instance) >= 0 &&
+                           collides(*self, x, y, instance);
+                };
+                if (collect_spatial_candidates(bounds(*self, x, y))) {
+                    for (const auto *instance : spatial_query_candidates)
+                        if (blocked_by(*instance))
+                            return false;
+                } else {
+                    for (const auto &instance : instances)
+                        if (blocked_by(*instance))
+                            return false;
                 }
                 return true;
             }
             if (name == "place_meeting" || name == "instance_place") {
-                for (const auto &i : targets(static_cast<int>(n(2)), self, other))
-                    if (i != self) {
-                        if (collides(*self, n(0), n(1), *i))
-                            return name == "place_meeting" ? Value{true} : Value{std::int32_t{i->id}};
-                    }
+                const int target = static_cast<int>(n(2));
+                const double x = n(0), y = n(1);
+                const auto collided_with = [&](Instance &instance) -> std::optional<Value> {
+                    if (!instance.alive || (target != -2 && instance.deactivated) ||
+                        &instance == self.get() || !matches(instance, target) ||
+                        !collides(*self, x, y, instance))
+                        return std::nullopt;
+                    return name == "place_meeting" ? Value{true} : Value{std::int32_t{instance.id}};
+                };
+                if (target != -1 && target != -2 && collect_spatial_candidates(bounds(*self, x, y))) {
+                    for (auto *instance : spatial_query_candidates)
+                        if (auto result = collided_with(*instance))
+                            return std::move(*result);
+                } else {
+                    for (const auto &instance : targets(target, self, other))
+                        if (instance != self)
+                            if (collides(*self, x, y, *instance))
+                                return name == "place_meeting" ? Value{true}
+                                                               : Value{std::int32_t{instance->id}};
+                }
                 return name == "place_meeting" ? Value{false} : Value{std::int32_t{-4}};
             }
             if (name == "move_bounce_all") {
                 const bool advanced = n(0) != 0;
                 double hspeed = value_number(self->vars.at("hspeed"));
                 double vspeed = value_number(self->vars.at("vspeed"));
+                bool repositioned = false;
                 const auto own_sprite = collision_sprite(*self);
                 if (own_sprite >= 0) {
                     const auto own_bounds = bounds(*self);
-                    for (const auto &candidate : instances) {
-                        if (!candidate->alive || candidate == self || collision_sprite(*candidate) < 0 ||
+                    const auto previous_bounds = advanced
+                                                     ? bounds(*self, value_number(self->vars.at("xprevious")),
+                                                              value_number(self->vars.at("yprevious")))
+                                                     : Bounds{};
+                    const auto process_candidate = [&](Instance *candidate) {
+                        if (!candidate->alive || candidate == self.get() ||
+                            collision_sprite(*candidate) < 0 ||
                             !collides(*self, value_number(self->vars.at("x")),
                                       value_number(self->vars.at("y")), *candidate))
-                            continue;
+                            return;
                         const auto other_bounds = bounds(*candidate);
                         if (!own_bounds.valid || !other_bounds.valid)
-                            continue;
+                            return;
                         const double overlap_x = std::min(own_bounds.right, other_bounds.right) -
                                                  std::max(own_bounds.left, other_bounds.left);
                         const double overlap_y = std::min(own_bounds.bottom, other_bounds.bottom) -
                                                  std::max(own_bounds.top, other_bounds.top);
                         if (overlap_x <= 0 || overlap_y <= 0)
-                            continue;
+                            return;
                         const double center_x =
                             (own_bounds.left + own_bounds.right - other_bounds.left - other_bounds.right) *
                             0.5;
@@ -9817,11 +10400,24 @@ struct GameSession::Impl {
                             hspeed = center_x == 0 ? -hspeed : std::copysign(std::fabs(hspeed), center_x);
                         else
                             vspeed = center_y == 0 ? -vspeed : std::copysign(std::fabs(vspeed), center_y);
-                        if (advanced && collision_sprite(*self) >= 0 && collision_sprite(*candidate) >= 0) {
+                        if (advanced) {
                             self->vars["x"] = value_number(self->vars.at("xprevious"));
                             self->vars["y"] = value_number(self->vars.at("yprevious"));
+                            repositioned = true;
                         }
+                    };
+                    const auto *additional_bounds = advanced ? &previous_bounds : nullptr;
+                    if (collect_spatial_candidates(own_bounds, additional_bounds)) {
+                        for (auto *candidate : spatial_query_candidates)
+                            process_candidate(candidate);
+                    } else {
+                        for (const auto &candidate : instances)
+                            process_candidate(candidate.get());
                     }
+                }
+                if (repositioned) {
+                    note_collision_geometry_change();
+                    update_spatial_instance(*self);
                 }
                 self->vars["hspeed"] = hspeed;
                 self->vars["vspeed"] = vspeed;
@@ -10028,15 +10624,16 @@ struct GameSession::Impl {
                     return std::monostate{};
                 }
                 const int object = number(args[1]);
-                for (const auto &instance : instances) {
-                    if (!instance->alive || instance->deactivated || !matches(*instance, object))
-                        continue;
+                visit_target_candidates(object, [&](const InstancePtr &instance) {
+                    if (!instance->alive || instance->deactivated)
+                        return false;
                     const auto box = bounds(*instance, value_number(instance->vars.at("x")),
                                             value_number(instance->vars.at("y")));
                     if (!box.valid)
-                        continue;
+                        return false;
                     set_rectangle(box.left, box.top, box.right, box.bottom, true);
-                }
+                    return false;
+                });
                 return std::monostate{};
             }
             if (name == "mp_grid_path") {
@@ -10139,7 +10736,7 @@ struct GameSession::Impl {
             }
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_8())
+        if (auto handled = dispatch_builtin(8, dispatch_builtins_8))
             return std::move(*handled);
         auto dispatch_builtins_9 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "path_add") {
@@ -10614,15 +11211,24 @@ struct GameSession::Impl {
             }
             if (name == "move_snap") {
                 const double sx = n(0), sy = n(1);
-                if (sx > 0)
+                bool repositioned = false;
+                if (sx > 0) {
                     self->vars["x"] = std::round(value_number(self->vars.at("x")) / sx) * sx;
-                if (sy > 0)
+                    note_collision_geometry_change();
+                    repositioned = true;
+                }
+                if (sy > 0) {
                     self->vars["y"] = std::round(value_number(self->vars.at("y")) / sy) * sy;
+                    note_collision_geometry_change();
+                    repositioned = true;
+                }
+                if (repositioned)
+                    update_spatial_instance(*self);
                 return std::monostate{};
             }
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_9())
+        if (auto handled = dispatch_builtin(9, dispatch_builtins_9))
             return std::move(*handled);
         auto dispatch_builtins_10 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "instance_exists") {
@@ -10661,6 +11267,8 @@ struct GameSession::Impl {
             if (name == "action_move_to") {
                 self->vars["x"] = n(0);
                 self->vars["y"] = n(1);
+                note_collision_geometry_change();
+                update_spatial_instance(*self);
                 return std::monostate{};
             }
             if (name == "instance_number") {
@@ -10668,9 +11276,11 @@ struct GameSession::Impl {
                 if (target == -1 || target == -2)
                     return first_target(target, self, other) ? 1.0 : 0.0;
                 std::size_t count = 0;
-                for (const auto &i : instances)
-                    if (i->alive && !i->deactivated && matches(*i, target))
+                visit_target_candidates(target, [&](const InstancePtr &instance) {
+                    if (instance->alive && !instance->deactivated)
                         ++count;
+                    return false;
+                });
                 return static_cast<double>(count);
             }
             if (name == "instance_find") {
@@ -10680,13 +11290,18 @@ struct GameSession::Impl {
                     const auto *found = index == 0 ? first_target(target, self, other) : nullptr;
                     return std::int32_t{found ? found->id : -4};
                 }
-                for (const auto &i : instances)
-                    if (i->alive && !i->deactivated && matches(*i, target)) {
-                        if (index == 0)
-                            return std::int32_t{i->id};
-                        --index;
+                int found = -4;
+                visit_target_candidates(target, [&](const InstancePtr &instance) {
+                    if (!instance->alive || instance->deactivated)
+                        return false;
+                    if (index == 0) {
+                        found = instance->id;
+                        return true;
                     }
-                return std::int32_t{-4};
+                    --index;
+                    return false;
+                });
+                return std::int32_t{found};
             }
             if (name == "instance_id_get") {
                 int position = number(args[0]);
@@ -10735,6 +11350,7 @@ struct GameSession::Impl {
                     } else if (!std::holds_alternative<std::monostate>(args[4]))
                         throw Error(ErrorKind::vm, "instance_create_layer initial values must be a struct");
                 }
+                update_spatial_instance(*i);
                 event(i, 14, 0);
                 event(i, 0, 0);
                 return std::int32_t{i->id};
@@ -10755,6 +11371,7 @@ struct GameSession::Impl {
                     else if (!std::holds_alternative<std::monostate>(args[4]))
                         throw Error(ErrorKind::vm, "instance_create_depth initial values must be a struct");
                 }
+                update_spatial_instance(*i);
                 event(i, 14, 0);
                 event(i, 0, 0);
                 return std::int32_t{i->id};
@@ -10771,6 +11388,7 @@ struct GameSession::Impl {
                 copy->manual_depth = self->manual_depth;
                 copy->vars["id"] = std::int32_t{copy->id};
                 copy->vars["object_index"] = std::int32_t{copy->object};
+                update_spatial_instance(*copy);
                 if (args.empty() || n(0) != 0) {
                     event(copy, 14, 0);
                     event(copy, 0, 0);
@@ -10791,6 +11409,8 @@ struct GameSession::Impl {
                 }
                 self->object = object;
                 self->vars["object_index"] = std::int32_t{object};
+                note_collision_geometry_change();
+                object_instance_index_dirty = true;
                 if (perform) {
                     const auto &replacement = objects[static_cast<std::size_t>(object)];
                     self->vars["sprite_index"] = std::int32_t{replacement.sprite};
@@ -10801,6 +11421,7 @@ struct GameSession::Impl {
                     self->vars["solid"] = std::int32_t{replacement.solid};
                     self->vars["image_index"] = 0.0;
                     self->vars["image_speed"] = 1.0;
+                    update_spatial_instance(*self);
                     event(self, 14, 0);
                     event(self, 0, 0);
                 }
@@ -10825,16 +11446,12 @@ struct GameSession::Impl {
                         for (const auto &instance : instances)
                             if (instance->alive && !instance->deactivated)
                                 targets_to_destroy.push_back(instance);
-                    } else if (target >= 0 && static_cast<std::size_t>(target) < objects.size()) {
-                        for (const auto &instance : instances)
-                            if (instance->alive && !instance->deactivated && matches(*instance, target))
-                                targets_to_destroy.push_back(instance);
                     } else {
-                        for (const auto &instance : instances)
-                            if (instance->alive && !instance->deactivated && instance->id == target) {
+                        visit_target_candidates(target, [&](const InstancePtr &instance) {
+                            if (instance->alive && !instance->deactivated)
                                 targets_to_destroy.push_back(instance);
-                                break;
-                            }
+                            return false;
+                        });
                     }
                 }
                 for (const auto &instance : targets_to_destroy) {
@@ -10866,16 +11483,20 @@ struct GameSession::Impl {
             }
             if (name == "instance_activate_object") {
                 const int object = static_cast<int>(n(0));
-                for (const auto &i : instances)
-                    if (i->alive && matches(*i, object))
-                        i->deactivated = false;
+                visit_target_candidates(object, [&](const InstancePtr &instance) {
+                    if (instance->alive)
+                        instance->deactivated = false;
+                    return false;
+                });
                 return std::monostate{};
             }
             if (name == "instance_deactivate_object") {
                 const int object = static_cast<int>(n(0));
-                for (const auto &i : instances)
-                    if (i->alive && matches(*i, object))
-                        i->deactivated = true;
+                visit_target_candidates(object, [&](const InstancePtr &instance) {
+                    if (instance->alive)
+                        instance->deactivated = true;
+                    return false;
+                });
                 return std::monostate{};
             }
             if (name == "room_set_persistent") {
@@ -10968,7 +11589,7 @@ struct GameSession::Impl {
             }
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_10())
+        if (auto handled = dispatch_builtin(10, dispatch_builtins_10))
             return std::move(*handled);
         auto dispatch_builtins_11 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "keyboard_check" || name == "keyboard_check_direct" ||
@@ -11293,7 +11914,7 @@ struct GameSession::Impl {
             }
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_11())
+        if (auto handled = dispatch_builtin(11, dispatch_builtins_11))
             return std::move(*handled);
         auto dispatch_builtins_12 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "switch_accounts_is_user_open")
@@ -11554,7 +12175,7 @@ struct GameSession::Impl {
             }
             return std::nullopt;
         };
-        if (auto handled = dispatch_builtins_12())
+        if (auto handled = dispatch_builtin(12, dispatch_builtins_12))
             return std::move(*handled);
         throw Error(ErrorKind::unsupported, "engine built-in pending: " + std::string(name));
     }
@@ -11657,6 +12278,8 @@ struct GameSession::Impl {
                 if (i->alive && !i->deactivated) {
                     if (instance_motion_paused(*i))
                         continue;
+                    const double spatial_x_before = value_number(i->vars.at("x"));
+                    const double spatial_y_before = value_number(i->vars.at("y"));
                     double h = value_number(i->vars.at("hspeed")), v = value_number(i->vars.at("vspeed"));
                     const double friction = value_number(i->vars.at("friction"));
                     if (friction != 0 && (h != 0 || v != 0)) {
@@ -11757,6 +12380,9 @@ struct GameSession::Impl {
                     }
                     i->vars["x"] = value_number(i->vars["x"]) + h;
                     i->vars["y"] = value_number(i->vars["y"]) + v;
+                    if (value_number(i->vars.at("x")) != spatial_x_before ||
+                        value_number(i->vars.at("y")) != spatial_y_before)
+                        update_spatial_instance(*i);
                     if (objects[static_cast<std::size_t>(i->object)].has_keyboard_events) {
                         for (std::size_t k = 0; k < 256; ++k) {
                             if (held[k])
@@ -11797,42 +12423,108 @@ struct GameSession::Impl {
                 tick_collision_route_stamps.assign(objects.size(), 0);
                 tick_collision_route_generation = 0;
             }
-            for (const auto &i : collision_instances)
-                if (i->alive && objects[static_cast<std::size_t>(i->object)].has_collision_events) {
-                    if (++tick_collision_route_generation == 0) {
-                        std::fill(tick_collision_route_stamps.begin(), tick_collision_route_stamps.end(), 0);
-                        ++tick_collision_route_generation;
-                    }
-                    for (const auto &j : collision_instances)
-                        if (j->alive && i != j) {
-                            const auto target_object = static_cast<std::size_t>(j->object);
-                            if (tick_collision_route_stamps[target_object] !=
-                                tick_collision_route_generation) {
-                                tick_collision_routes[target_object] = collision_event(i->object, j->object);
-                                tick_collision_route_stamps[target_object] = tick_collision_route_generation;
-                            }
-                            const auto route = tick_collision_routes[target_object];
-                            if (route.source >= 0 && collides(*i, value_number(i->vars.at("x")),
-                                                              value_number(i->vars.at("y")), *j)) {
-                                const double other_x = value_number(j->vars.at("x"));
-                                const double other_y = value_number(j->vars.at("y"));
-                                const double other_step_x = other_x - value_number(j->vars.at("xprevious"));
-                                const double other_step_y = other_y - value_number(j->vars.at("yprevious"));
-                                event(i, 4, route.target, route.source, j);
-                                if (j->alive) {
-                                    // collision code can move `other` by the same amount it already moved
-                                    // this step. the collision runs after Step, so don't count that
-                                    // movement twice
-                                    const double pushed_x = value_number(j->vars.at("x")) - other_x;
-                                    const double pushed_y = value_number(j->vars.at("y")) - other_y;
-                                    if (other_step_x != 0 && std::fabs(pushed_x - other_step_x) < 1e-9)
-                                        j->vars["x"] = value_number(j->vars.at("x")) - other_step_x;
-                                    if (other_step_y != 0 && std::fabs(pushed_y - other_step_y) < 1e-9)
-                                        j->vars["y"] = value_number(j->vars.at("y")) - other_step_y;
-                                }
-                            }
-                        }
+            collision_grid_dirty = true;
+            for (const auto &i : collision_instances) {
+                if (!i->alive || i->object < 0 || static_cast<std::size_t>(i->object) >= objects.size() ||
+                    !objects[static_cast<std::size_t>(i->object)].has_collision_events)
+                    continue;
+                if (collision_grid_dirty)
+                    rebuild_collision_grid();
+                if (collision_target_instance_count == 0)
+                    continue;
+                if (++tick_collision_route_generation == 0) {
+                    std::fill(tick_collision_route_stamps.begin(), tick_collision_route_stamps.end(), 0);
+                    ++tick_collision_route_generation;
                 }
+                const auto route_generation = tick_collision_route_generation;
+                const auto process_pair = [&](std::size_t target_index,
+                                              bool use_route_cache) -> std::pair<bool, bool> {
+                    const auto &j = collision_instances[target_index];
+                    if (!j->alive || i == j || j->object < 0 ||
+                        static_cast<std::size_t>(j->object) >= objects.size())
+                        return {false, false};
+
+                    CollisionRoute route;
+                    const auto target_object = static_cast<std::size_t>(j->object);
+                    if (use_route_cache) {
+                        if (tick_collision_route_stamps[target_object] != route_generation) {
+                            tick_collision_routes[target_object] = collision_event(i->object, j->object);
+                            tick_collision_route_stamps[target_object] = route_generation;
+                        }
+                        route = tick_collision_routes[target_object];
+                    } else {
+                        route = collision_event(i->object, j->object);
+                    }
+                    if (route.source < 0 ||
+                        !collides(*i, value_number(i->vars.at("x")), value_number(i->vars.at("y")), *j))
+                        return {false, false};
+
+                    const double other_x = value_number(j->vars.at("x"));
+                    const double other_y = value_number(j->vars.at("y"));
+                    const double other_step_x = other_x - value_number(j->vars.at("xprevious"));
+                    const double other_step_y = other_y - value_number(j->vars.at("yprevious"));
+                    const auto geometry_before = collision_geometry_generation;
+                    {
+                        struct CollisionPassGuard {
+                            bool &active;
+                            bool previous;
+                            explicit CollisionPassGuard(bool &active_value)
+                                : active(active_value), previous(active_value) {
+                                active = true;
+                            }
+                            ~CollisionPassGuard() { active = previous; }
+                        } collision_pass_guard{collision_pass_active};
+                        event(i, 4, route.target, route.source, j);
+                    }
+                    bool geometry_changed =
+                        gmrt_project.has_value() || collision_geometry_generation != geometry_before;
+                    bool target_repositioned = false;
+                    if (j->alive) {
+                        // Collision code can move `other` by the same amount it already moved
+                        // this step. The collision runs after Step, so don't count that
+                        // movement twice.
+                        const double pushed_x = value_number(j->vars.at("x")) - other_x;
+                        const double pushed_y = value_number(j->vars.at("y")) - other_y;
+                        if (other_step_x != 0 && std::fabs(pushed_x - other_step_x) < 1e-9) {
+                            j->vars["x"] = value_number(j->vars.at("x")) - other_step_x;
+                            geometry_changed = true;
+                            target_repositioned = true;
+                        }
+                        if (other_step_y != 0 && std::fabs(pushed_y - other_step_y) < 1e-9) {
+                            j->vars["y"] = value_number(j->vars.at("y")) - other_step_y;
+                            geometry_changed = true;
+                            target_repositioned = true;
+                        }
+                    }
+                    if (target_repositioned)
+                        update_spatial_instance(*j);
+                    if (geometry_changed)
+                        collision_grid_dirty = true;
+                    return {true, geometry_changed};
+                };
+
+                const auto source_bounds = bounds(*i);
+                if (!collect_collision_candidates(source_bounds)) {
+                    for (std::size_t target_index = 0; target_index < collision_instances.size();
+                         ++target_index)
+                        process_pair(target_index, false);
+                    continue;
+                }
+
+                for (const auto target_index : collision_query_indices) {
+                    const auto [collided, geometry_changed] = process_pair(target_index, true);
+                    if (!collided)
+                        continue;
+                    if (geometry_changed) {
+                        // An event changed collision geometry. Recheck the untouched suffix
+                        // in original instance order, since the spatial snapshot is stale.
+                        for (std::size_t remaining = target_index + 1; remaining < collision_instances.size();
+                             ++remaining)
+                            process_pair(remaining, false);
+                        break;
+                    }
+                }
+            }
             allocation_stage = "end-step events";
             for (const auto &i : snapshot)
                 if (!instance_motion_paused(*i))
@@ -11889,18 +12581,15 @@ struct GameSession::Impl {
                 const double vw = value_number(engine.at("view_wview[0]")),
                              vh = value_number(engine.at("view_hview[0]"));
                 if (target >= 0 && vw > 0 && vh > 0) {
-                    auto tracked = std::find_if(instances.begin(), instances.end(),
-                                                [&](const auto &i) { return i->alive && i->id == target; });
-                    if (tracked == instances.end())
-                        tracked = std::find_if(instances.begin(), instances.end(), [&](const auto &i) {
-                            return i->alive && i->object == target;
-                        });
-                    if (tracked != instances.end()) {
+                    auto tracked = find_alive_instance_by_id(target);
+                    if (!tracked)
+                        tracked = find_first_alive_exact_object(target);
+                    if (tracked) {
                         const auto &room = rooms.at(static_cast<std::size_t>(current_room));
                         auto follow = [&](const char *view_key, const char *speed_key, const char *coordinate,
                                           double extent, double border, double room_extent) {
                             double origin = value_number(engine.at(view_key));
-                            const double pos = value_number((*tracked)->vars.at(coordinate));
+                            const double pos = value_number(tracked->vars.at(coordinate));
                             double desired = origin;
                             // Keep a non-empty dead zone. Borders larger than half the
                             // view make the left and right follow conditions overlap;
@@ -12017,97 +12706,127 @@ struct GameSession::Impl {
                                      t.y + oy + layer_y, t.sx, t.sy, t.color, t.transform);
                 }
             };
-            struct LayerVisualEntry {
-                double depth = 0;
-                int layer = -1, element = -1;
-                bool background = false;
-            };
-            std::vector<LayerVisualEntry> layer_visuals;
-            for (const auto &layer : room.layers) {
+            std::size_t layer_visual_count = 0;
+            for (const auto &layer : room.layers)
+                if (layer.visible)
+                    layer_visual_count += layer.sprites.size() + layer.backgrounds.size();
+            layer_visuals.clear();
+            layer_visuals.reserve(layer_visual_count);
+            std::size_t layer_visual_order = 0;
+            for (std::size_t layer_index = 0; layer_index < room.layers.size(); ++layer_index) {
+                const auto &layer = room.layers[layer_index];
                 if (!layer.visible)
                     continue;
-                for (const auto &sprite : layer.sprites)
-                    layer_visuals.push_back({static_cast<double>(layer.depth), layer.id, sprite.id, false});
-                for (const auto &background : layer.backgrounds)
+                for (std::size_t element_index = 0; element_index < layer.sprites.size(); ++element_index) {
+                    const auto &sprite = layer.sprites[element_index];
+                    layer_visuals.push_back({static_cast<double>(layer.depth), layer_index, element_index,
+                                             layer_visual_order++, layer.id, sprite.id, false});
+                }
+                for (std::size_t element_index = 0; element_index < layer.backgrounds.size();
+                     ++element_index) {
+                    const auto &background = layer.backgrounds[element_index];
                     layer_visuals.push_back({background.foreground ? std::numeric_limits<double>::lowest()
                                                                    : static_cast<double>(layer.depth),
-                                             layer.id, background.id, true});
+                                             layer_index, element_index, layer_visual_order++, layer.id,
+                                             background.id, true});
+                }
             }
-            std::stable_sort(layer_visuals.begin(), layer_visuals.end(),
-                             [](const auto &left, const auto &right) { return left.depth > right.depth; });
-            std::vector<std::pair<double, int>> particle_visuals;
+            std::sort(layer_visuals.begin(), layer_visuals.end(), [](const auto &left, const auto &right) {
+                return left.depth != right.depth ? left.depth > right.depth : left.order < right.order;
+            });
+            particle_visuals.clear();
             particle_visuals.reserve(particle_systems.size());
+            std::size_t particle_visual_order = 0;
             for (const auto &[id, system] : particle_systems)
                 if (system.automatic_draw)
-                    particle_visuals.emplace_back(static_cast<double>(system.depth), id);
-            std::stable_sort(particle_visuals.begin(), particle_visuals.end(),
-                             [](const auto &left, const auto &right) { return left.first > right.first; });
+                    particle_visuals.push_back(
+                        {static_cast<double>(system.depth), id, particle_visual_order++});
+            std::sort(
+                particle_visuals.begin(), particle_visuals.end(), [](const auto &left, const auto &right) {
+                    return left.depth != right.depth ? left.depth > right.depth : left.order < right.order;
+                });
             auto draw_layer_visual = [&](const LayerVisualEntry &entry) {
-                const auto layer_index = room.layer_indices.find(entry.layer);
-                if (layer_index == room.layer_indices.end())
-                    return;
-                auto &layer = room.layers[layer_index->second];
+                std::size_t layer_index = entry.layer_index;
+                if (layer_index >= room.layers.size() || room.layers[layer_index].id != entry.layer_id) {
+                    const auto found = room.layer_indices.find(entry.layer_id);
+                    if (found == room.layer_indices.end())
+                        return;
+                    layer_index = found->second;
+                }
+                auto &layer = room.layers[layer_index];
                 if (!layer.visible)
                     return;
                 const double ox = layer.x - layer.origin_x, oy = layer.y - layer.origin_y;
                 if (entry.background) {
-                    const auto found =
-                        std::find_if(layer.backgrounds.begin(), layer.backgrounds.end(),
-                                     [&](const LayerBackground &item) { return item.id == entry.element; });
-                    if (found == layer.backgrounds.end() || !found->visible ||
-                        !assets.sprite_exists(found->sprite))
+                    LayerBackground *background = nullptr;
+                    if (entry.element_index < layer.backgrounds.size() &&
+                        layer.backgrounds[entry.element_index].id == entry.element_id) {
+                        background = &layer.backgrounds[entry.element_index];
+                    } else {
+                        const auto found = std::find_if(
+                            layer.backgrounds.begin(), layer.backgrounds.end(),
+                            [&](const LayerBackground &item) { return item.id == entry.element_id; });
+                        if (found != layer.backgrounds.end())
+                            background = &*found;
+                    }
+                    if (!background || !background->visible || !assets.sprite_exists(background->sprite))
                         return;
-                    auto &background = *found;
-                    const auto &sprite = assets.sprite(background.sprite);
+                    const auto &sprite = assets.sprite(background->sprite);
                     if (sprite.width <= 0 || sprite.height <= 0)
                         return;
-                    double sx = background.sx, sy = background.sy;
-                    if (background.stretch) {
+                    double sx = background->sx, sy = background->sy;
+                    if (background->stretch) {
                         sx *= static_cast<double>(room.width) / sprite.width;
                         sy *= static_cast<double>(room.height) / sprite.height;
                     }
                     const double step_x = sprite.width * sx, step_y = sprite.height * sy;
-                    if (step_x == 0 || step_y == 0)
+                    if (!std::isfinite(step_x) || !std::isfinite(step_y) || step_x == 0 || step_y == 0)
                         return;
+                    const double stride_x = std::fabs(step_x), stride_y = std::fabs(step_y);
                     double x = ox, y = oy;
-                    if (background.htiled)
-                        while (x > 0)
-                            x -= step_x;
-                    if (background.vtiled)
-                        while (y > 0)
-                            y -= step_y;
-                    const int columns =
-                        background.htiled
-                            ? std::clamp(static_cast<int>(std::ceil((room.width - x) / std::fabs(step_x))), 1,
-                                         256)
-                            : 1;
-                    const int rows =
-                        background.vtiled
-                            ? std::clamp(static_cast<int>(std::ceil((room.height - y) / std::fabs(step_y))),
-                                         1, 256)
-                            : 1;
-                    const auto tint = background.color & 0xffffffU;
-                    const double alpha = static_cast<double>(background.color >> 24) / 255.0;
+                    if (background->htiled)
+                        x -= std::ceil(std::max(x, 0.0) / stride_x) * stride_x;
+                    if (background->vtiled)
+                        y -= std::ceil(std::max(y, 0.0) / stride_y) * stride_y;
+                    const auto tile_count = [](double extent, double origin, double stride) {
+                        const double count = std::ceil(std::max(0.0, extent - origin) / stride);
+                        if (!std::isfinite(count) || count >= 256)
+                            return 256;
+                        return std::clamp(static_cast<int>(count), 1, 256);
+                    };
+                    const int columns = background->htiled ? tile_count(room.width, x, stride_x) : 1;
+                    const int rows = background->vtiled ? tile_count(room.height, y, stride_y) : 1;
+                    const auto tint = background->color & 0xffffffU;
+                    const double alpha = static_cast<double>(background->color >> 24) / 255.0;
                     for (int row = 0; row < rows && row * columns < 4096; ++row)
                         for (int column = 0; column < columns && row * columns + column < 4096; ++column)
-                            assets.draw_sprite(canvas, background.sprite, background.frame,
-                                               x + column * step_x, y + row * step_y, sx, sy, 0, tint, alpha);
+                            assets.draw_sprite(canvas, background->sprite, background->frame,
+                                               x + column * stride_x, y + row * stride_y, sx, sy, 0, tint,
+                                               alpha);
                     const double frame_count = static_cast<double>(sprite.frames.size());
                     if (frame_count > 0) {
                         const double fps = value_number(engine.at("room_speed"));
                         const double advance =
-                            background.speed_type == 0 ? background.speed / fps : background.speed;
-                        background.frame = std::fmod(
-                            std::fmod(background.frame + advance, frame_count) + frame_count, frame_count);
+                            background->speed_type == 0 ? background->speed / fps : background->speed;
+                        background->frame = std::fmod(
+                            std::fmod(background->frame + advance, frame_count) + frame_count, frame_count);
                     }
                     return;
                 }
-                const auto found =
-                    std::find_if(layer.sprites.begin(), layer.sprites.end(),
-                                 [&](const LayerSprite &item) { return item.id == entry.element; });
-                if (found == layer.sprites.end() || !assets.sprite_exists(found->sprite))
+                LayerSprite *sprite_entry = nullptr;
+                if (entry.element_index < layer.sprites.size() &&
+                    layer.sprites[entry.element_index].id == entry.element_id) {
+                    sprite_entry = &layer.sprites[entry.element_index];
+                } else {
+                    const auto found =
+                        std::find_if(layer.sprites.begin(), layer.sprites.end(),
+                                     [&](const LayerSprite &item) { return item.id == entry.element_id; });
+                    if (found != layer.sprites.end())
+                        sprite_entry = &*found;
+                }
+                if (!sprite_entry || !assets.sprite_exists(sprite_entry->sprite))
                     return;
-                auto &sprite = *found;
+                auto &sprite = *sprite_entry;
                 assets.draw_sprite(canvas, sprite.sprite, sprite.frame, sprite.x + ox, sprite.y + oy,
                                    sprite.sx, sprite.sy, sprite.rotation, sprite.color & 0xffffffU,
                                    static_cast<double>(sprite.color >> 24) / 255.0);
@@ -12192,20 +12911,20 @@ struct GameSession::Impl {
                 while ((tile < room.tiles.size() && room.tiles[tile].depth >= depth) ||
                        (layer_visual < layer_visuals.size() && layer_visuals[layer_visual].depth >= depth) ||
                        (particle_visual < particle_visuals.size() &&
-                        particle_visuals[particle_visual].first >= depth)) {
+                        particle_visuals[particle_visual].depth >= depth)) {
                     if (tile < room.tiles.size() && room.tiles[tile].depth >= depth &&
                         (layer_visual >= layer_visuals.size() ||
                          room.tiles[tile].depth >= layer_visuals[layer_visual].depth) &&
                         (particle_visual >= particle_visuals.size() ||
-                         room.tiles[tile].depth >= particle_visuals[particle_visual].first))
+                         room.tiles[tile].depth >= particle_visuals[particle_visual].depth))
                         draw_tile(room.tiles[tile++]);
                     else if (layer_visual < layer_visuals.size() &&
                              layer_visuals[layer_visual].depth >= depth &&
                              (particle_visual >= particle_visuals.size() ||
-                              layer_visuals[layer_visual].depth >= particle_visuals[particle_visual].first))
+                              layer_visuals[layer_visual].depth >= particle_visuals[particle_visual].depth))
                         draw_layer_visual(layer_visuals[layer_visual++]);
                     else {
-                        const int system_id = particle_visuals[particle_visual++].second;
+                        const int system_id = particle_visuals[particle_visual++].system;
                         if (particle_systems.contains(system_id)) {
                             const std::array<Value, 1> draw_args{std::int32_t{system_id}};
                             call("part_system_drawit", draw_args, {}, {});
@@ -12310,7 +13029,18 @@ struct GameSession::Impl {
             if (profile_tick_timing)
                 last_draw_ms =
                     std::chrono::duration<double, std::milli>(ProfileClock::now() - draw_start).count();
-            std::erase_if(instances, [](const auto &i) { return !i->alive; });
+            const auto instance_count_before_cleanup = instances.size();
+            std::erase_if(instances, [&](const auto &i) {
+                if (!i->alive) {
+                    unregister_instance_store(i);
+                    return true;
+                }
+                return false;
+            });
+            if (instances.size() != instance_count_before_cleanup) {
+                object_instance_index_dirty = true;
+                spatial_grid_built = false;
+            }
             ++frame;
             engine["current_time"] = static_cast<double>(frame) * 1000.0 / value_number(engine["room_speed"]);
 #if REGML_PS2
