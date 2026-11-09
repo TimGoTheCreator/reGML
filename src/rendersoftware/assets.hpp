@@ -59,7 +59,7 @@ class GameAssets {
     }
     [[nodiscard]] std::string_view sprite_name(int id) const { return sprite(id).name; }
     [[nodiscard]] std::array<double, 8> sprite_uvs(int id, double frame);
-    [[nodiscard]] std::pair<double, double> texture_texel_size(int id, double frame);
+    void texture_texel_size(int id, double frame, double &width, double &height);
     int duplicate_sprite(int id);
     bool delete_sprite(int id);
     bool set_sprite_bbox(int id, int left, int top, int right, int bottom);

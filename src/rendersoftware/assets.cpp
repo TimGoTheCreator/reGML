@@ -691,22 +691,24 @@ std::array<double, 8> GameAssets::sprite_uvs(int id, double frame) {
             source.width > 0 ? static_cast<double>(region.tw) / source.width : 0,
             source.height > 0 ? static_cast<double>(region.th) / source.height : 0};
 }
-std::pair<double, double> GameAssets::texture_texel_size(int id, double frame) {
+void GameAssets::texture_texel_size(int id, double frame, double &width, double &height) {
+    width = height = 0.0;
     const auto &source = sprite(id);
     if (source.frames.empty() || !std::isfinite(frame))
-        return {};
+        return;
     auto frame_index =
         static_cast<long long>(std::fmod(std::floor(frame), static_cast<double>(source.frames.size())));
     if (frame_index < 0)
         frame_index += static_cast<long long>(source.frames.size());
     const auto region_index = source.frames[static_cast<std::size_t>(frame_index)];
     if (region_index >= regions_.size())
-        return {};
+        return;
     const int page_id = regions_[region_index].region.page;
     if (page_id < 0 || static_cast<std::size_t>(page_id) >= pages_.size())
-        return {};
+        return;
     const auto &page = load_page(page_id);
-    return {page.width > 0 ? 1.0 / page.width : 0.0, page.height > 0 ? 1.0 / page.height : 0.0};
+    width = page.width > 0 ? 1.0 / page.width : 0.0;
+    height = page.height > 0 ? 1.0 / page.height : 0.0;
 }
 int GameAssets::duplicate_sprite(int id) {
     if (!sprite_exists(id) || dynamic_sprite_count_ >= max_dynamic_sprites_ ||
