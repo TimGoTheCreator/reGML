@@ -4924,6 +4924,10 @@ struct GameSession::Impl {
                 const auto now = std::chrono::system_clock::now().time_since_epoch();
                 return std::chrono::duration<double>(now).count() / 86400.0 + 25569.0;
             }
+            if (name == "date_second_span") {
+                const double seconds = std::fabs(n(0) - n(1)) * 86400.0;
+                return std::isfinite(seconds) ? std::floor(seconds + 1e-6) : 0.0;
+            }
             if (name == "date_get_year" || name == "date_get_month" || name == "date_get_day" ||
                 name == "date_get_hour" || name == "date_get_minute" || name == "date_get_second") {
                 const double serial = n(0);
