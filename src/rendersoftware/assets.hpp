@@ -148,6 +148,8 @@ class GameAssets {
     int add_sprite_font(int sprite, std::string_view string_map, bool proportional, int separation);
     void view(double x, double y, double sx, double sy, double px, double py);
     std::array<double, 2> transform_point(double x, double y) const noexcept;
+    [[nodiscard]] double view_scale_x() const noexcept { return view_sx_; }
+    [[nodiscard]] double view_scale_y() const noexcept { return view_sy_; }
     void draw_circle(Canvas &canvas, double x, double y, double radius, bool outline) const;
     void draw_line(Canvas &canvas, double x1, double y1, double x2, double y2, double width = 1) const;
     void draw_triangle(

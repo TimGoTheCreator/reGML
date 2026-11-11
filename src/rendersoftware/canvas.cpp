@@ -1847,7 +1847,11 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
         const unsigned blue = (rgb_ & 255) * alpha_;
         const auto blend_pixel = [&](int x) {
             const auto previous = row[x];
-            row[x] = 0xff000000 | (((red + (previous >> 16 & 255) * inverse + 127) / 255) << 16) |
+            const unsigned previous_alpha = previous >> 24;
+            const unsigned output_alpha = previous_alpha == 255
+                                              ? 255
+                                              : (alpha_ * alpha_ + previous_alpha * inverse + 127) / 255;
+            row[x] = (output_alpha << 24) | (((red + (previous >> 16 & 255) * inverse + 127) / 255) << 16) |
                      (((green + (previous >> 8 & 255) * inverse + 127) / 255) << 8) |
                      ((blue + (previous & 255) * inverse + 127) / 255);
         };

@@ -800,6 +800,7 @@ struct GameSession::Impl {
     std::unordered_map<int, SavedRoom> saved_rooms;
     VariableStore globals, engine;
     std::unordered_map<int, VariableStore> static_variables;
+    std::unordered_set<int> static_initialized;
     KeyboardState held{}, pressed{}, previous_held{}, released{}, physical_held{}, cleared_until_release{};
     GamepadState gamepad{};
     double gamepad_axis_deadzone = 0.2;
@@ -950,6 +951,7 @@ struct GameSession::Impl {
     std::vector<DelayedCall> delayed_calls;
     std::unordered_map<int, Canvas> surfaces;
     int next_surface = 1, surface_target = 0;
+    std::vector<int> surface_target_stack;
     VideoPlayer video_player;
     int video_surface = -1;
     bool surface_depth_disabled = false;
@@ -4386,6 +4388,10 @@ struct GameSession::Impl {
                         length = std::max<std::int32_t>(length, static_cast<std::int32_t>(index % 32000 + 1));
                     } else if (sub == -5) {
                         (void)pop();
+                    } else if (sub == -6) {
+                        push(static_initialized.contains(code));
+                    } else if (sub == -7) {
+                        static_initialized.insert(code);
                     } else if (sub == -8 || sub == -9) {
                         // The VM owns array values through reference-counted ArrayPtr values, so
                         // savearef/restorearef's temporary GC roots need no extra bookkeeping.
@@ -5060,12 +5066,14 @@ struct GameSession::Impl {
                 self->vars["direction"] = std::fmod(std::atan2(-v, h) * 180 / 3.141592653589793 + 360, 360);
         };
         auto current_canvas = [&]() -> Canvas & {
-            if (surface_target == 0)
-                return this->canvas;
-            const auto found = surfaces.find(surface_target);
-            if (found != surfaces.end())
-                return found->second;
-            surface_target = 0;
+            while (surface_target != 0) {
+                const auto found = surfaces.find(surface_target);
+                if (found != surfaces.end())
+                    return found->second;
+                surface_target = surface_target_stack.empty() ? 0 : surface_target_stack.back();
+                if (!surface_target_stack.empty())
+                    surface_target_stack.pop_back();
+            }
             return this->canvas;
         };
         configure_shader(current_canvas());
@@ -9823,23 +9831,29 @@ struct GameSession::Impl {
                 const int id = static_cast<int>(n(0));
                 if (id != 0 && !surfaces.contains(id))
                     return false;
+                surface_target_stack.push_back(surface_target);
                 surface_target = id;
                 configure_shader(current_canvas());
                 return true;
             }
             if (name == "surface_reset_target") {
-                surface_target = 0;
+                surface_target = surface_target_stack.empty() ? 0 : surface_target_stack.back();
+                if (!surface_target_stack.empty())
+                    surface_target_stack.pop_back();
                 configure_shader(current_canvas());
                 return std::monostate{};
             }
             if (name == "surface_free") {
                 const int id = static_cast<int>(n(0));
                 if (surface_target == id) {
-                    surface_target = 0;
-                    configure_shader(current_canvas());
+                    surface_target = surface_target_stack.empty() ? 0 : surface_target_stack.back();
+                    if (!surface_target_stack.empty())
+                        surface_target_stack.pop_back();
                 }
+                std::erase(surface_target_stack, id);
                 forget_surface_texture(id);
                 surfaces.erase(id);
+                configure_shader(current_canvas());
                 return std::monostate{};
             }
             if (name == "draw_surface_part_ext") {
@@ -9853,7 +9867,9 @@ struct GameSession::Impl {
                     return std::monostate{};
                 auto &target = current_canvas();
                 const auto draw = [&](const Canvas &source_canvas) {
-                    target.draw_surface_part(source_canvas, n(1), n(2), n(3), n(4), n(5), n(6), n(7), n(8),
+                    const auto [x, y] = assets.transform_point(n(5), n(6));
+                    target.draw_surface_part(source_canvas, n(1), n(2), n(3), n(4), x, y,
+                                             n(7) * assets.view_scale_x(), n(8) * assets.view_scale_y(),
                                              static_cast<unsigned>(n(9)), n(10));
                 };
                 if (&target == source) {
@@ -9875,8 +9891,10 @@ struct GameSession::Impl {
                 const bool extended = name == "draw_surface_ext";
                 auto &target = current_canvas();
                 const auto draw = [&](const Canvas &source_canvas) {
-                    target.draw_surface(source_canvas, n(1), n(2), extended ? n(3) : 1, extended ? n(4) : 1,
-                                        extended ? n(5) : 0,
+                    const auto [x, y] = assets.transform_point(n(1), n(2));
+                    target.draw_surface(source_canvas, x, y,
+                                        (extended ? n(3) : 1) * assets.view_scale_x(),
+                                        (extended ? n(4) : 1) * assets.view_scale_y(), extended ? n(5) : 0,
                                         extended ? static_cast<unsigned>(n(6)) : 0xffffff,
                                         extended ? n(7) : 1);
                 };
@@ -9897,12 +9915,12 @@ struct GameSession::Impl {
                 if (!source_ptr)
                     return std::monostate{};
                 auto &target = current_canvas();
-                const double sx = n(3), sy = n(4);
+                const double sx = n(3) * assets.view_scale_x(), sy = n(4) * assets.view_scale_y();
                 const double tile_width = source_ptr->width() * std::fabs(sx);
                 const double tile_height = source_ptr->height() * std::fabs(sy);
                 if (!std::isfinite(tile_width + tile_height) || tile_width <= 0 || tile_height <= 0)
                     return std::monostate{};
-                const double x = n(1), y = n(2);
+                const auto [x, y] = assets.transform_point(n(1), n(2));
                 const double start_x = x + std::floor(-x / tile_width) * tile_width;
                 const double start_y = y + std::floor(-y / tile_height) * tile_height;
                 const double columns = std::ceil((target.logical_width() - start_x) / tile_width);
@@ -10213,10 +10231,17 @@ struct GameSession::Impl {
                 return std::monostate{};
             }
             if (name == "draw_clear_alpha") {
+                // GameMaker drawing operations only take effect from Draw events.
+                // Scripts called by an event inherit the event frame, so checking
+                // the active frame also handles draw_clear calls made in scripts.
+                if (event_stack.empty() || event_stack.back().type != event_draw)
+                    return std::monostate{};
                 current_canvas().clear(static_cast<unsigned>(n(0)));
                 return std::monostate{};
             }
             if (name == "draw_clear") {
+                if (event_stack.empty() || event_stack.back().type != event_draw)
+                    return std::monostate{};
                 current_canvas().clear(static_cast<unsigned>(n(0)));
                 return std::monostate{};
             }
