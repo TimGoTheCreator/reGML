@@ -184,6 +184,8 @@ class GameAssets {
     struct Region {
         int x = 0, y = 0, w = 0, h = 0, tx = 0, ty = 0, tw = 0, th = 0, page = 0;
         mutable std::int8_t alpha_mode = -1;
+        mutable std::int8_t solid_mode = -1;
+        mutable std::uint32_t solid_rgba = 0;
     };
     struct RegionEntry {
         std::uint32_t pointer = 0;

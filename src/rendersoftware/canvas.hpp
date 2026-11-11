@@ -9,7 +9,7 @@
 namespace regml {
 class GameAssets;
 std::array<unsigned, 7> font_bitmap(unsigned char character);
-// the CPU draws into this buffer; SDL just puts it on screen
+// sdl just puts it on screen
 class Canvas {
   public:
     using PixelShader = std::uint32_t (*)(void *context, int x, int y, std::uint32_t rgba) noexcept;
@@ -45,6 +45,8 @@ class Canvas {
         blend_equations_ = {equation_rgb, equation_alpha};
         standard_blend_ =
             blend_factors_ == std::array<int, 4>{5, 6, 5, 6} && blend_equations_ == std::array<int, 2>{0, 0};
+        additive_blend_ =
+            blend_factors_ == std::array<int, 4>{5, 2, 5, 2} && blend_equations_ == std::array<int, 2>{0, 0};
     }
     void alpha_test_enable(bool enabled) noexcept { alpha_test_enabled_ = enabled; }
     void alpha_test_ref(unsigned value) noexcept { alpha_test_ref_ = value > 255 ? 255 : value; }
@@ -73,6 +75,17 @@ class Canvas {
                       double angle = 0,
                       std::uint32_t tint = 0xffffff,
                       double opacity = 1);
+    void draw_surface_part(const Canvas &source,
+                           double left,
+                           double top,
+                           double width,
+                           double height,
+                           double x,
+                           double y,
+                           double sx,
+                           double sy,
+                           std::uint32_t tint,
+                           double opacity);
     void blit_rgba(std::span<const std::uint32_t> source,
                    int source_width,
                    int source_x,
@@ -105,6 +118,7 @@ class Canvas {
     friend class GameAssets;
     void plot(int x, int y);
     void plot_in_bounds(int x, int y);
+    void plot_span_in_bounds(int left, int right, int y);
     void store_pixel(int x, int y, std::uint32_t rgba) noexcept;
     bool gpu_readback(std::span<std::uint32_t> pixels) const noexcept;
     bool blit_rgba_scaled_opaque(std::span<const std::uint32_t> source,
@@ -142,6 +156,7 @@ class Canvas {
     bool profile_text_ = false;
     bool blend_enabled_ = true;
     bool standard_blend_ = true;
+    bool additive_blend_ = false;
     std::array<int, 4> blend_factors_{5, 6, 5, 6};
     std::array<int, 2> blend_equations_{0, 0};
     bool alpha_test_enabled_ = false;

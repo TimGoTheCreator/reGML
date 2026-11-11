@@ -53,11 +53,16 @@ class FrameProfileLog {
         file_.open(path, std::ios::trunc);
         if (!file_)
             throw Error(ErrorKind::io, "frame profile cannot be opened");
-        file_ << "frame,room,samples,frame_ms,tick_ms,present_ms,logic_ms,draw_ms,image_ms,text_ms,image_"
-                 "calls,image_quads,glyph_quads,texture_uploads,max_tick_ms,max_present_ms,instructions_per_"
-                 "frame,draw_event_ms,draw_builtin_ms,draw_text_builtin_ms,draw_image_builtin_ms,draw_"
-                 "primitive_builtin_ms,draw_other_builtin_ms,max_draw_builtin_call_ms,slowest_draw_builtin,"
-                 "slowest_draw_builtin_details\n";
+        file_
+            << "frame,room,samples,frame_ms,tick_ms,present_ms,logic_ms,draw_ms,image_ms,text_ms,image_"
+               "calls,image_quads,glyph_quads,texture_uploads,max_tick_ms,max_present_ms,instructions_per_"
+               "frame,draw_setup_ms,draw_pre_event_ms,draw_world_setup_ms,draw_list_ms,draw_world_ms,"
+               "draw_finish_ms,draw_depth_visual_ms,draw_instance_body_ms,draw_object_hotspots,draw_tile_ms,"
+               "draw_layer_visual_ms,draw_particle_ms,draw_tile_calls,draw_layer_visual_calls,draw_particle_"
+               "calls,draw_layer_hotspots,draw_event_ms,"
+               "draw_builtin_ms,draw_text_builtin_ms,draw_image_builtin_ms,draw_"
+               "primitive_builtin_ms,draw_other_builtin_ms,max_draw_builtin_call_ms,slowest_draw_builtin,"
+               "slowest_draw_builtin_details\n";
         file_ << std::fixed << std::setprecision(3);
     }
     ~FrameProfileLog() { flush(); }
@@ -83,6 +88,22 @@ class FrameProfileLog {
         present_ms_ += present_ms;
         logic_ms_ += logic_ms;
         draw_ms_ += draw_ms;
+        draw_setup_ms_ += tick_profile.draw_setup_ms;
+        draw_pre_event_ms_ += tick_profile.draw_pre_event_ms;
+        draw_world_setup_ms_ += tick_profile.draw_world_setup_ms;
+        draw_list_ms_ += tick_profile.draw_list_ms;
+        draw_world_ms_ += tick_profile.draw_world_ms;
+        draw_finish_ms_ += tick_profile.draw_finish_ms;
+        draw_depth_visual_ms_ += tick_profile.draw_depth_visual_ms;
+        draw_instance_body_ms_ += tick_profile.draw_instance_body_ms;
+        draw_object_hotspots_ = tick_profile.draw_object_hotspots;
+        draw_tile_ms_ += tick_profile.draw_tile_ms;
+        draw_layer_visual_ms_ += tick_profile.draw_layer_visual_ms;
+        draw_particle_ms_ += tick_profile.draw_particle_ms;
+        draw_tile_calls_ += tick_profile.draw_tile_calls;
+        draw_layer_visual_calls_ += tick_profile.draw_layer_visual_calls;
+        draw_particle_calls_ += tick_profile.draw_particle_calls;
+        draw_layer_hotspots_ = tick_profile.draw_layer_hotspots;
         draw_event_ms_ += tick_profile.draw_event_ms;
         draw_builtin_ms_ += tick_profile.draw_builtin_ms;
         draw_text_builtin_ms_ += tick_profile.draw_text_builtin_ms;
@@ -116,15 +137,29 @@ class FrameProfileLog {
               << draw_ms_ / count << ',' << image_ms_ / count << ',' << text_ms_ / count << ','
               << image_calls_ / count << ',' << image_quads_ / count << ',' << glyph_quads_ / count << ','
               << texture_uploads_ / count << ',' << max_tick_ms_ << ',' << max_present_ms_ << ','
-              << static_cast<double>(instructions_) / count << ',' << draw_event_ms_ / count << ','
-              << draw_builtin_ms_ / count << ',' << draw_text_builtin_ms_ / count << ','
-              << draw_image_builtin_ms_ / count << ',' << draw_primitive_builtin_ms_ / count << ','
-              << draw_other_builtin_ms_ / count << ',' << max_draw_builtin_call_ms_ << ','
-              << std::quoted(slowest_draw_builtin_) << ',' << std::quoted(slowest_draw_builtin_details_)
-              << '\n';
+              << static_cast<double>(instructions_) / count << ',' << draw_setup_ms_ / count << ','
+              << draw_pre_event_ms_ / count << ',' << draw_world_setup_ms_ / count << ','
+              << draw_list_ms_ / count << ',' << draw_world_ms_ / count << ',' << draw_finish_ms_ / count
+              << ',' << draw_depth_visual_ms_ / count << ',' << draw_instance_body_ms_ / count << ','
+              << std::quoted(draw_object_hotspots_) << ',' << draw_tile_ms_ / count << ','
+              << draw_layer_visual_ms_ / count << ',' << draw_particle_ms_ / count << ','
+              << draw_tile_calls_ / count << ',' << draw_layer_visual_calls_ / count << ','
+              << draw_particle_calls_ / count << ',' << std::quoted(draw_layer_hotspots_) << ','
+              << draw_event_ms_ / count << ',' << draw_builtin_ms_ / count << ','
+              << draw_text_builtin_ms_ / count << ',' << draw_image_builtin_ms_ / count << ','
+              << draw_primitive_builtin_ms_ / count << ',' << draw_other_builtin_ms_ / count << ','
+              << max_draw_builtin_call_ms_ << ',' << std::quoted(slowest_draw_builtin_) << ','
+              << std::quoted(slowest_draw_builtin_details_) << '\n';
         file_.flush();
         samples_ = instructions_ = 0;
         frame_ms_ = tick_ms_ = present_ms_ = logic_ms_ = draw_ms_ = max_tick_ms_ = max_present_ms_ = 0;
+        draw_setup_ms_ = draw_pre_event_ms_ = draw_world_setup_ms_ = draw_list_ms_ = draw_world_ms_ =
+            draw_finish_ms_ = 0;
+        draw_depth_visual_ms_ = draw_instance_body_ms_ = 0;
+        draw_object_hotspots_.clear();
+        draw_tile_ms_ = draw_layer_visual_ms_ = draw_particle_ms_ = 0;
+        draw_tile_calls_ = draw_layer_visual_calls_ = draw_particle_calls_ = 0;
+        draw_layer_hotspots_.clear();
         draw_event_ms_ = 0;
         draw_builtin_ms_ = 0;
         draw_text_builtin_ms_ = draw_image_builtin_ms_ = draw_primitive_builtin_ms_ = draw_other_builtin_ms_ =
@@ -142,6 +177,12 @@ class FrameProfileLog {
     std::size_t frame_ = 0, samples_ = 0, instructions_ = 0;
     double frame_ms_ = 0, tick_ms_ = 0, present_ms_ = 0, logic_ms_ = 0, draw_ms_ = 0, max_tick_ms_ = 0,
            max_present_ms_ = 0, image_ms_ = 0, text_ms_ = 0;
+    double draw_setup_ms_ = 0, draw_pre_event_ms_ = 0, draw_world_setup_ms_ = 0, draw_list_ms_ = 0,
+           draw_world_ms_ = 0, draw_finish_ms_ = 0, draw_depth_visual_ms_ = 0, draw_instance_body_ms_ = 0;
+    std::string draw_object_hotspots_;
+    double draw_tile_ms_ = 0, draw_layer_visual_ms_ = 0, draw_particle_ms_ = 0;
+    std::uint64_t draw_tile_calls_ = 0, draw_layer_visual_calls_ = 0, draw_particle_calls_ = 0;
+    std::string draw_layer_hotspots_;
     double draw_event_ms_ = 0;
     double draw_builtin_ms_ = 0;
     double draw_text_builtin_ms_ = 0, draw_image_builtin_ms_ = 0, draw_primitive_builtin_ms_ = 0,

@@ -19,6 +19,22 @@ class GameSession {
     struct TickProfile {
         double logic_ms = 0;
         double draw_ms = 0;
+        double draw_setup_ms = 0;
+        double draw_pre_event_ms = 0;
+        double draw_world_setup_ms = 0;
+        double draw_list_ms = 0;
+        double draw_world_ms = 0;
+        double draw_finish_ms = 0;
+        double draw_depth_visual_ms = 0;
+        double draw_instance_body_ms = 0;
+        std::string draw_object_hotspots;
+        double draw_tile_ms = 0;
+        double draw_layer_visual_ms = 0;
+        double draw_particle_ms = 0;
+        std::uint64_t draw_tile_calls = 0;
+        std::uint64_t draw_layer_visual_calls = 0;
+        std::uint64_t draw_particle_calls = 0;
+        std::string draw_layer_hotspots;
         double draw_event_ms = 0;
         double draw_builtin_ms = 0;
         double draw_text_builtin_ms = 0;

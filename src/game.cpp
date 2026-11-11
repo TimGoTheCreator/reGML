@@ -159,7 +159,9 @@ template <class Factory> auto load_stage(std::string_view name, Factory factory)
 int number(const Value &v) {
     const auto n = value_number(v);
     if (!std::isfinite(n) || n < INT32_MIN || n > INT32_MAX)
-        throw Error(ErrorKind::vm, "integer value out of range");
+        throw Error(ErrorKind::vm,
+                    "integer value out of range: " + value_text(v) + " (expected " +
+                        std::to_string(INT32_MIN) + " through " + std::to_string(INT32_MAX) + ")");
     return static_cast<int>(n);
 }
 std::filesystem::path default_save_root() {
@@ -989,6 +991,12 @@ struct GameSession::Impl {
     std::array<std::size_t, 128> active_program_stack{};
     bool profile_tick_timing = false;
     double last_logic_ms = 0, last_draw_ms = 0;
+    std::array<double, 6> last_draw_phases_ms{};
+    double last_draw_depth_visual_ms = 0, last_draw_instance_body_ms = 0;
+    std::string last_draw_object_hotspots;
+    std::array<double, 3> last_draw_visual_kind_ms{};
+    std::array<std::uint64_t, 3> last_draw_visual_kind_calls{};
+    std::string last_draw_layer_hotspots;
     double last_draw_event_ms = 0, last_draw_builtin_ms = 0;
     std::array<double, 4> last_draw_builtin_categories{};
     double max_draw_builtin_call_ms = 0;
@@ -4250,7 +4258,15 @@ struct GameSession::Impl {
                             // undefined as the empty value for an optional instance handle.
                             target = -4;
                         } else {
-                            target = number(target_value);
+                            // `with` accepts a numeric instance ID, but arbitrary numeric
+                            // sentinels are valid expressions too. An ID outside the VM's
+                            // 32-bit instance/object range cannot match anything, so treat it
+                            // like noone instead of aborting the enclosing event.
+                            const double target_number = value_number(target_value);
+                            target = std::isfinite(target_number) && target_number >= INT32_MIN &&
+                                             target_number <= INT32_MAX
+                                         ? static_cast<int>(target_number)
+                                         : -4;
                         }
                     }
                     if (environment_count == environments.size())
@@ -4463,7 +4479,8 @@ struct GameSession::Impl {
             current_vm_address = e.offset().value_or(program.origin + pc);
             std::string error_text = e.what();
             if (std::getenv("REGML_TRACE_VM_INSTRUCTION") &&
-                error_text.find("numeric argument requires a scalar number") != std::string::npos) {
+                (error_text.find("numeric argument requires a scalar number") != std::string::npos ||
+                 error_text.find("integer value out of range") != std::string::npos)) {
                 const auto absolute_offset = e.offset().value_or(program.origin + last_instruction_pc);
                 auto instruction_pc = last_instruction_pc;
                 if (absolute_offset >= program.origin &&
@@ -4643,6 +4660,10 @@ struct GameSession::Impl {
         const bool profile_draw_builtin = draw_builtin_category >= 0;
         const auto draw_builtin_start =
             profile_draw_builtin ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        const std::string_view draw_object_name =
+            self && self->object >= 0 && static_cast<std::size_t>(self->object) < objects.size()
+                ? std::string_view(objects[static_cast<std::size_t>(self->object)].name)
+                : std::string_view{};
         struct DrawBuiltinProfileGuard {
             double &total;
             std::array<double, 4> &categories;
@@ -4654,6 +4675,11 @@ struct GameSession::Impl {
             std::chrono::steady_clock::time_point start;
             std::string_view name;
             std::span<const Value> arguments;
+            const std::unordered_map<int, Canvas> &surfaces;
+            const Canvas &canvas;
+            const GameAssets &assets;
+            int surface_target;
+            std::string_view object_name;
             ~DrawBuiltinProfileGuard() {
                 if (enabled) {
                     const double elapsed =
@@ -4665,7 +4691,65 @@ struct GameSession::Impl {
                         maximum = elapsed;
                         slowest_name = name;
                         slowest_details.clear();
-                        if (name == "draw_text_ext_transformed") {
+                        if (name == "draw_sprite_ext") {
+                            const auto scalar = [&](std::size_t index) {
+                                if (index >= arguments.size())
+                                    return 0.0;
+                                if (const auto *value = std::get_if<std::int32_t>(&arguments[index]))
+                                    return static_cast<double>(*value);
+                                if (const auto *value = std::get_if<double>(&arguments[index]))
+                                    return *value;
+                                if (const auto *value = std::get_if<bool>(&arguments[index]))
+                                    return *value ? 1.0 : 0.0;
+                                return 0.0;
+                            };
+                            const int sprite_id = static_cast<int>(scalar(0));
+                            std::ostringstream details;
+                            details << std::fixed << std::setprecision(2) << "object=" << object_name
+                                    << ";sprite=" << sprite_id;
+                            if (assets.sprite_exists(sprite_id)) {
+                                const auto &sprite = assets.sprite(sprite_id);
+                                details << ':' << sprite.name << ';' << sprite.width << 'x' << sprite.height;
+                            }
+                            details << ";x=" << scalar(2) << ";y=" << scalar(3) << ";sx=" << scalar(4)
+                                    << ";sy=" << scalar(5) << ";angle=" << scalar(6) << ";tint=" << scalar(7)
+                                    << ";opacity=" << scalar(8);
+                            slowest_details = details.str();
+                        } else if (name == "draw_surface_ext") {
+                            const auto scalar = [&](std::size_t index) {
+                                if (index >= arguments.size())
+                                    return 0.0;
+                                if (const auto *value = std::get_if<std::int32_t>(&arguments[index]))
+                                    return static_cast<double>(*value);
+                                if (const auto *value = std::get_if<double>(&arguments[index]))
+                                    return *value;
+                                if (const auto *value = std::get_if<bool>(&arguments[index]))
+                                    return *value ? 1.0 : 0.0;
+                                return 0.0;
+                            };
+                            const int surface_id = static_cast<int>(scalar(0));
+                            const Canvas *source = surface_id == 0 ? &canvas : nullptr;
+                            if (!source) {
+                                if (const auto found = surfaces.find(surface_id); found != surfaces.end())
+                                    source = &found->second;
+                            }
+                            const Canvas *target = &canvas;
+                            if (surface_target != 0) {
+                                if (const auto found = surfaces.find(surface_target); found != surfaces.end())
+                                    target = &found->second;
+                            }
+                            std::ostringstream details;
+                            details << std::fixed << std::setprecision(2) << "surface_id=" << surface_id
+                                    << ";x=" << scalar(1) << ";y=" << scalar(2) << ";sx=" << scalar(3)
+                                    << ";sy=" << scalar(4) << ";angle=" << scalar(5) << ";tint=" << scalar(6)
+                                    << ";opacity=" << scalar(7);
+                            if (source)
+                                details << ";source=" << source->width() << 'x' << source->height();
+                            details << ";target=" << target->width() << 'x' << target->height()
+                                    << ";render_scale=" << target->render_scale()
+                                    << ";pixel_shader=" << target->pixel_shader_active();
+                            slowest_details = details.str();
+                        } else if (name == "draw_text_ext_transformed") {
                             const auto scalar = [&](std::size_t index) {
                                 if (index >= arguments.size())
                                     return 0.0;
@@ -4700,7 +4784,12 @@ struct GameSession::Impl {
                                      profile_draw_builtin,
                                      draw_builtin_start,
                                      name,
-                                     args};
+                                     args,
+                                     surfaces,
+                                     canvas,
+                                     assets,
+                                     surface_target,
+                                     draw_object_name};
         auto n = [&](std::size_t i) {
             if (i >= args.size())
                 throw Error(ErrorKind::vm, "missing built-in argument");
@@ -9800,6 +9889,27 @@ struct GameSession::Impl {
                 surfaces.erase(id);
                 return std::monostate{};
             }
+            if (name == "draw_surface_part_ext") {
+                const int id = static_cast<int>(n(0));
+                const Canvas *source = nullptr;
+                if (id == 0)
+                    source = &this->canvas;
+                else if (const auto found = surfaces.find(id); found != surfaces.end())
+                    source = &found->second;
+                if (!source)
+                    return std::monostate{};
+                auto &target = current_canvas();
+                const auto draw = [&](const Canvas &source_canvas) {
+                    target.draw_surface_part(source_canvas, n(1), n(2), n(3), n(4), n(5), n(6), n(7), n(8),
+                                             static_cast<unsigned>(n(9)), n(10));
+                };
+                if (&target == source) {
+                    const Canvas source_copy = *source;
+                    draw(source_copy);
+                } else
+                    draw(*source);
+                return std::monostate{};
+            }
             if (name == "draw_surface" || name == "draw_surface_ext") {
                 const int id = static_cast<int>(n(0));
                 const Canvas *source = nullptr;
@@ -12201,6 +12311,12 @@ struct GameSession::Impl {
         const auto profile_start = profile_tick_timing ? ProfileClock::now() : ProfileClock::time_point{};
         auto draw_start = ProfileClock::time_point{};
         last_logic_ms = last_draw_ms = 0;
+        last_draw_phases_ms.fill(0);
+        last_draw_depth_visual_ms = last_draw_instance_body_ms = 0;
+        last_draw_object_hotspots.clear();
+        last_draw_visual_kind_ms.fill(0);
+        last_draw_visual_kind_calls.fill(0);
+        last_draw_layer_hotspots.clear();
         last_draw_event_ms = 0;
         last_draw_builtin_ms = 0;
         last_draw_builtin_categories.fill(0);
@@ -12664,6 +12780,10 @@ struct GameSession::Impl {
                     static_cast<double>(canvas.logical_height()) / std::max(1, active_room.height);
                 assets.view(0, 0, scale_x, scale_y, 0, 0);
             }
+            auto draw_phase_start = profile_tick_timing ? ProfileClock::now() : ProfileClock::time_point{};
+            if (profile_tick_timing)
+                last_draw_phases_ms[0] =
+                    std::chrono::duration<double, std::milli>(draw_phase_start - draw_start).count();
             auto &room = rooms.at(static_cast<std::size_t>(current_room));
             allocation_stage = "pre-draw events";
             for (const auto &i : snapshot)
@@ -12676,6 +12796,12 @@ struct GameSession::Impl {
             for (auto &layer : room.layers) {
                 layer.x += layer.hspeed;
                 layer.y += layer.vspeed;
+            }
+            if (profile_tick_timing) {
+                const auto now = ProfileClock::now();
+                last_draw_phases_ms[1] =
+                    std::chrono::duration<double, std::milli>(now - draw_phase_start).count();
+                draw_phase_start = now;
             }
             allocation_stage = "background and tile drawing";
             for (const auto &b : room.backgrounds)
@@ -12757,6 +12883,12 @@ struct GameSession::Impl {
                 particle_visuals.begin(), particle_visuals.end(), [](const auto &left, const auto &right) {
                     return left.depth != right.depth ? left.depth > right.depth : left.order < right.order;
                 });
+            if (profile_tick_timing) {
+                const auto now = ProfileClock::now();
+                last_draw_phases_ms[2] =
+                    std::chrono::duration<double, std::milli>(now - draw_phase_start).count();
+                draw_phase_start = now;
+            }
             auto draw_layer_visual = [&](const LayerVisualEntry &entry) {
                 std::size_t layer_index = entry.layer_index;
                 if (layer_index >= room.layers.size() || room.layers[layer_index].id != entry.layer_id) {
@@ -12918,8 +13050,43 @@ struct GameSession::Impl {
                 std::sort(draw_entries.begin(), draw_entries.end(), [](const auto &a, const auto &b) {
                     return a.depth != b.depth ? a.depth > b.depth : a.order < b.order;
                 });
+            if (profile_tick_timing) {
+                const auto now = ProfileClock::now();
+                last_draw_phases_ms[3] =
+                    std::chrono::duration<double, std::milli>(now - draw_phase_start).count();
+                draw_phase_start = now;
+            }
             allocation_stage = "instance draw calls";
+            auto profile_visual_call = [&](std::size_t category, auto &&draw) {
+                if (!profile_tick_timing) {
+                    draw();
+                    return;
+                }
+                const auto start = ProfileClock::now();
+                draw();
+                last_draw_visual_kind_ms[category] +=
+                    std::chrono::duration<double, std::milli>(ProfileClock::now() - start).count();
+                ++last_draw_visual_kind_calls[category];
+            };
+            std::vector<std::pair<LayerVisualEntry, double>> layer_visual_times;
+            if (profile_tick_timing)
+                layer_visual_times.reserve(layer_visuals.size());
+            auto profile_layer_visual = [&](const LayerVisualEntry &entry) {
+                if (!profile_tick_timing) {
+                    draw_layer_visual(entry);
+                    return;
+                }
+                const auto start = ProfileClock::now();
+                draw_layer_visual(entry);
+                const double elapsed =
+                    std::chrono::duration<double, std::milli>(ProfileClock::now() - start).count();
+                last_draw_visual_kind_ms[1] += elapsed;
+                ++last_draw_visual_kind_calls[1];
+                layer_visual_times.emplace_back(entry, elapsed);
+            };
             auto draw_world_before = [&](double depth) {
+                const auto visual_start =
+                    profile_tick_timing ? ProfileClock::now() : ProfileClock::time_point{};
                 while ((tile < room.tiles.size() && room.tiles[tile].depth >= depth) ||
                        (layer_visual < layer_visuals.size() && layer_visuals[layer_visual].depth >= depth) ||
                        (particle_visual < particle_visuals.size() &&
@@ -12929,21 +13096,27 @@ struct GameSession::Impl {
                          room.tiles[tile].depth >= layer_visuals[layer_visual].depth) &&
                         (particle_visual >= particle_visuals.size() ||
                          room.tiles[tile].depth >= particle_visuals[particle_visual].depth))
-                        draw_tile(room.tiles[tile++]);
+                        profile_visual_call(0, [&] { draw_tile(room.tiles[tile++]); });
                     else if (layer_visual < layer_visuals.size() &&
                              layer_visuals[layer_visual].depth >= depth &&
                              (particle_visual >= particle_visuals.size() ||
                               layer_visuals[layer_visual].depth >= particle_visuals[particle_visual].depth))
-                        draw_layer_visual(layer_visuals[layer_visual++]);
+                        profile_layer_visual(layer_visuals[layer_visual++]);
                     else {
                         const int system_id = particle_visuals[particle_visual++].system;
                         if (particle_systems.contains(system_id)) {
                             const std::array<Value, 1> draw_args{std::int32_t{system_id}};
-                            call("part_system_drawit", draw_args, {}, {});
+                            profile_visual_call(2, [&] { call("part_system_drawit", draw_args, {}, {}); });
                         }
                     }
                 }
+                if (profile_tick_timing)
+                    last_draw_depth_visual_ms +=
+                        std::chrono::duration<double, std::milli>(ProfileClock::now() - visual_start).count();
             };
+            std::unordered_map<int, double> draw_object_times;
+            if (profile_tick_timing)
+                draw_object_times.reserve(draw_entries.size());
             for (auto &entry : draw_entries) {
                 const auto &i = snapshot[entry.order];
                 if (i->alive && !i->deactivated && number(i->vars.at("visible"))) {
@@ -12960,6 +13133,8 @@ struct GameSession::Impl {
                     if (draw_layer)
                         run_layer_script(draw_layer->begin_script, i);
                     draw_world_before(entry.depth);
+                    const auto object_draw_start =
+                        profile_tick_timing ? ProfileClock::now() : ProfileClock::time_point{};
                     if (objects[static_cast<std::size_t>(i->object)].draw_owner >= 0)
                         event(i, event_draw, event_draw_normal);
                     else {
@@ -13004,14 +13179,100 @@ struct GameSession::Impl {
                         active_shader = previous_shader;
                         configure_shader(canvas);
                     }
+                    if (profile_tick_timing) {
+                        const double elapsed =
+                            std::chrono::duration<double, std::milli>(ProfileClock::now() - object_draw_start)
+                                .count();
+                        last_draw_instance_body_ms += elapsed;
+                        draw_object_times[i->object] += elapsed;
+                    }
                 }
             }
+            auto trailing_visual_start =
+                profile_tick_timing ? ProfileClock::now() : ProfileClock::time_point{};
             draw_world_before(std::numeric_limits<double>::lowest());
             while (layer_visual < layer_visuals.size())
-                draw_layer_visual(layer_visuals[layer_visual++]);
+                profile_layer_visual(layer_visuals[layer_visual++]);
             for (const auto &b : room.backgrounds)
                 if (b.foreground)
                     assets.draw_background(canvas, b.id, b.x, b.y);
+            if (profile_tick_timing)
+                last_draw_depth_visual_ms +=
+                    std::chrono::duration<double, std::milli>(ProfileClock::now() - trailing_visual_start)
+                        .count();
+            if (profile_tick_timing && !draw_object_times.empty()) {
+                std::vector<std::pair<int, double>> hotspots(draw_object_times.begin(),
+                                                             draw_object_times.end());
+                const auto hotspot_count = std::min<std::size_t>(10, hotspots.size());
+                std::partial_sort(
+                    hotspots.begin(), hotspots.begin() + hotspot_count, hotspots.end(),
+                    [](const auto &left, const auto &right) { return left.second > right.second; });
+                std::ostringstream details;
+                details << std::fixed << std::setprecision(3);
+                for (std::size_t index = 0; index < hotspot_count; ++index) {
+                    if (index)
+                        details << ';';
+                    const int object_id = hotspots[index].first;
+                    const std::string_view object_name =
+                        object_id >= 0 && static_cast<std::size_t>(object_id) < objects.size()
+                            ? std::string_view(objects[static_cast<std::size_t>(object_id)].name)
+                            : std::string_view("<invalid>");
+                    details << object_name << '=' << hotspots[index].second << "ms";
+                }
+                last_draw_object_hotspots = details.str();
+            }
+            if (profile_tick_timing && !layer_visual_times.empty()) {
+                std::sort(layer_visual_times.begin(), layer_visual_times.end(),
+                          [](const auto &left, const auto &right) { return left.second > right.second; });
+                std::ostringstream details;
+                details << std::fixed << std::setprecision(3);
+                for (std::size_t index = 0; index < layer_visual_times.size(); ++index) {
+                    if (index)
+                        details << ';';
+                    const auto &[entry, elapsed] = layer_visual_times[index];
+                    const auto &layer = room.layers[entry.layer_index];
+                    int sprite_id = -1;
+                    if (entry.background) {
+                        const LayerBackground *background = nullptr;
+                        if (entry.element_index < layer.backgrounds.size() &&
+                            layer.backgrounds[entry.element_index].id == entry.element_id)
+                            background = &layer.backgrounds[entry.element_index];
+                        else if (const auto found = std::find_if(
+                                     layer.backgrounds.begin(), layer.backgrounds.end(),
+                                     [&](const auto &item) { return item.id == entry.element_id; });
+                                 found != layer.backgrounds.end())
+                            background = &*found;
+                        if (background)
+                            sprite_id = background->sprite;
+                    } else {
+                        const LayerSprite *sprite = nullptr;
+                        if (entry.element_index < layer.sprites.size() &&
+                            layer.sprites[entry.element_index].id == entry.element_id)
+                            sprite = &layer.sprites[entry.element_index];
+                        else if (const auto found = std::find_if(
+                                     layer.sprites.begin(), layer.sprites.end(),
+                                     [&](const auto &item) { return item.id == entry.element_id; });
+                                 found != layer.sprites.end())
+                            sprite = &*found;
+                        if (sprite)
+                            sprite_id = sprite->sprite;
+                    }
+                    details << "layer" << entry.layer_id << ':'
+                            << (entry.background ? "background" : "sprite") << entry.element_id;
+                    if (sprite_id >= 0 && assets.sprite_exists(sprite_id)) {
+                        const auto &sprite = assets.sprite(sprite_id);
+                        details << "[" << sprite.name << ':' << sprite.width << 'x' << sprite.height << ']';
+                    }
+                    details << '=' << elapsed << "ms";
+                }
+                last_draw_layer_hotspots = details.str();
+            }
+            if (profile_tick_timing) {
+                const auto now = ProfileClock::now();
+                last_draw_phases_ms[4] =
+                    std::chrono::duration<double, std::milli>(now - draw_phase_start).count();
+                draw_phase_start = now;
+            }
             allocation_stage = "draw end events";
             for (const auto &i : snapshot)
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
@@ -13038,9 +13299,12 @@ struct GameSession::Impl {
             }
             gui_draw_active = false;
             assets.view(0, 0, 1, 1, 0, 0);
-            if (profile_tick_timing)
-                last_draw_ms =
-                    std::chrono::duration<double, std::milli>(ProfileClock::now() - draw_start).count();
+            if (profile_tick_timing) {
+                const auto now = ProfileClock::now();
+                last_draw_phases_ms[5] =
+                    std::chrono::duration<double, std::milli>(now - draw_phase_start).count();
+                last_draw_ms = std::chrono::duration<double, std::milli>(now - draw_start).count();
+            }
             const auto instance_count_before_cleanup = instances.size();
             std::erase_if(instances, [&](const auto &i) {
                 if (!i->alive) {
@@ -13119,6 +13383,22 @@ void GameSession::profile_tick(bool enabled) noexcept {
 }
 GameSession::TickProfile GameSession::take_tick_profile() noexcept {
     TickProfile profile{impl_->last_logic_ms, impl_->last_draw_ms};
+    profile.draw_setup_ms = impl_->last_draw_phases_ms[0];
+    profile.draw_pre_event_ms = impl_->last_draw_phases_ms[1];
+    profile.draw_world_setup_ms = impl_->last_draw_phases_ms[2];
+    profile.draw_list_ms = impl_->last_draw_phases_ms[3];
+    profile.draw_world_ms = impl_->last_draw_phases_ms[4];
+    profile.draw_finish_ms = impl_->last_draw_phases_ms[5];
+    profile.draw_depth_visual_ms = impl_->last_draw_depth_visual_ms;
+    profile.draw_instance_body_ms = impl_->last_draw_instance_body_ms;
+    profile.draw_object_hotspots = impl_->last_draw_object_hotspots;
+    profile.draw_tile_ms = impl_->last_draw_visual_kind_ms[0];
+    profile.draw_layer_visual_ms = impl_->last_draw_visual_kind_ms[1];
+    profile.draw_particle_ms = impl_->last_draw_visual_kind_ms[2];
+    profile.draw_tile_calls = impl_->last_draw_visual_kind_calls[0];
+    profile.draw_layer_visual_calls = impl_->last_draw_visual_kind_calls[1];
+    profile.draw_particle_calls = impl_->last_draw_visual_kind_calls[2];
+    profile.draw_layer_hotspots = impl_->last_draw_layer_hotspots;
     profile.draw_event_ms = impl_->last_draw_event_ms;
     profile.draw_builtin_ms = impl_->last_draw_builtin_ms;
     profile.draw_text_builtin_ms = impl_->last_draw_builtin_categories[0];

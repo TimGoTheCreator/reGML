@@ -1692,6 +1692,47 @@ void GameAssets::blit(Canvas &canvas,
         return;
     }
 #endif
+    // Tiny solid sprites (for example a 4x4 fade pixel stretched over the
+    // screen) do not need a source-coordinate map or one span per source run.
+    // Cache this property per texture region and send one blended span per row.
+    const auto solid_pixel_limit = std::size_t{64};
+    const auto region_pixels_count = static_cast<std::size_t>(r.w) * static_cast<std::size_t>(r.h);
+    if (angle == 0 && !canvas.pixel_shader_active() && r.w > 0 && r.h > 0 &&
+        region_pixels_count <= solid_pixel_limit && r.tx == 0 && r.ty == 0 && r.tw == r.w && r.th == r.h) {
+        if (r.solid_mode < 0) {
+            const auto first = page.pixels[static_cast<std::size_t>(source_y) * page.width + source_x];
+            bool solid = true;
+            for (std::size_t index = 1; index < region_pixels_count; ++index) {
+                const auto y = index / static_cast<std::size_t>(r.w);
+                const auto x = index % static_cast<std::size_t>(r.w);
+                if (page.pixels[(static_cast<std::size_t>(source_y) + y) * page.width +
+                                static_cast<std::size_t>(source_x) + x] != first) {
+                    solid = false;
+                    break;
+                }
+            }
+            r.solid_rgba = first;
+            r.solid_mode = solid ? 1 : 0;
+            if (solid && tint == 0xffffff && r.alpha_mode < 0) {
+                const auto source_alpha = first >> 24;
+                r.alpha_mode = source_alpha == 255 ? 2 : source_alpha == 0 ? 1 : 0;
+            }
+        }
+        if (r.solid_mode == 1) {
+            const double w = r.tw * sx, h = r.th * sy;
+            const double x_begin = sx > 0 ? std::ceil(x - 0.5) : std::floor(x + w - 0.5) + 1;
+            const double x_end = sx > 0 ? std::ceil(x + w - 0.5) : std::floor(x - 0.5) + 1;
+            const double y_begin = sy > 0 ? std::ceil(y - 0.5) : std::floor(y + h - 0.5) + 1;
+            const double y_end = sy > 0 ? std::ceil(y + h - 0.5) : std::floor(y - 0.5) + 1;
+            const int left = static_cast<int>(std::clamp(x_begin, 0.0, static_cast<double>(canvas.width())));
+            const int top = static_cast<int>(std::clamp(y_begin, 0.0, static_cast<double>(canvas.height())));
+            const int right = static_cast<int>(std::clamp(x_end, 0.0, static_cast<double>(canvas.width())));
+            const int bottom = static_cast<int>(std::clamp(y_end, 0.0, static_cast<double>(canvas.height())));
+            for (int row = top; row < bottom; ++row)
+                canvas.rgba_span(left, row, right - left, r.solid_rgba, tint, alpha);
+            return;
+        }
+    }
     std::int8_t source_alpha_mode = 0;
     if (tint == 0xffffff) {
         if (r.alpha_mode < 0) {
