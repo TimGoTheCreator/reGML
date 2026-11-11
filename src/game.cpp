@@ -5266,8 +5266,8 @@ struct GameSession::Impl {
                 CallablePtr existing_callable;
                 if (const auto *function = std::get_if<FunctionReference>(&args[1]))
                     symbol_id = function->symbol_id;
-                else if (const auto *function = std::get_if<CallablePtr>(&args[1]); function && *function) {
-                    existing_callable = *function;
+                else if (const auto *callable = std::get_if<CallablePtr>(&args[1]); callable && *callable) {
+                    existing_callable = *callable;
                     symbol_id = existing_callable->symbol_id;
                 }
                 if (symbol_id == Instruction::no_symbol && (!existing_callable || !existing_callable->invoke))
