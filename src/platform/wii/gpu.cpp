@@ -45,6 +45,9 @@ bool presented = false;
 int current_pipeline = -1;
 const void *bound_texture = nullptr;
 constexpr std::size_t budget = 2 * 1024 * 1024;
+std::unique_ptr<void, Free> readback_texture;
+std::size_t readback_texture_bytes = 0;
+int readback_texture_width = 0, readback_texture_height = 0;
 std::uint64_t child_key(std::uint64_t key, int x, int y) {
     return key ? ((key ^ static_cast<unsigned>(x)) * 1099511628211ULL ^ static_cast<unsigned>(y)) : 0;
 }
@@ -290,6 +293,66 @@ std::uint32_t wii_gpu_pixel(int x, int y) {
 #endif
     GX_PeekARGB(static_cast<u16>(x), static_cast<u16>(y), &rgba);
     return 0xff000000 | (static_cast<u32>(rgba.r) << 16) | (static_cast<u32>(rgba.g) << 8) | rgba.b;
+}
+bool wii_gpu_readback(int width, int height, std::span<std::uint32_t> pixels) noexcept {
+    if (width <= 0 || height <= 0 ||
+        pixels.size() < static_cast<std::size_t>(width) * static_cast<std::size_t>(height))
+        return false;
+
+    auto *mode = VIDEO_GetPreferredMode(nullptr);
+    if (!mode || mode->fbWidth <= 0 || mode->efbHeight <= 0)
+        return false;
+    const int copy_width = (mode->fbWidth + 3) & ~3;
+    const int copy_height = (mode->efbHeight + 3) & ~3;
+    const std::size_t required_bytes = static_cast<std::size_t>(copy_width) * copy_height * 4;
+    if (!readback_texture || readback_texture_width != copy_width || readback_texture_height != copy_height) {
+        void *replacement = memalign(32, required_bytes);
+        if (!replacement)
+            return false;
+        readback_texture.reset(replacement);
+        readback_texture_bytes = required_bytes;
+        readback_texture_width = copy_width;
+        readback_texture_height = copy_height;
+    }
+
+    flush_image_batch();
+    if (dirty) {
+        GX_DrawDone();
+        dirty = false;
+    }
+
+    GX_SetTexCopySrc(0, 0, mode->fbWidth, mode->efbHeight);
+    GX_SetTexCopyDst(static_cast<u16>(copy_width), static_cast<u16>(copy_height), GX_TF_RGBA8, GX_FALSE);
+    GX_SetCopyFilter(GX_FALSE, mode->sample_pattern, GX_FALSE, mode->vfilter);
+    GX_CopyTex(readback_texture.get(), GX_FALSE);
+    GX_PixModeSync();
+    DCInvalidateRange(readback_texture.get(), readback_texture_bytes);
+    GX_SetCopyFilter(mode->aa, mode->sample_pattern, GX_TRUE, mode->vfilter);
+
+    const auto *texture = static_cast<const u8 *>(readback_texture.get());
+    const bool doubled_coordinates = REGML_240P && presented;
+    for (int y = 0; y < height; ++y) {
+        const int source_y = y * (doubled_coordinates ? 2 : 1);
+        for (int x = 0; x < width; ++x) {
+            const int source_x = x * (doubled_coordinates ? 2 : 1);
+            if (source_x >= mode->fbWidth || source_y >= mode->efbHeight)
+                return false;
+
+            const int tile_x = source_x & ~3;
+            const int tile_y = source_y & ~3;
+            const std::size_t tile =
+                (static_cast<std::size_t>(tile_y / 4) * static_cast<std::size_t>(copy_width / 4) +
+                 static_cast<std::size_t>(tile_x / 4)) *
+                64;
+            const std::size_t within_tile =
+                static_cast<std::size_t>(source_y & 3) * 8 + static_cast<std::size_t>(source_x & 3) * 2;
+            const unsigned red = texture[tile + within_tile + 1];
+            const unsigned green = texture[tile + 32 + within_tile];
+            const unsigned blue = texture[tile + 32 + within_tile + 1];
+            pixels[static_cast<std::size_t>(y) * width + x] = 0xff000000U | (red << 16) | (green << 8) | blue;
+        }
+    }
+    return true;
 }
 void wii_gpu_triangle(double x1, double y1, double x2, double y2, double x3, double y3, std::uint32_t rgba) {
     pipeline(false);

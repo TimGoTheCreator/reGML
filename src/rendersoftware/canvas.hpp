@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 namespace regml {
+class GameAssets;
 std::array<unsigned, 7> font_bitmap(unsigned char character);
 // the CPU draws into this buffer; SDL just puts it on screen
 class Canvas {
@@ -42,11 +43,14 @@ class Canvas {
                     int equation_alpha = 0) noexcept {
         blend_factors_ = {source_rgb, destination_rgb, source_alpha, destination_alpha};
         blend_equations_ = {equation_rgb, equation_alpha};
+        standard_blend_ =
+            blend_factors_ == std::array<int, 4>{5, 6, 5, 6} && blend_equations_ == std::array<int, 2>{0, 0};
     }
     void alpha_test_enable(bool enabled) noexcept { alpha_test_enabled_ = enabled; }
     void alpha_test_ref(unsigned value) noexcept { alpha_test_ref_ = value > 255 ? 255 : value; }
     void color_write_enable(bool red, bool green, bool blue, bool alpha) noexcept {
-        color_write_ = {red, green, blue, alpha};
+        color_write_mask_ = (red ? 0x00ff0000U : 0U) | (green ? 0x0000ff00U : 0U) |
+                            (blue ? 0x000000ffU : 0U) | (alpha ? 0xff000000U : 0U);
     }
     void pixel_shader(PixelShader shader, void *context = nullptr) noexcept {
         pixel_shader_ = shader;
@@ -80,6 +84,29 @@ class Canvas {
                    unsigned tint,
                    double opacity,
                    std::int8_t source_alpha_mode = 0) noexcept;
+    void text(double x, double y, std::string_view text);
+    void text(double x,
+              double y,
+              std::string_view text,
+              double sx,
+              double sy,
+              double angle,
+              int halign,
+              int valign);
+    void debug_text_overlay(std::span<const std::string_view> lines);
+    void rgba_pixel(int x, int y, std::uint32_t rgba, std::uint32_t bgr, double opacity);
+    void rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, double opacity) noexcept;
+    void rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tint, double opacity) noexcept;
+    void save_bmp(const std::filesystem::path &path) const;
+    void save_png(const std::filesystem::path &path) const;
+    [[nodiscard]] std::uint64_t hash() const noexcept;
+
+  private:
+    friend class GameAssets;
+    void plot(int x, int y);
+    void plot_in_bounds(int x, int y);
+    void store_pixel(int x, int y, std::uint32_t rgba) noexcept;
+    bool gpu_readback(std::span<std::uint32_t> pixels) const noexcept;
     bool blit_rgba_scaled_opaque(std::span<const std::uint32_t> source,
                                  int source_width,
                                  std::span<const int> source_x,
@@ -101,33 +128,8 @@ class Canvas {
                                  int destination_y,
                                  unsigned tint,
                                  double opacity) noexcept;
-    void text(double x, double y, std::string_view text);
-    void text(double x,
-              double y,
-              std::string_view text,
-              double sx,
-              double sy,
-              double angle,
-              int halign,
-              int valign);
-    void debug_text_overlay(std::span<const std::string_view> lines);
-    void rgba_pixel(int x, int y, std::uint32_t rgba, std::uint32_t bgr, double opacity);
-    void rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, double opacity) noexcept;
-    void rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tint, double opacity) noexcept;
-    void save_bmp(const std::filesystem::path &path) const;
-    void save_png(const std::filesystem::path &path) const;
-    [[nodiscard]] std::uint64_t hash() const noexcept;
-
-  private:
-    void plot(int x, int y);
-    void store_pixel(int x, int y, std::uint32_t rgba) noexcept;
-    bool color_write_all() const noexcept {
-        return color_write_[0] && color_write_[1] && color_write_[2] && color_write_[3];
-    }
-    bool standard_blend() const noexcept {
-        return blend_factors_ == std::array<int, 4>{5, 6, 5, 6} &&
-               blend_equations_ == std::array<int, 2>{0, 0};
-    }
+    bool color_write_all() const noexcept { return color_write_mask_ == 0xffffffffU; }
+    bool standard_blend() const noexcept { return standard_blend_; }
     struct CoordinateScale {
         double &active;
         double factor;
@@ -139,16 +141,18 @@ class Canvas {
     bool gpu_ = false;
     bool profile_text_ = false;
     bool blend_enabled_ = true;
+    bool standard_blend_ = true;
     std::array<int, 4> blend_factors_{5, 6, 5, 6};
     std::array<int, 2> blend_equations_{0, 0};
     bool alpha_test_enabled_ = false;
     unsigned alpha_test_ref_ = 0;
-    std::array<bool, 4> color_write_{true, true, true, true};
+    std::uint32_t color_write_mask_ = 0xffffffffU;
     double text_profile_ms_ = 0;
     PixelShader pixel_shader_ = nullptr;
     void *pixel_shader_context_ = nullptr;
     int width_, height_;
     std::vector<std::uint32_t> pixels_;
+    mutable std::vector<std::uint32_t> readback_scratch_;
     std::uint32_t rgb_ = 0xffffff;
     unsigned alpha_ = 255;
     int font_scale_ = 1;

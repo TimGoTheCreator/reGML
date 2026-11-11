@@ -1750,11 +1750,13 @@ void GameAssets::blit(Canvas &canvas,
             scaled_y_.resize(sample_height);
         for (int dx = left; dx < right; ++dx) {
             const double tx = (dx + 0.5 - x) / sx;
-            scaled_x_[static_cast<std::size_t>(dx - left)] = source_x + static_cast<int>(tx * r.w / r.tw);
+            scaled_x_[static_cast<std::size_t>(dx - left)] =
+                std::clamp(source_x + static_cast<int>(tx * r.w / r.tw), 0, page.width - 1);
         }
         for (int dy = top; dy < bottom; ++dy) {
             const double ty = (dy + 0.5 - y) / sy;
-            scaled_y_[static_cast<std::size_t>(dy - top)] = source_y + static_cast<int>(ty * r.h / r.th);
+            scaled_y_[static_cast<std::size_t>(dy - top)] =
+                std::clamp(source_y + static_cast<int>(ty * r.h / r.th), 0, page.height - 1);
         }
         if (tint == 0xffffff && source_alpha_mode == 2 &&
             canvas.blit_rgba_scaled_opaque(
@@ -1979,6 +1981,48 @@ void GameAssets::draw_sprite_pos(
     if (left >= right || top >= bottom)
         return;
 
+    const auto region_index = spr.frames[frame_index(frame, spr.frames.size())];
+    if (region_index == std::numeric_limits<std::uint32_t>::max() || region_index >= regions_.size())
+        return;
+    const auto &region = regions_[region_index].region;
+    if (spr.width <= 0 || spr.height <= 0 || region.tw <= 0 || region.th <= 0 || region.w <= 0 ||
+        region.h <= 0)
+        return;
+    int source_x = 0, source_y = 0;
+    const auto &page = region_pixels(region, source_x, source_y);
+    const auto sample = [&](double u, double v) {
+        if (!std::isfinite(u + v))
+            throw Error(ErrorKind::vm, "nonfinite texture sample coordinate");
+        u = std::clamp(u, 0.0, 1.0);
+        v = std::clamp(v, 0.0, 1.0);
+        const double pixel_x = u * spr.width - 0.5, pixel_y = v * spr.height - 0.5;
+        const int x0 = static_cast<int>(std::floor(pixel_x)), y0 = static_cast<int>(std::floor(pixel_y));
+        const double fx = pixel_x - x0, fy = pixel_y - y0;
+        const auto texel = [&](int x, int y) -> std::uint32_t {
+            x = std::clamp(x, 0, spr.width - 1);
+            y = std::clamp(y, 0, spr.height - 1);
+            const double local_x = x + 0.5 - region.tx, local_y = y + 0.5 - region.ty;
+            if (local_x < 0 || local_y < 0 || local_x >= region.tw || local_y >= region.th)
+                return 0;
+            const int sx = source_x + static_cast<int>(local_x * region.w / region.tw);
+            const int sy = source_y + static_cast<int>(local_y * region.h / region.th);
+            if (sx < 0 || sy < 0 || sx >= page.width || sy >= page.height)
+                return 0;
+            return page.pixels[static_cast<std::size_t>(sy) * static_cast<std::size_t>(page.width) + sx];
+        };
+        const std::array<std::uint32_t, 4> colors = {texel(x0, y0), texel(x0 + 1, y0), texel(x0, y0 + 1),
+                                                     texel(x0 + 1, y0 + 1)};
+        const std::array<double, 4> weights = {(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy};
+        std::uint32_t result = 0;
+        for (unsigned shift : {0U, 8U, 16U, 24U}) {
+            double channel = 0;
+            for (std::size_t i = 0; i < colors.size(); ++i)
+                channel += ((colors[i] >> shift) & 255) * weights[i];
+            result |= static_cast<std::uint32_t>(std::lround(channel)) << shift;
+        }
+        return result;
+    };
+
     const auto draw_triangle = [&](std::size_t ia, std::size_t ib, std::size_t ic, std::array<double, 2> uva,
                                    std::array<double, 2> uvb, std::array<double, 2> uvc,
                                    bool skip_shared_edge) {
@@ -1988,18 +2032,26 @@ void GameAssets::draw_sprite_pos(
         const double area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
         if (std::fabs(area) < 1e-12)
             return;
+        const double inverse_area = 1.0 / area;
+        const double wb_dx = (c[1] - a[1]) * inverse_area;
+        const double wb_dy = (a[0] - c[0]) * inverse_area;
+        const double wc_dx = (a[1] - b[1]) * inverse_area;
+        const double wc_dy = (b[0] - a[0]) * inverse_area;
         for (int y = top; y < bottom; ++y) {
             const double py = y + 0.5;
+            const double first_px = left + 0.5;
+            double row_wb = ((first_px - a[0]) * (c[1] - a[1]) - (py - a[1]) * (c[0] - a[0])) * inverse_area;
+            double row_wc = ((b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (first_px - a[0])) * inverse_area;
+            double wb = row_wb, wc = row_wc;
             for (int x = left; x < right; ++x) {
-                const double px = x + 0.5;
-                const double wb = ((px - a[0]) * (c[1] - a[1]) - (py - a[1]) * (c[0] - a[0])) / area;
-                const double wc = ((b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0])) / area;
                 const double wa = 1.0 - wb - wc;
-                if (wa < -1e-9 || wb < -1e-9 || wc < -1e-9 || (skip_shared_edge && wc <= 1e-9))
-                    continue;
-                const double u = wa * uva[0] + wb * uvb[0] + wc * uvc[0];
-                const double v = wa * uva[1] + wb * uvb[1] + wc * uvc[1];
-                canvas.rgba_pixel_tinted(x, y, sample_sprite(id, frame, u, v, false), 0xffffff, alpha);
+                if (wa >= -1e-9 && wb >= -1e-9 && wc >= -1e-9 && (!skip_shared_edge || wc > 1e-9)) {
+                    const double u = wa * uva[0] + wb * uvb[0] + wc * uvc[0];
+                    const double v = wa * uva[1] + wb * uvb[1] + wc * uvc[1];
+                    canvas.rgba_pixel_tinted(x, y, sample(u, v), 0xffffff, alpha);
+                }
+                wb += wb_dx;
+                wc += wc_dx;
             }
         }
     };

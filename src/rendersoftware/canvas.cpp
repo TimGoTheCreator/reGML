@@ -55,11 +55,36 @@ void blend_rgba_pixel(std::uint32_t &destination, std::uint32_t source) noexcept
                   (((green + output_alpha / 2) / output_alpha) << 8) |
                   ((blue + output_alpha / 2) / output_alpha);
 }
+bool scaled_source_map_is_valid(std::span<const std::uint32_t> source,
+                                int source_width,
+                                std::span<const int> source_x,
+                                std::span<const int> source_y) noexcept {
+    if (source_width <= 0)
+        return false;
+    // GameAssets builds monotonic nearest-neighbor maps, so the extrema are at
+    // the endpoints. Validate those endpoints instead of scanning every pixel
+    // in each map again for each sprite draw.
+    if (!source_x.empty()) {
+        const int low = std::min(source_x.front(), source_x.back());
+        const int high = std::max(source_x.front(), source_x.back());
+        if (low < 0 || high >= source_width)
+            return false;
+    }
+    if (!source_y.empty()) {
+        const int low = std::min(source_y.front(), source_y.back());
+        const int high = std::max(source_y.front(), source_y.back());
+        if (low < 0 ||
+            static_cast<std::size_t>(high) >= source.size() / static_cast<std::size_t>(source_width))
+            return false;
+    }
+    return true;
+}
 #if REGML_CANVAS_SSE2
 bool composite_rgba4(std::uint32_t *destination,
                      const std::uint32_t *source,
-                     unsigned tint = 0xffffff) noexcept {
-    const auto source_bytes = _mm_loadu_si128(reinterpret_cast<const __m128i *>(source));
+                     unsigned tint = 0xffffff,
+                     double opacity = 1) noexcept {
+    auto source_bytes = _mm_loadu_si128(reinterpret_cast<const __m128i *>(source));
     const auto alpha_mask = _mm_set1_epi32(static_cast<int>(0xff000000U));
     const auto source_alpha = _mm_and_si128(source_bytes, alpha_mask);
     const auto zero = _mm_setzero_si128();
@@ -68,6 +93,30 @@ bool composite_rgba4(std::uint32_t *destination,
 
     const auto rgb_mask = _mm_setr_epi16(-1, -1, -1, 0, -1, -1, -1, 0);
     const auto opaque_alpha = _mm_setr_epi16(0, 0, 0, 255, 0, 0, 0, 255);
+    const auto source_is_opaque = _mm_cmpeq_epi32(_mm_and_si128(source_bytes, alpha_mask), alpha_mask);
+    const bool all_source_opaque = opacity == 1 && _mm_movemask_epi8(source_is_opaque) == 0xffff;
+    __m128i destination_bytes;
+    if (!all_source_opaque) {
+        destination_bytes = _mm_loadu_si128(reinterpret_cast<const __m128i *>(destination));
+        const auto destination_is_opaque =
+            _mm_cmpeq_epi32(_mm_and_si128(destination_bytes, alpha_mask), alpha_mask);
+        if (_mm_movemask_epi8(destination_is_opaque) != 0xffff)
+            return false;
+    }
+
+    if (opacity != 1) {
+        alignas(16) std::array<std::uint32_t, 4> opacity_adjusted{};
+        for (std::size_t lane = 0; lane < opacity_adjusted.size(); ++lane) {
+            const auto pixel = source[lane];
+            const unsigned alpha = static_cast<unsigned>((pixel >> 24) * opacity + 0.5);
+            opacity_adjusted[lane] = (alpha << 24) | (pixel & 0x00ffffffU);
+        }
+        source_bytes = _mm_load_si128(reinterpret_cast<const __m128i *>(opacity_adjusted.data()));
+        const auto adjusted_alpha = _mm_and_si128(source_bytes, alpha_mask);
+        if (_mm_movemask_epi8(_mm_cmpeq_epi32(adjusted_alpha, zero)) == 0xffff)
+            return true;
+    }
+
     auto source_low = _mm_unpacklo_epi8(source_bytes, zero);
     auto source_high = _mm_unpackhi_epi8(source_bytes, zero);
     const bool plain = tint == 0xffffff;
@@ -86,17 +135,10 @@ bool composite_rgba4(std::uint32_t *destination,
     }
 
     const auto source_tinted = _mm_packus_epi16(source_low, source_high);
-    const auto source_is_opaque = _mm_cmpeq_epi32(_mm_and_si128(source_tinted, alpha_mask), alpha_mask);
-    if (_mm_movemask_epi8(source_is_opaque) == 0xffff) {
+    if (all_source_opaque) {
         _mm_storeu_si128(reinterpret_cast<__m128i *>(destination), source_tinted);
         return true;
     }
-
-    const auto destination_bytes = _mm_loadu_si128(reinterpret_cast<const __m128i *>(destination));
-    const auto destination_is_opaque =
-        _mm_cmpeq_epi32(_mm_and_si128(destination_bytes, alpha_mask), alpha_mask);
-    if (_mm_movemask_epi8(destination_is_opaque) != 0xffff)
-        return false;
 
     const auto rounding = _mm_set1_epi16(128);
     const auto destination_low = _mm_unpacklo_epi8(destination_bytes, zero);
@@ -114,6 +156,32 @@ bool composite_rgba4(std::uint32_t *destination,
     const auto output_low = blend_half(source_low, destination_low);
     const auto output_high = blend_half(source_high, destination_high);
     const auto output = _mm_packus_epi16(output_low, output_high);
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(destination), output);
+    return true;
+}
+bool blend_rectangle_rgba4(std::uint32_t *destination, std::uint32_t source) noexcept {
+    const auto destination_bytes = _mm_loadu_si128(reinterpret_cast<const __m128i *>(destination));
+    const unsigned alpha = source >> 24;
+    const auto source_bytes = _mm_set1_epi32(static_cast<int>((source & 0x00ffffffU) | 0xff000000U));
+    const auto zero = _mm_setzero_si128();
+    const auto source_low = _mm_unpacklo_epi8(source_bytes, zero);
+    const auto source_high = _mm_unpackhi_epi8(source_bytes, zero);
+    const auto destination_low = _mm_unpacklo_epi8(destination_bytes, zero);
+    const auto destination_high = _mm_unpackhi_epi8(destination_bytes, zero);
+    const auto alpha_words = _mm_set1_epi16(static_cast<short>(alpha));
+    const auto inverse_words = _mm_set1_epi16(static_cast<short>(255 - alpha));
+    const auto rounding = _mm_set1_epi16(128);
+    const auto blend_half = [&](const __m128i source_half, const __m128i destination_half) {
+        auto result = _mm_add_epi16(_mm_mullo_epi16(source_half, alpha_words),
+                                    _mm_mullo_epi16(destination_half, inverse_words));
+        result = _mm_add_epi16(result, rounding);
+        result = _mm_add_epi16(result, _mm_srli_epi16(result, 8));
+        return _mm_srli_epi16(result, 8);
+    };
+    const auto alpha_mask = _mm_set1_epi32(static_cast<int>(0xff000000U));
+    const auto output = _mm_or_si128(
+        _mm_packus_epi16(blend_half(source_low, destination_low), blend_half(source_high, destination_high)),
+        alpha_mask);
     _mm_storeu_si128(reinterpret_cast<__m128i *>(destination), output);
     return true;
 }
@@ -233,6 +301,60 @@ std::array<unsigned, 7> glyph(char c) {
         return {14, 17, 1, 2, 4, 0, 4};
     }
 }
+struct GlyphRectangle {
+    unsigned char left, top, right, bottom;
+};
+struct GlyphShape {
+    std::array<GlyphRectangle, 21> rectangles{};
+    unsigned char count = 0;
+};
+const GlyphShape &glyph_shape(unsigned char character) {
+    static const auto shapes = [] {
+        std::array<GlyphShape, 256> result{};
+        for (std::size_t character = 0; character < result.size(); ++character) {
+            const auto bitmap = glyph(static_cast<char>(character));
+            auto &shape = result[character];
+            std::array<int, 3> active{};
+            int active_count = 0;
+            for (int row = 0; row < 7; ++row) {
+                std::array<int, 3> next_active{};
+                int next_count = 0;
+                const auto bits = bitmap[static_cast<std::size_t>(row)];
+                for (int column = 0; column < 5;) {
+                    while (column < 5 && (bits & (1U << static_cast<unsigned>(4 - column))) == 0)
+                        ++column;
+                    const int first = column;
+                    while (column < 5 && (bits & (1U << static_cast<unsigned>(4 - column))) != 0)
+                        ++column;
+                    if (first == column)
+                        continue;
+
+                    int rectangle_index = -1;
+                    for (int i = 0; i < active_count; ++i) {
+                        const int candidate = active[static_cast<std::size_t>(i)];
+                        auto &current = shape.rectangles[static_cast<std::size_t>(candidate)];
+                        if (current.left == first && current.right == column) {
+                            rectangle_index = candidate;
+                            current.bottom = static_cast<unsigned char>(row + 1);
+                            break;
+                        }
+                    }
+                    if (rectangle_index < 0) {
+                        rectangle_index = shape.count++;
+                        shape.rectangles[static_cast<std::size_t>(rectangle_index)] = {
+                            static_cast<unsigned char>(first), static_cast<unsigned char>(row),
+                            static_cast<unsigned char>(column), static_cast<unsigned char>(row + 1)};
+                    }
+                    next_active[static_cast<std::size_t>(next_count++)] = rectangle_index;
+                }
+                active = next_active;
+                active_count = next_count;
+            }
+        }
+        return result;
+    }();
+    return shapes[character];
+}
 } // namespace
 std::array<unsigned, 7> font_bitmap(unsigned char character) {
     return glyph(static_cast<char>(character));
@@ -268,6 +390,16 @@ void Canvas::gpu_target(bool enabled) {
     gpu_ = enabled;
 #else
     (void)enabled;
+#endif
+}
+bool Canvas::gpu_readback(std::span<std::uint32_t> pixels) const noexcept {
+#if REGML_WII
+    return wii_gpu_readback(width_, height_, pixels);
+#elif REGML_PS2
+    return ps2_gpu_readback(pixels);
+#else
+    (void)pixels;
+    return false;
 #endif
 }
 std::uint32_t Canvas::pixel(int x, int y) const {
@@ -319,12 +451,7 @@ void Canvas::store_pixel(int x, int y, std::uint32_t rgba) noexcept {
         dest = rgba;
         return;
     }
-    constexpr std::array<std::uint32_t, 4> channel_masks{0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000};
-    std::uint32_t enabled = 0;
-    for (std::size_t channel = 0; channel < color_write_.size(); ++channel)
-        if (color_write_[channel])
-            enabled |= channel_masks[channel];
-    dest = (rgba & enabled) | (dest & ~enabled);
+    dest = (rgba & color_write_mask_) | (dest & ~color_write_mask_);
 }
 void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, double opacity) noexcept {
     if (x < 0 || y < 0 || x >= width_ || y >= height_)
@@ -370,36 +497,51 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
         const std::array<unsigned, 4> source = {red, green, blue, source_alpha};
         const std::array<unsigned, 4> destination = {(dest >> 16) & 255, (dest >> 8) & 255, dest & 255,
                                                      dest >> 24};
-        auto factor = [&](int type, std::size_t channel) -> unsigned {
-            const unsigned src = source[channel], dst = destination[channel];
-            // These are the 1-based GML bm_* factor constants.
+        const auto factors = [&](int type) {
+            std::array<unsigned, 4> result{};
             switch (type) {
-            case 1:
-                return 0;
             case 2:
-                return 255;
+                result.fill(255);
+                break;
             case 3:
-                return src;
+                result = source;
+                break;
             case 4:
-                return 255 - src;
+                for (std::size_t channel = 0; channel < result.size(); ++channel)
+                    result[channel] = 255 - source[channel];
+                break;
             case 5:
-                return source_alpha;
+                result.fill(source_alpha);
+                break;
             case 6:
-                return 255 - source_alpha;
+                result.fill(255 - source_alpha);
+                break;
             case 7:
-                return destination[3];
+                result.fill(destination[3]);
+                break;
             case 8:
-                return 255 - destination[3];
+                result.fill(255 - destination[3]);
+                break;
             case 9:
-                return dst;
+                result = destination;
+                break;
             case 10:
-                return 255 - dst;
+                for (std::size_t channel = 0; channel < result.size(); ++channel)
+                    result[channel] = 255 - destination[channel];
+                break;
             case 11:
-                return channel == 3 ? 255 : std::min(source_alpha, 255 - destination[3]);
+                result.fill(std::min(source_alpha, 255 - destination[3]));
+                result[3] = 255;
+                break;
             default:
-                return 0;
+                break;
             }
+            return result;
         };
+        const auto source_rgb_factors = factors(blend_factors_[0]);
+        const auto destination_rgb_factors = factors(blend_factors_[1]);
+        const unsigned source_alpha_factor = factors(blend_factors_[2])[3];
+        const unsigned destination_alpha_factor = factors(blend_factors_[3])[3];
         unsigned result = 0;
         constexpr std::array<unsigned, 4> shifts{16, 8, 0, 24};
         for (std::size_t channel = 0; channel < source.size(); ++channel) {
@@ -410,8 +552,9 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
             else if (equation == 4)
                 output = std::max(source[channel], destination[channel]);
             else {
-                const auto source_factor = factor(blend_factors_[channel == 3 ? 2 : 0], channel);
-                const auto destination_factor = factor(blend_factors_[channel == 3 ? 3 : 1], channel);
+                const auto source_factor = channel == 3 ? source_alpha_factor : source_rgb_factors[channel];
+                const auto destination_factor =
+                    channel == 3 ? destination_alpha_factor : destination_rgb_factors[channel];
                 const auto source_term = (source[channel] * source_factor + 127) / 255;
                 const auto destination_term = (destination[channel] * destination_factor + 127) / 255;
                 if (equation == 1)
@@ -473,6 +616,52 @@ void Canvas::rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tin
     x = std::max(x, 0);
     if (x >= end)
         return;
+    if (!color_write_all() && blend_enabled_ && !alpha_test_enabled_ && standard_blend() && !pixel_shader_ &&
+        !gpu_) {
+        const unsigned alpha =
+            opacity == 1 ? rgba >> 24
+                         : static_cast<unsigned>(
+                               static_cast<double>(rgba >> 24) * std::clamp(opacity, 0.0, 1.0) + 0.5);
+        if (!alpha)
+            return;
+        const unsigned red = ((rgba >> 16) & 255) * ((tint >> 16) & 255) / 255;
+        const unsigned green = ((rgba >> 8) & 255) * ((tint >> 8) & 255) / 255;
+        const unsigned blue = (rgba & 255) * (tint & 255) / 255;
+        const unsigned inverse = 255 - alpha;
+        const auto mask = color_write_mask_;
+        auto *row = pixels_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width_);
+        for (int px = x; px < end; ++px) {
+            const auto previous = row[px];
+            std::uint32_t result;
+            if (alpha == 255 || (previous >> 24) == 255) {
+                const unsigned output_red =
+                    alpha == 255 ? red : (red * alpha + ((previous >> 16) & 255) * inverse + 127) / 255;
+                const unsigned output_green =
+                    alpha == 255 ? green : (green * alpha + ((previous >> 8) & 255) * inverse + 127) / 255;
+                const unsigned output_blue =
+                    alpha == 255 ? blue : (blue * alpha + (previous & 255) * inverse + 127) / 255;
+                result = 0xff000000 | (output_red << 16) | (output_green << 8) | output_blue;
+            } else {
+                const unsigned previous_alpha = previous >> 24;
+                const unsigned output_alpha = alpha + (previous_alpha * inverse + 127) / 255;
+                const unsigned output_red =
+                    (red * alpha + (((previous >> 16) & 255) * previous_alpha * inverse + 127) / 255 +
+                     output_alpha / 2) /
+                    output_alpha;
+                const unsigned output_green =
+                    (green * alpha + (((previous >> 8) & 255) * previous_alpha * inverse + 127) / 255 +
+                     output_alpha / 2) /
+                    output_alpha;
+                const unsigned output_blue =
+                    (blue * alpha + ((previous & 255) * previous_alpha * inverse + 127) / 255 +
+                     output_alpha / 2) /
+                    output_alpha;
+                result = (output_alpha << 24) | (output_red << 16) | (output_green << 8) | output_blue;
+            }
+            row[px] = (result & mask) | (previous & ~mask);
+        }
+        return;
+    }
     if (!color_write_all() || !blend_enabled_ || alpha_test_enabled_ || !standard_blend() || pixel_shader_) {
         for (int px = x; px < end; ++px)
             rgba_pixel_tinted(px, y, rgba, tint, opacity);
@@ -561,11 +750,6 @@ void Canvas::blit_rgba(std::span<const std::uint32_t> source,
         const unsigned blue = plain ? pixel & 255 : (pixel & 255) * tint_blue / 255;
         return (alpha << 24) | (red << 16) | (green << 8) | blue;
     };
-    const auto prepare_vector_pixel = [&](const std::uint32_t pixel) {
-        const unsigned alpha =
-            opacity == 1 ? pixel >> 24 : static_cast<unsigned>((pixel >> 24) * clamped_opacity + 0.5);
-        return alpha ? (alpha << 24) | (pixel & 0x00ffffff) : 0U;
-    };
     for (int row = 0; row < height; ++row) {
         const auto *src = source.data() +
                           static_cast<std::size_t>(source_y + row) * static_cast<std::size_t>(source_width) +
@@ -596,20 +780,12 @@ void Canvas::blit_rgba(std::span<const std::uint32_t> source,
         if (!pixel_shader_) {
             int column = 0;
 #if REGML_CANVAS_SSE2
-            std::array<std::uint32_t, 4> transformed{};
-            for (; column + static_cast<int>(transformed.size()) <= width;
-                 column += static_cast<int>(transformed.size())) {
-                if (clamped_opacity == 1) {
-                    for (std::size_t lane = 0; lane < transformed.size(); ++lane)
-                        transformed[lane] = src[column + static_cast<int>(lane)];
-                } else {
-                    for (std::size_t lane = 0; lane < transformed.size(); ++lane)
-                        transformed[lane] = prepare_vector_pixel(src[column + static_cast<int>(lane)]);
-                }
-                if (!composite_rgba4(dst + column, transformed.data(), tint))
-                    for (std::size_t lane = 0; lane < transformed.size(); ++lane)
+            for (; column + 4 <= width; column += 4) {
+                if (!composite_rgba4(dst + column, src + column, tint, clamped_opacity)) {
+                    for (int lane = 0; lane < 4; ++lane)
                         blend_rgba_pixel(dst[column + static_cast<int>(lane)],
                                          transform_pixel(src[column + static_cast<int>(lane)]));
+                }
             }
 #endif
             for (; column < width; ++column)
@@ -654,13 +830,8 @@ bool Canvas::blit_rgba_scaled_opaque(std::span<const std::uint32_t> source,
         source_y.size() > static_cast<std::size_t>(height_ - destination_y))
         return false;
 
-    for (const int x : source_x)
-        if (x < 0 || x >= source_width)
-            return false;
-    for (const int y : source_y)
-        if (y < 0 || static_cast<std::size_t>(y) * static_cast<std::size_t>(source_width) + source_width >
-                         source.size())
-            return false;
+    if (!scaled_source_map_is_valid(source, source_width, source_x, source_y))
+        return false;
 
     const unsigned source_alpha = static_cast<unsigned>(255.0 * std::clamp(opacity, 0.0, 1.0) + 0.5);
     if (source_alpha == 0)
@@ -724,13 +895,8 @@ bool Canvas::blit_rgba_scaled_binary_alpha(std::span<const std::uint32_t> source
         source_y.size() > static_cast<std::size_t>(height_ - destination_y))
         return false;
 
-    for (const int x : source_x)
-        if (x < 0 || x >= source_width)
-            return false;
-    for (const int y : source_y)
-        if (y < 0 || static_cast<std::size_t>(y) * static_cast<std::size_t>(source_width) + source_width >
-                         source.size())
-            return false;
+    if (!scaled_source_map_is_valid(source, source_width, source_x, source_y))
+        return false;
 
     const bool repeated_x = std::adjacent_find(source_x.begin(), source_x.end()) != source_x.end();
     const auto process_rows = [&](std::size_t first_row, std::size_t last_row) {
@@ -790,13 +956,8 @@ bool Canvas::blit_rgba_scaled_tinted(std::span<const std::uint32_t> source,
         source_y.size() > static_cast<std::size_t>(height_ - destination_y))
         return false;
 
-    for (const int x : source_x)
-        if (x < 0 || x >= source_width)
-            return false;
-    for (const int y : source_y)
-        if (y < 0 || static_cast<std::size_t>(y) * static_cast<std::size_t>(source_width) + source_width >
-                         source.size())
-            return false;
+    if (!scaled_source_map_is_valid(source, source_width, source_x, source_y))
+        return false;
 
     const double clamped_opacity = std::clamp(opacity, 0.0, 1.0);
     const bool plain = tint == 0xffffff;
@@ -813,11 +974,6 @@ bool Canvas::blit_rgba_scaled_tinted(std::span<const std::uint32_t> source,
         const unsigned blue = plain ? pixel & 255 : (pixel & 255) * tint_blue / 255;
         return (alpha << 24) | (red << 16) | (green << 8) | blue;
     };
-    const auto prepare_vector_pixel = [&](const std::uint32_t pixel) {
-        const unsigned alpha =
-            clamped_opacity == 1 ? pixel >> 24 : static_cast<unsigned>((pixel >> 24) * clamped_opacity + 0.5);
-        return alpha ? (alpha << 24) | (pixel & 0x00ffffff) : 0U;
-    };
     const auto process_rows = [&](std::size_t first_row, std::size_t last_row) {
         for (std::size_t row = first_row; row < last_row; ++row) {
             const auto *src = source.data() + static_cast<std::size_t>(source_y[row]) * source_width;
@@ -828,13 +984,12 @@ bool Canvas::blit_rgba_scaled_tinted(std::span<const std::uint32_t> source,
 #if REGML_CANVAS_SSE2
             std::array<std::uint32_t, 4> transformed{};
             for (; column + transformed.size() <= source_x.size(); column += transformed.size()) {
-                for (std::size_t lane = 0; lane < transformed.size(); ++lane) {
-                    const auto pixel = src[source_x[column + lane]];
-                    transformed[lane] = clamped_opacity == 1 ? pixel : prepare_vector_pixel(pixel);
-                }
-                if (!composite_rgba4(dst + column, transformed.data(), tint))
+                for (std::size_t lane = 0; lane < transformed.size(); ++lane)
+                    transformed[lane] = src[source_x[column + lane]];
+                if (!composite_rgba4(dst + column, transformed.data(), tint, clamped_opacity)) {
                     for (std::size_t lane = 0; lane < transformed.size(); ++lane)
-                        blend_rgba_pixel(dst[column + lane], transform_pixel(src[source_x[column + lane]]));
+                        blend_rgba_pixel(dst[column + lane], transform_pixel(transformed[lane]));
+                }
             }
 #endif
             for (; column < source_x.size(); ++column) {
@@ -875,10 +1030,10 @@ void Canvas::draw_surface(const Canvas &source,
 #elif REGML_PS2
     if (gpu_) {
         if (&source == this) {
-            std::vector<std::uint32_t> snapshot(static_cast<std::size_t>(width_) * height_);
-            if (!ps2_gpu_readback(snapshot))
+            readback_scratch_.resize(static_cast<std::size_t>(width_) * height_);
+            if (!gpu_readback(readback_scratch_))
                 return;
-            ps2_gpu_image(snapshot, source.width_, 0, 0, source.width_, source.height_, x, y,
+            ps2_gpu_image(readback_scratch_, source.width_, 0, 0, source.width_, source.height_, x, y,
                           source.width_ * sx, source.height_ * sy, angle, to_rgb(tint), opacity);
         } else {
             ps2_gpu_image(source.pixels_, source.width_, 0, 0, source.width_, source.height_, x, y,
@@ -991,6 +1146,9 @@ void Canvas::plot(int x, int y) {
         return;
     if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
         return;
+    plot_in_bounds(x, y);
+}
+void Canvas::plot_in_bounds(int x, int y) {
 #if REGML_WII
     if (gpu_) {
         wii_gpu_box(x, y, 1, 1, (alpha_ << 24) | rgb_);
@@ -1055,20 +1213,20 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
     }
 #endif
     const auto span = [&](int y, int first, int last) {
+        const auto rgba = (alpha_ << 24) | rgb_;
         if (!color_write_all() || !blend_enabled_ || alpha_test_enabled_ || !standard_blend()) {
-            const auto rgba = (alpha_ << 24) | rgb_;
             for (int x = first; x < last; ++x)
                 rgba_pixel_tinted(x, y, rgba, 0xffffff, 1);
             return;
         }
 #if REGML_WII
         if (gpu_) {
-            wii_gpu_box(first, y, last - first, 1, (alpha_ << 24) | rgb_);
+            wii_gpu_box(first, y, last - first, 1, rgba);
             return;
         }
 #elif REGML_PS2
         if (gpu_) {
-            ps2_gpu_box(first, y, last - first, 1, (alpha_ << 24) | rgb_);
+            ps2_gpu_box(first, y, last - first, 1, rgba);
             return;
         }
 #endif
@@ -1077,15 +1235,28 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
             std::fill(row + first, row + last, 0xff000000 | rgb_);
             return;
         }
+
         const unsigned inverse = 255 - alpha_;
-        const unsigned red = (rgb_ >> 16 & 255) * alpha_, green = (rgb_ >> 8 & 255) * alpha_,
-                       blue = (rgb_ & 255) * alpha_;
-        for (int x = first; x < last; ++x) {
+        const unsigned red = (rgb_ >> 16 & 255) * alpha_;
+        const unsigned green = (rgb_ >> 8 & 255) * alpha_;
+        const unsigned blue = (rgb_ & 255) * alpha_;
+        const auto blend_pixel = [&](int x) {
             const auto previous = row[x];
             row[x] = 0xff000000 | (((red + (previous >> 16 & 255) * inverse + 127) / 255) << 16) |
                      (((green + (previous >> 8 & 255) * inverse + 127) / 255) << 8) |
                      ((blue + (previous & 255) * inverse + 127) / 255);
+        };
+        const auto source_pixel = rgba;
+        int x = first;
+#if REGML_CANVAS_SSE2
+        for (; x + 4 <= last; x += 4) {
+            if (!blend_rectangle_rgba4(row + x, source_pixel))
+                for (int lane = 0; lane < 4; ++lane)
+                    blend_pixel(x + lane);
         }
+#endif
+        for (; x < last; ++x)
+            blend_pixel(x);
     };
     for (int y = t; y < b; ++y) {
         if (!outline || y == top || y == bottom - 1) {
@@ -1133,16 +1304,18 @@ void Canvas::circle(double x, double y, double radius, bool outline) {
     const bool large_circle = radius > 8192 || std::fabs(x) > 1e9 || std::fabs(y) > 1e9;
     const auto outer = radius * radius;
     const auto inner = std::max(0.0, radius - 1) * std::max(0.0, radius - 1);
+    if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
+        return;
     for (int py = top; py < bottom; ++py)
         for (int px = left; px < right; ++px) {
             if (large_circle) {
                 const double distance = std::hypot(px - x, py - y);
                 if (distance <= radius && (!outline || distance >= std::max(0.0, radius - 1)))
-                    plot(px, py);
+                    plot_in_bounds(px, py);
             } else {
                 const auto distance = (px - x) * (px - x) + (py - y) * (py - y);
                 if (distance <= outer && (!outline || distance >= inner))
-                    plot(px, py);
+                    plot_in_bounds(px, py);
             }
         }
 }
@@ -1180,19 +1353,25 @@ void Canvas::ellipse(double x1, double y1, double x2, double y2, bool outline) {
         static_cast<int>(std::clamp(std::ceil(bottom_edge), 0.0, static_cast<double>(height_)));
     const double inner_x = std::max(0.0, radius_x - 1.0);
     const double inner_y = std::max(0.0, radius_y - 1.0);
+    const double inverse_radius_x = 1.0 / radius_x;
+    const double inverse_radius_y = 1.0 / radius_y;
+    const double inverse_inner_x = inner_x > 0 ? 1.0 / inner_x : 0.0;
+    const double inverse_inner_y = inner_y > 0 ? 1.0 / inner_y : 0.0;
+    if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
+        return;
     for (int y = top; y < bottom; ++y) {
         for (int x = left; x < right; ++x) {
-            const double dx = (x + 0.5 - center_x) / radius_x;
-            const double dy = (y + 0.5 - center_y) / radius_y;
+            const double dx = (x + 0.5 - center_x) * inverse_radius_x;
+            const double dy = (y + 0.5 - center_y) * inverse_radius_y;
             if (dx * dx + dy * dy > 1)
                 continue;
             if (outline && inner_x > 0 && inner_y > 0) {
-                const double ix = (x + 0.5 - center_x) / inner_x;
-                const double iy = (y + 0.5 - center_y) / inner_y;
+                const double ix = (x + 0.5 - center_x) * inverse_inner_x;
+                const double iy = (y + 0.5 - center_y) * inverse_inner_y;
                 if (ix * ix + iy * iy < 1)
                     continue;
             }
-            plot(x, y);
+            plot_in_bounds(x, y);
         }
     }
 }
@@ -1240,25 +1419,33 @@ void Canvas::round_rectangle(
     const int top = static_cast<int>(std::clamp(std::floor(top_edge), 0.0, static_cast<double>(height_)));
     const int bottom =
         static_cast<int>(std::clamp(std::ceil(bottom_edge), 0.0, static_cast<double>(height_)));
-    const auto contains = [&](double px, double py, double inset) {
+    if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
+        return;
+    const auto make_contains = [&](double inset) {
         const double rx = std::max(0.0, x_radius - inset);
         const double ry = std::max(0.0, y_radius - inset);
         const double half_w = std::max(0.0, half_width - inset);
         const double half_h = std::max(0.0, half_height - inset);
-        if (std::fabs(px - center_x) > half_w || std::fabs(py - center_y) > half_h)
-            return false;
-        if (rx == 0 || ry == 0)
-            return true;
-        const double corner_x = std::max(0.0, std::fabs(px - center_x) - (half_w - rx));
-        const double corner_y = std::max(0.0, std::fabs(py - center_y) - (half_h - ry));
-        const double dx = corner_x / rx, dy = corner_y / ry;
-        return dx * dx + dy * dy <= 1;
+        const double inverse_rx = rx > 0 ? 1.0 / rx : 0.0;
+        const double inverse_ry = ry > 0 ? 1.0 / ry : 0.0;
+        return [=](double px, double py) {
+            if (std::fabs(px - center_x) > half_w || std::fabs(py - center_y) > half_h)
+                return false;
+            if (rx == 0 || ry == 0)
+                return true;
+            const double corner_x = std::max(0.0, std::fabs(px - center_x) - (half_w - rx));
+            const double corner_y = std::max(0.0, std::fabs(py - center_y) - (half_h - ry));
+            const double dx = corner_x * inverse_rx, dy = corner_y * inverse_ry;
+            return dx * dx + dy * dy <= 1;
+        };
     };
+    const auto contains_outer = make_contains(0);
+    const auto contains_inner = make_contains(1);
     for (int y = top; y < bottom; ++y)
         for (int x = left; x < right; ++x) {
             const double px = x + 0.5, py = y + 0.5;
-            if (contains(px, py, 0) && (!outline || !contains(px, py, 1)))
-                plot(x, y);
+            if (contains_outer(px, py) && (!outline || !contains_inner(px, py)))
+                plot_in_bounds(x, y);
         }
 }
 void Canvas::line(double x1, double y1, double x2, double y2, double width) {
@@ -1304,18 +1491,60 @@ void Canvas::line(double x1, double y1, double x2, double y2, double width) {
         return;
     }
 #endif
+    if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
+        return;
     const double dx = x2 - x1, dy = y2 - y1;
     const auto steps = static_cast<std::size_t>(std::ceil(std::max(std::fabs(dx), std::fabs(dy))));
     if (steps > 1'000'000)
         throw Error(ErrorKind::unsupported, "line exceeds rasterization limit");
     const double radius = (width - 1) / 2;
-    for (std::size_t i = 0; i <= steps; ++i) {
-        const double t = steps ? static_cast<double>(i) / steps : 0;
-        const double x = x1 + dx * t, y = y1 + dy * t;
-        if (radius < 0.5)
-            plot(static_cast<int>(std::lround(x)), static_cast<int>(std::lround(y)));
-        else
-            circle(x, y, radius, false);
+    if (radius < 0.5) {
+        for (std::size_t i = 0; i <= steps; ++i) {
+            const double t = steps ? static_cast<double>(i) / steps : 0;
+            const double x = x1 + dx * t, y = y1 + dy * t;
+            const int px = static_cast<int>(std::lround(x)), py = static_cast<int>(std::lround(y));
+            if (px >= 0 && py >= 0 && px < width_ && py < height_)
+                plot_in_bounds(px, py);
+        }
+        return;
+    }
+
+    // Rasterize the line as one capsule. The previous implementation drew a
+    // filled circle at every step, revisiting most covered pixels roughly
+    // `width` times and blending those pixels repeatedly.
+    const double min_x = std::min(x1, x2) - radius;
+    const double max_x = std::max(x1, x2) + radius;
+    const double min_y = std::min(y1, y2) - radius;
+    const double max_y = std::max(y1, y2) + radius;
+    const int left = static_cast<int>(std::clamp(std::floor(min_x), 0.0, static_cast<double>(width_)));
+    const int right = static_cast<int>(std::clamp(std::ceil(max_x), 0.0, static_cast<double>(width_)));
+    const int top = static_cast<int>(std::clamp(std::floor(min_y), 0.0, static_cast<double>(height_)));
+    const int bottom = static_cast<int>(std::clamp(std::ceil(max_y), 0.0, static_cast<double>(height_)));
+    const double length_squared = dx * dx + dy * dy;
+    const double radius_squared = radius * radius;
+    const double cross_limit = radius_squared * length_squared;
+    for (int y = top; y < bottom; ++y) {
+        const double start_from_x = left + 0.5 - x1;
+        const double from_y = y + 0.5 - y1;
+        double projection = start_from_x * dx + from_y * dy;
+        double cross = start_from_x * dy - from_y * dx;
+        for (int x = left; x < right; ++x) {
+            bool covered;
+            if (length_squared == 0 || projection <= 0) {
+                const double from_x = x + 0.5 - x1;
+                covered = from_x * from_x + from_y * from_y <= radius_squared;
+            } else if (projection >= length_squared) {
+                const double end_x = x + 0.5 - x2;
+                const double end_y = y + 0.5 - y2;
+                covered = end_x * end_x + end_y * end_y <= radius_squared;
+            } else {
+                covered = cross * cross <= cross_limit;
+            }
+            if (covered)
+                plot_in_bounds(x, y);
+            projection += dx;
+            cross += dy;
+        }
     }
 }
 void Canvas::triangle(double x1, double y1, double x2, double y2, double x3, double y3, bool outline) {
@@ -1361,15 +1590,27 @@ void Canvas::triangle(double x1, double y1, double x2, double y2, double x3, dou
         static_cast<int>(std::clamp(std::floor(std::min({y1, y2, y3})), 0.0, static_cast<double>(height_)));
     const int bottom =
         static_cast<int>(std::clamp(std::ceil(std::max({y1, y2, y3})), 0.0, static_cast<double>(height_)));
-    for (int y = top; y < bottom; ++y)
+    if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
+        return;
+    const double step_x_a = y2 - y3, step_x_b = y3 - y1, step_x_c = y1 - y2;
+    const double step_y_a = x3 - x2, step_y_b = x1 - x3, step_y_c = x2 - x1;
+    const double first_px = left + 0.5, first_py = top + 0.5;
+    double row_a = (x2 - first_px) * (y3 - first_py) - (y2 - first_py) * (x3 - first_px);
+    double row_b = (x3 - first_px) * (y1 - first_py) - (y3 - first_py) * (x1 - first_px);
+    double row_c = (x1 - first_px) * (y2 - first_py) - (y1 - first_py) * (x2 - first_px);
+    for (int y = top; y < bottom; ++y) {
+        double a = row_a, b = row_b, c = row_c;
         for (int x = left; x < right; ++x) {
-            const double px = x + 0.5, py = y + 0.5;
-            const double a = (x2 - px) * (y3 - py) - (y2 - py) * (x3 - px);
-            const double b = (x3 - px) * (y1 - py) - (y3 - py) * (x1 - px);
-            const double c = (x1 - px) * (y2 - py) - (y1 - py) * (x2 - px);
             if ((a >= 0 && b >= 0 && c >= 0) || (a <= 0 && b <= 0 && c <= 0))
-                plot(x, y);
+                plot_in_bounds(x, y);
+            a += step_x_a;
+            b += step_x_b;
+            c += step_x_c;
         }
+        row_a += step_y_a;
+        row_b += step_y_b;
+        row_c += step_y_c;
+    }
 }
 void Canvas::text(double x, double y, std::string_view value) {
     text(x, y, value, 1, 1, 0, 0, 0);
@@ -1408,6 +1649,8 @@ void Canvas::text(
     const double cosine = std::cos(radians), sine = std::sin(radians);
     const double scale = coordinate_scale_;
     const double anchor_x = x * scale, anchor_y = y * scale;
+    const double inverse_width = sine != 0 ? 1.0 / (sx * scale) : 0;
+    const double inverse_height = sine != 0 ? 1.0 / (sy * scale) : 0;
 #if REGML_PS2
     const bool ps2_text_atlas = gpu_ && ps2_gpu_text_atlas_ready();
     std::array<Ps2TextGlyph, 64> ps2_text_batch{};
@@ -1460,52 +1703,13 @@ void Canvas::text(
             continue;
         }
 #endif
-        const auto bitmap = font_bitmap(static_cast<unsigned char>(c));
-        struct GlyphRectangle {
-            int left, top, right, bottom;
-        };
-        std::array<GlyphRectangle, 21> rectangles{};
-        std::array<int, 3> active_rectangles{};
-        int rectangle_count = 0, active_count = 0;
-        for (int row = 0; row < 7; ++row) {
-            std::array<int, 3> next_active{};
-            int next_count = 0;
-            const auto bits = bitmap[static_cast<std::size_t>(row)];
-            for (int column = 0; column < 5;) {
-                while (column < 5 && (bits & (1U << static_cast<unsigned>(4 - column))) == 0)
-                    ++column;
-                const int first = column;
-                while (column < 5 && (bits & (1U << static_cast<unsigned>(4 - column))) != 0)
-                    ++column;
-                if (first == column)
-                    continue;
-
-                int rectangle_index = -1;
-                for (int i = 0; i < active_count; ++i) {
-                    const int candidate = active_rectangles[static_cast<std::size_t>(i)];
-                    auto &active = rectangles[static_cast<std::size_t>(candidate)];
-                    if (active.left == first && active.right == column) {
-                        rectangle_index = candidate;
-                        active.bottom = row + 1;
-                        break;
-                    }
-                }
-                if (rectangle_index < 0) {
-                    rectangle_index = rectangle_count++;
-                    rectangles[static_cast<std::size_t>(rectangle_index)] = {first, row, column, row + 1};
-                }
-                next_active[static_cast<std::size_t>(next_count++)] = rectangle_index;
-            }
-            active_rectangles = next_active;
-            active_count = next_count;
-        }
-
-        for (int i = 0; i < rectangle_count; ++i) {
-            const auto &shape = rectangles[static_cast<std::size_t>(i)];
-            const double left = pen_x + shape.left * font_scale_;
-            const double right = pen_x + shape.right * font_scale_;
-            const double top = pen_y + shape.top * font_scale_;
-            const double bottom = pen_y + shape.bottom * font_scale_;
+        const auto &shape = glyph_shape(static_cast<unsigned char>(c));
+        for (int i = 0; i < shape.count; ++i) {
+            const auto &rectangle_shape = shape.rectangles[static_cast<std::size_t>(i)];
+            const double left = pen_x + rectangle_shape.left * font_scale_;
+            const double right = pen_x + rectangle_shape.right * font_scale_;
+            const double top = pen_y + rectangle_shape.top * font_scale_;
+            const double bottom = pen_y + rectangle_shape.bottom * font_scale_;
             if (sine == 0) {
                 rectangle(x + left * sx, y + top * sy, x + right * sx, y + bottom * sy, false);
                 continue;
@@ -1537,8 +1741,8 @@ void Canvas::text(
             const int x1 = static_cast<int>(std::clamp(std::ceil(max_x), 0.0, static_cast<double>(width_)));
             const int y0 = static_cast<int>(std::clamp(std::floor(min_y), 0.0, static_cast<double>(height_)));
             const int y1 = static_cast<int>(std::clamp(std::ceil(max_y), 0.0, static_cast<double>(height_)));
-            const double inverse_width = 1.0 / (sx * scale);
-            const double inverse_height = 1.0 / (sy * scale);
+            if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
+                continue;
             for (int py = y0; py < y1; ++py)
                 for (int px = x0; px < x1; ++px) {
                     const double dx = px + 0.5 - anchor_x;
@@ -1546,7 +1750,7 @@ void Canvas::text(
                     const double local_x = (dx * cosine - dy * sine) * inverse_width;
                     const double local_y = (dx * sine + dy * cosine) * inverse_height;
                     if (local_x >= left && local_x < right && local_y >= top && local_y < bottom)
-                        plot(px, py);
+                        plot_in_bounds(px, py);
                 }
         }
         pen_x += 6 * font_scale_;
@@ -1601,39 +1805,48 @@ void Canvas::debug_text_overlay(std::span<const std::string_view> lines) {
 }
 std::uint64_t Canvas::hash() const noexcept {
     std::uint64_t value = 14695981039346656037ULL;
-#if REGML_WII
-    if (gpu_) {
-        for (int y = 0; y < height_; ++y)
-            for (int x = 0; x < width_; ++x) {
-                const auto rgba = wii_gpu_pixel(x, y);
-                for (unsigned shift : {0U, 8U, 16U, 24U}) {
-                    value ^= (rgba >> shift) & 255;
-                    value *= 1099511628211ULL;
-                }
-            }
-        return value;
-    }
-#elif REGML_PS2
-    if (gpu_) {
-        for (int y = 0; y < height_; ++y)
-            for (int x = 0; x < width_; ++x) {
-                const auto rgba = ps2_gpu_pixel(x, y);
-                for (unsigned shift : {0U, 8U, 16U, 24U}) {
-                    value ^= (rgba >> shift) & 255;
-                    value *= 1099511628211ULL;
-                }
-            }
-        return value;
-    }
-#endif
-    for (auto pixel : pixels_)
+    const auto add_pixel = [&](std::uint32_t pixel) {
         for (unsigned shift : {0U, 8U, 16U, 24U}) {
             value ^= (pixel >> shift) & 255;
             value *= 1099511628211ULL;
         }
+    };
+    std::span<const std::uint32_t> source = pixels_;
+    if (gpu_) {
+        bool readback_succeeded = false;
+        try {
+            readback_scratch_.resize(static_cast<std::size_t>(width_) * height_);
+            readback_succeeded = gpu_readback(readback_scratch_);
+        } catch (...) {
+        }
+        if (readback_succeeded) {
+            source = readback_scratch_;
+        } else {
+#if REGML_WII
+            for (int y = 0; y < height_; ++y)
+                for (int x = 0; x < width_; ++x)
+                    add_pixel(wii_gpu_pixel(x, y));
+            return value;
+#elif REGML_PS2
+            for (int y = 0; y < height_; ++y)
+                for (int x = 0; x < width_; ++x)
+                    add_pixel(ps2_gpu_pixel(x, y));
+            return value;
+#endif
+        }
+    }
+    for (auto pixel : source)
+        add_pixel(pixel);
     return value;
 }
 void Canvas::save_bmp(const std::filesystem::path &path) const {
+    std::span<const std::uint32_t> source = pixels_;
+    if (gpu_) {
+        readback_scratch_.resize(static_cast<std::size_t>(width_) * height_);
+        if (!gpu_readback(readback_scratch_))
+            throw Error(ErrorKind::io, "GPU framebuffer readback failed while saving screenshot");
+        source = readback_scratch_;
+    }
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     if (!file)
         throw Error(ErrorKind::io, "cannot open screenshot: " + path.string());
@@ -1664,8 +1877,9 @@ void Canvas::save_bmp(const std::filesystem::path &path) const {
     write32(0);
     write32(0);
     for (int y = height_ - 1; y >= 0; --y) {
+        const auto *row = source.data() + static_cast<std::size_t>(y) * width_;
         for (int x = 0; x < width_; ++x) {
-            const auto p = pixel(x, y);
+            const auto p = row[x];
             file.put(static_cast<char>(p & 255));
             file.put(static_cast<char>((p >> 8) & 255));
             file.put(static_cast<char>((p >> 16) & 255));
@@ -1678,6 +1892,13 @@ void Canvas::save_bmp(const std::filesystem::path &path) const {
         throw Error(ErrorKind::io, "screenshot write failed");
 }
 void Canvas::save_png(const std::filesystem::path &path) const {
+    std::span<const std::uint32_t> source = pixels_;
+    if (gpu_) {
+        readback_scratch_.resize(static_cast<std::size_t>(width_) * height_);
+        if (!gpu_readback(readback_scratch_))
+            throw Error(ErrorKind::io, "GPU framebuffer readback failed while saving PNG");
+        source = readback_scratch_;
+    }
     png_image image{};
     image.version = PNG_IMAGE_VERSION;
     image.width = static_cast<png_uint_32>(width_);
@@ -1688,7 +1909,7 @@ void Canvas::save_png(const std::filesystem::path &path) const {
         image.format = PNG_FORMAT_ARGB;
     const auto filename = path.string();
     if (!png_image_write_to_file(&image, filename.c_str(), 0,
-                                 reinterpret_cast<const unsigned char *>(pixels_.data()), 0, nullptr))
+                                 reinterpret_cast<const unsigned char *>(source.data()), 0, nullptr))
         throw Error(ErrorKind::io, "screenshot PNG write failed" +
                                        (image.message[0] ? ": " + std::string(image.message) : ""));
     png_image_free(&image);

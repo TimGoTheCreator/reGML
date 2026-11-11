@@ -554,6 +554,8 @@ if(BUILD_TESTING AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_PS4 AND NOT 
     target_link_libraries(regml_audio_test PRIVATE regml_engine)
     add_executable(regml_assets_test tests/assets_integration.cpp)
     target_link_libraries(regml_assets_test PRIVATE regml_engine)
+    add_executable(regml_canvas_benchmark tests/canvas_benchmark.cpp)
+    target_link_libraries(regml_canvas_benchmark PRIVATE regml_engine)
     if(REGML_UNDERTALE_DATA)
         add_test(NAME undertale_audio COMMAND regml_audio_test "${REGML_UNDERTALE_DATA}")
         add_test(NAME undertale_collision_masks COMMAND regml_assets_test "${REGML_UNDERTALE_DATA}")

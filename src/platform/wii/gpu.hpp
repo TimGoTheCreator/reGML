@@ -22,6 +22,7 @@ bool wii_gpu_cached_image(int width,
                           double opacity,
                           std::uint64_t key);
 std::uint32_t wii_gpu_pixel(int x, int y);
+bool wii_gpu_readback(int width, int height, std::span<std::uint32_t> pixels) noexcept;
 void wii_gpu_image(std::span<const std::uint32_t> pixels,
                    int stride,
                    int left,
