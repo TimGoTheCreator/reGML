@@ -5130,6 +5130,22 @@ struct GameSession::Impl {
             current_canvas().color(previous_color);
             current_canvas().alpha(previous_alpha);
         };
+        // Tilemap floor drawing calls these lookups repeatedly. Handle them
+        // before the grouped builtin dispatcher so they cannot be skipped by
+        // a stale cached dispatch group.
+        if (name == "tilemap_get_cell_x_at_pixel" || name == "tilemap_get_cell_y_at_pixel") {
+            auto *layer = find_tilemap_layer(static_cast<int>(n(0)));
+            if (!layer || layer->tile_width <= 0 || layer->tile_height <= 0)
+                return std::int32_t{0};
+            auto &offset = tile_layer_offsets[layer->id];
+            const double map_x = layer->x - layer->origin_x + offset.first;
+            const double map_y = layer->y - layer->origin_y + offset.second;
+            const bool x_axis = name == "tilemap_get_cell_x_at_pixel";
+            const double pixel = n(x_axis ? 1 : 2);
+            const double map = x_axis ? map_x : map_y;
+            const int tile_size = x_axis ? layer->tile_width : layer->tile_height;
+            return static_cast<std::int32_t>(std::floor((pixel - map) / tile_size));
+        }
         const auto cached_builtin = builtin_dispatch_groups.find(name);
         std::optional<std::uint8_t> cached_builtin_group;
         if (cached_builtin != builtin_dispatch_groups.end())
@@ -8816,7 +8832,6 @@ struct GameSession::Impl {
             if (name == "tilemap_get_frame")
                 return 0.0;
             if (name == "tilemap_get" || name == "tilemap_get_at_pixel" ||
-                name == "tilemap_get_cell_x_at_pixel" || name == "tilemap_get_cell_y_at_pixel" ||
                 name == "tilemap_get_tileset" || name == "tilemap_get_width" ||
                 name == "tilemap_get_height" || name == "tilemap_get_tile_width" ||
                 name == "tilemap_get_tile_height" || name == "tilemap_get_x" || name == "tilemap_get_y" ||
@@ -8862,10 +8877,6 @@ struct GameSession::Impl {
                                                               : Value{std::int32_t{0}};
                     cell_x = static_cast<int>(std::floor((n(1) - map_x) / layer->tile_width));
                     cell_y = static_cast<int>(std::floor((n(2) - map_y) / layer->tile_height));
-                    if (name == "tilemap_get_cell_x_at_pixel")
-                        return std::int32_t{cell_x};
-                    if (name == "tilemap_get_cell_y_at_pixel")
-                        return std::int32_t{cell_y};
                 }
                 if (cell_x < 0 || cell_y < 0 || cell_x >= layer->tilemap_width ||
                     cell_y >= layer->tilemap_height)
