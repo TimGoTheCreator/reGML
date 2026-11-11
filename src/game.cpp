@@ -757,7 +757,9 @@ struct GameSession::Impl {
     std::vector<int> order, scripts, global_initializers;
     std::unordered_map<std::string_view, int, VariableStoreHash, std::equal_to<>> code_ids;
     std::unordered_map<std::string, int, VariableStoreHash, std::equal_to<>> script_names;
-    std::unordered_map<std::string, std::uint8_t, VariableStoreHash, std::equal_to<>> builtin_dispatch_groups;
+    // Names refer to the persistent linked-package and GMRT function tables.
+    std::unordered_map<std::string_view, std::uint8_t, VariableStoreHash, std::equal_to<>>
+        builtin_dispatch_groups;
     std::vector<InstancePtr> instances;
     std::vector<std::vector<std::size_t>> object_instance_indices;
     std::unordered_map<int, std::size_t> instance_id_indices;
@@ -5197,11 +5199,11 @@ struct GameSession::Impl {
                 return std::nullopt;
             if (auto handled = dispatcher()) {
                 if (!cached_builtin_group)
-                    builtin_dispatch_groups.try_emplace(std::string(name), group);
+                    builtin_dispatch_groups.try_emplace(name, group);
                 return std::move(handled);
             }
             if (cached_builtin_group) {
-                builtin_dispatch_groups.erase(std::string(name));
+                builtin_dispatch_groups.erase(name);
                 cached_builtin_group.reset();
             }
             return std::nullopt;
