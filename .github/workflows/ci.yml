@@ -17,7 +17,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libpng-dev libvorbis-dev libsdl2-dev
+            build-essential cmake pkg-config libpng-dev libvorbis-dev libsdl2-dev libbz2-dev
       - name: Configure and build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON
@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: vcpkg install libpng:x64-windows libvorbis:x64-windows sdl2:x64-windows
+        run: vcpkg install bzip2:x64-windows libpng:x64-windows libvorbis:x64-windows sdl2:x64-windows
       - name: Configure and build
         run: |
           cmake -S . -B build -A x64 `
@@ -90,10 +90,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: brew install cmake libpng libvorbis sdl2 pkg-config
+        run: brew install bzip2 cmake libpng libvorbis sdl2 pkg-config
       - name: Configure and build
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON -DBZip2_ROOT="$(brew --prefix bzip2)"
           cmake --build build --config Release --parallel
       - name: Run tests
         run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software ctest --test-dir build --output-on-failure -C Release
