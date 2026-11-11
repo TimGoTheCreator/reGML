@@ -3686,6 +3686,11 @@ struct GameSession::Impl {
                     else if (engine.contains(name) || (kind == 0xa0 && opcode == Opcode::push_builtin &&
                                                        (!self || !self->vars.contains(name))))
                         store = &engine;
+                    // Global-script initializers run without an instance. Their implicit
+                    // self-scope writes still initialize globals (including script
+                    // function values such as `console`).
+                    else if (scope == -1 && !self)
+                        store = &globals;
                     else if ((scope == -1 || scope == -6) && self)
                         store = &self->vars;
                     else if (scope == -2 && other)
@@ -3949,8 +3954,7 @@ struct GameSession::Impl {
                     else if (ins.type2() == DataType::real)
                         push(value_number(v), ins.type2());
                     else if (ins.type2() == DataType::boolean)
-                        push(!std::holds_alternative<std::monostate>(v) && value_number(v) > 0.5,
-                             ins.type2());
+                        push(value_truthy(v), ins.type2());
                     else
                         push(v, ins.type2());
                     break;
@@ -4226,7 +4230,7 @@ struct GameSession::Impl {
                     break;
                 case Opcode::branch_true:
                 case Opcode::branch_false: {
-                    const bool condition = value_number(pop()) > 0.5;
+                    const bool condition = value_truthy(pop());
                     if (condition == (opcode == Opcode::branch_true))
                         next = ins.branch_target_value();
                     break;
@@ -12271,9 +12275,13 @@ struct GameSession::Impl {
                                 event(i, 2, a);
                         }
                     }
-            for (auto &i : snapshot)
-                if (!i->deactivated && !instance_motion_paused(*i))
-                    event(i, 3, 0);
+            for (auto &i : snapshot) {
+                if (i->deactivated)
+                    continue;
+                if (!i->alive || instance_motion_paused(*i))
+                    continue;
+                event(i, 3, 0);
+            }
             for (auto &i : snapshot)
                 if (i->alive && !i->deactivated) {
                     if (instance_motion_paused(*i))
@@ -12526,9 +12534,13 @@ struct GameSession::Impl {
                 }
             }
             allocation_stage = "end-step events";
-            for (const auto &i : snapshot)
-                if (!instance_motion_paused(*i))
-                    event(i, 3, 2);
+            for (const auto &i : snapshot) {
+                if (i->deactivated)
+                    continue;
+                if (!i->alive || instance_motion_paused(*i))
+                    continue;
+                event(i, 3, 2);
+            }
             allocation_stage = "particle updates";
             std::vector<std::array<int, 3>> active_particle_streams;
             active_particle_streams.reserve(particle_emitters.size());

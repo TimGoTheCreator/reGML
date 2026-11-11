@@ -1766,12 +1766,14 @@ void GameAssets::blit(Canvas &canvas,
                 page.pixels, page.width, std::span<const int>(scaled_x_.data(), sample_width),
                 std::span<const int>(scaled_y_.data(), sample_height), left, top))
             return;
-        // The repeated source-x runs are safe for binary transparent glyphs as
-        // well as partially transparent images. In particular, Wii U text can
-        // be enlarged during screen transitions; drawing each repeated pixel
-        // through rgba_pixel_tinted turns that into millions of tiny calls.
-        const bool spans = std::fabs(sx) >= 2;
-        if (spans) {
+        // Inspect the actual nearest-neighbor map: atlas trim ratios can change
+        // the repeat count. Short runs stay in the four-pixel compositor;
+        // longer runs reuse one transformed source color across the span.
+        const auto source_x_map = std::span<const int>(scaled_x_.data(), sample_width);
+        const bool repeated_x =
+            std::adjacent_find(source_x_map.begin(), source_x_map.end()) != source_x_map.end();
+        const bool pixel_shader_active = canvas.pixel_shader_active();
+        if (repeated_x && !pixel_shader_active) {
             scaled_runs_.clear();
             for (int dx = left; dx < right;) {
                 const int ux = scaled_x_[static_cast<std::size_t>(dx - left)];
@@ -1782,6 +1784,11 @@ void GameAssets::blit(Canvas &canvas,
                 dx = end;
             }
         }
+        const bool spans = !pixel_shader_active && repeated_x && scaled_runs_.size() <= sample_width / 4;
+        if (!spans && canvas.blit_rgba_scaled_tinted(page.pixels, page.width, source_x_map,
+                                                     std::span<const int>(scaled_y_.data(), sample_height),
+                                                     left, top, tint, alpha))
+            return;
         int previous_source_y = -1;
         const double opacity = std::clamp(alpha, 0.0, 1.0);
         for (int dy = top; dy < bottom; ++dy) {

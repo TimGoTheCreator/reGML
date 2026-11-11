@@ -52,6 +52,7 @@ class Canvas {
         pixel_shader_ = shader;
         pixel_shader_context_ = context;
     }
+    [[nodiscard]] bool pixel_shader_active() const noexcept { return pixel_shader_ != nullptr; }
     void font(int id);
     void rectangle(double x1, double y1, double x2, double y2, bool outline);
     void circle(double x, double y, double radius, bool outline);
@@ -92,6 +93,14 @@ class Canvas {
                                        std::span<const int> source_y,
                                        int destination_x,
                                        int destination_y) noexcept;
+    bool blit_rgba_scaled_tinted(std::span<const std::uint32_t> source,
+                                 int source_width,
+                                 std::span<const int> source_x,
+                                 std::span<const int> source_y,
+                                 int destination_x,
+                                 int destination_y,
+                                 unsigned tint,
+                                 double opacity) noexcept;
     void text(double x, double y, std::string_view text);
     void text(double x,
               double y,

@@ -101,12 +101,7 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
             return static_cast<std::int32_t>(value);
         };
         auto truth = [&](const Value &value) -> bool {
-            if (const auto *integer = std::get_if<std::int32_t>(&value))
-                return *integer != 0;
-            if (const auto *boolean = std::get_if<bool>(&value))
-                return *boolean;
-            throw Error(ErrorKind::unsupported, "branch condition requires bool/int32 in the numeric VM",
-                        absolute);
+            return value_truthy(value);
         };
         auto variable_store = [&](const VariableBinding &binding) -> VariableStore & {
             switch (binding.scope) {
@@ -436,6 +431,32 @@ double value_number(const Value &value) {
     else if (std::holds_alternative<StructPtr>(value))
         type = "struct";
     throw Error(ErrorKind::vm, std::string("numeric argument requires a scalar number (got ") + type + ")");
+}
+bool value_truthy(const Value &value) {
+    if (const auto *integer = std::get_if<std::int32_t>(&value))
+        // GameMaker's legacy noone handle is represented by -4. When an
+        // instance-returning function is used directly as a condition, noone
+        // must behave as false even though its stored integer is nonzero.
+        return *integer != 0 && *integer != -4;
+    if (const auto *real = std::get_if<double>(&value))
+        return *real != 0.0;
+    if (const auto *boolean = std::get_if<bool>(&value))
+        return *boolean;
+    if (const auto *string = std::get_if<std::string>(&value))
+        return !string->empty();
+    if (const auto *string = std::get_if<PackageString>(&value))
+        return !string->value.empty();
+    if (std::holds_alternative<std::monostate>(value))
+        return false;
+    if (std::holds_alternative<FunctionReference>(value))
+        return true;
+    if (const auto *callable = std::get_if<CallablePtr>(&value))
+        return static_cast<bool>(*callable);
+    if (const auto *array = std::get_if<ArrayPtr>(&value))
+        return static_cast<bool>(*array);
+    if (const auto *structure = std::get_if<StructPtr>(&value))
+        return static_cast<bool>(*structure);
+    return false;
 }
 std::vector<std::uint8_t> demo_bytecode() {
     constexpr std::uint32_t words[] = {0x840f0007, 0x840f0005, 0x0d220000,
