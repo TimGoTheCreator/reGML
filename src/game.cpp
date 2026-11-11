@@ -743,8 +743,6 @@ struct GameSession::Impl {
     std::vector<CollisionGridEntry> collision_grid_entries;
     std::vector<std::size_t> collision_grid_large_instances, collision_query_indices;
     std::vector<std::uint32_t> collision_candidate_stamps;
-    std::vector<bool> collision_targetable_objects;
-    bool collision_targetable_objects_ready = false;
     std::size_t collision_target_instance_count = 0;
     std::uint32_t collision_candidate_generation = 0;
     bool collision_grid_dirty = true;
@@ -2194,62 +2192,6 @@ struct GameSession::Impl {
                     return true;
         return false;
     }
-    void prepare_collision_target_objects() {
-        if (collision_targetable_objects_ready && collision_targetable_objects.size() == objects.size())
-            return;
-
-        std::vector<bool> event_target_objects(objects.size(), false);
-        for (const auto &object : objects)
-            if (object.has_collision_events)
-                for (const auto &owner : object.event_owners)
-                    if (owner.key.first == 4 && owner.key.second >= 0 &&
-                        static_cast<std::size_t>(owner.key.second) < objects.size())
-                        event_target_objects[static_cast<std::size_t>(owner.key.second)] = true;
-
-        std::vector<std::uint8_t> targetable_state(objects.size(), 0);
-        std::vector<std::uint32_t> visit_stamps(objects.size(), 0);
-        std::vector<std::size_t> path;
-        path.reserve(objects.size());
-        std::uint32_t generation = 0;
-        for (std::size_t object = 0; object < objects.size(); ++object) {
-            if (targetable_state[object] != 0)
-                continue;
-            if (++generation == 0) {
-                std::fill(visit_stamps.begin(), visit_stamps.end(), 0);
-                ++generation;
-            }
-            path.clear();
-            bool targetable = false;
-            int ancestor = static_cast<int>(object);
-            for (std::size_t guard = 0; guard < objects.size(); ++guard) {
-                if (ancestor < 0 || static_cast<std::size_t>(ancestor) >= objects.size())
-                    break;
-                const auto index = static_cast<std::size_t>(ancestor);
-                if (event_target_objects[index]) {
-                    targetable = true;
-                    break;
-                }
-                if (targetable_state[index] != 0) {
-                    targetable = targetable_state[index] == 1;
-                    break;
-                }
-                if (visit_stamps[index] == generation)
-                    break;
-                visit_stamps[index] = generation;
-                path.push_back(index);
-                const int parent = objects[index].parent;
-                if (parent == ancestor)
-                    break;
-                ancestor = parent;
-            }
-            for (const auto index : path)
-                targetable_state[index] = targetable ? 1 : 2;
-        }
-        collision_targetable_objects.resize(objects.size());
-        for (std::size_t object = 0; object < objects.size(); ++object)
-            collision_targetable_objects[object] = targetable_state[object] == 1;
-        collision_targetable_objects_ready = true;
-    }
     static std::uint64_t collision_cell_key(std::int32_t x, std::int32_t y) noexcept {
         return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(x)) << 32) |
                static_cast<std::uint32_t>(y);
@@ -2442,15 +2384,13 @@ struct GameSession::Impl {
             ++collision_geometry_generation;
     }
     void rebuild_collision_grid() {
-        prepare_collision_target_objects();
         collision_target_instance_count = 0;
         collision_grid_entries.clear();
         collision_grid_large_instances.clear();
         for (std::size_t index = 0; index < collision_instances.size(); ++index) {
             const auto &instance = collision_instances[index];
             if (!instance->alive || instance->object < 0 ||
-                static_cast<std::size_t>(instance->object) >= collision_targetable_objects.size() ||
-                !collision_targetable_objects[static_cast<std::size_t>(instance->object)])
+                static_cast<std::size_t>(instance->object) >= objects.size())
                 continue;
             ++collision_target_instance_count;
             const auto box = bounds(*instance);
