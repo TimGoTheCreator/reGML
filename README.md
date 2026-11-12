@@ -21,13 +21,13 @@ v17 is supported, but not every GameMaker feature is implemented yet. DELTARUNE 
 
 | Platform | Status | Details |
 | :--- | :--- | :--- |
-| **Desktop (SDL)** | Fully Working | Windows, Linux, and macOS. Requires C++20, CMake 3.22+, libpng, zlib, libvorbisfile, and SDL2. |
-| **Nintendo Wii U** | Fully Working | Uses devkitPro and MSYS2 terminal. Outputs `.rpx` and `.wuhb`. |
-| **Web / GX.games** | Fully Supported | Build with the Emscripten SDK installed and activated. Saves are in the browser. |
-| **Android** | Semi-Working | Requires building the Android JNI library. |
-| **PlayStation 4** | Partial | Uses OpenOrbis. Requires .pkg creation manually. |
-| **Nintendo Wii** | Broken | Sometimes doesn't even boot up. Uses libogc for video, input, & audio. SDL2 isn't linked. |
-| **PlayStation 2** | Broken | Sometimes doesn't even boot up. Compiles, but currently out of memory. Catches fire. |
+| **Desktop (SDL)** | Fully Working | Windows, Linux, and macOS / Requires C++20, CMake 3.22+, libpng, zlib, libvorbisfile, and SDL2 |
+| **Nintendo Wii U** | Fully Working | Uses devkitPro and MSYS2 terminal / Outputs `.rpx` and `.wuhb` |
+| **Web / GX.games** | Fully Working | Build with the Emscripten SDK installed and activated (Saves are in the browser!!!) |
+| **Android** | Semi-Working | Requires building the Android JNI library / Still unstable |
+| **PlayStation 4** | Partial | Uses OpenOrbis / Requires manual `.pkg` creation, only builds the payload |
+| **Nintendo Wii** | Broken | Uses libogc and direct GX render / Sometimes doesn't even boot up |
+| **PlayStation 2** | Broken | Sometimes doesn't even boot up / Compiles, but currently runs out of memory |
 
 ## Screenshots
 
