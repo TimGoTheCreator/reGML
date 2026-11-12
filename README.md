@@ -26,8 +26,8 @@ v17 is supported, but not every GameMaker feature is implemented yet. DELTARUNE 
 | **Web / GX.games** | Fully Working | Build with the Emscripten SDK installed and activated (Saves are in the browser!!!) |
 | **Android** | Semi-Working | Requires building the Android JNI library / Still unstable |
 | **PlayStation 4** | Partial | Uses OpenOrbis / Requires manual `.pkg` creation, only builds the payload |
-| **Nintendo Wii** | Broken | Uses libogc and direct GX render / Sometimes doesn't even boot up |
-| **PlayStation 2** | Broken | Sometimes doesn't even boot up / Compiles, but currently runs out of memory |
+| **Nintendo Wii** | Glooby | Uses libogc and direct GX render / Sometimes doesn't even boot up |
+| **PlayStation 2** | Glooby | Sometimes doesn't even boot up / Compiles, but currently runs out of memory |
 
 ## Screenshots
 
