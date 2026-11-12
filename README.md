@@ -17,15 +17,25 @@ Package inspection reads v14-v17 layouts.
 Decoding & disasm cover v15-v17.
 v17 is supported, but not every GameMaker feature is implemented yet. DELTARUNE has been tried.
 
-### Screenshots
+## Platform Status
+
+| Platform | Status | Details |
+| :--- | :--- | :--- |
+| **Desktop (SDL)** | Fully Working | Windows, Linux, and macOS. Requires C++20, CMake 3.22+, libpng, zlib, libvorbisfile, and SDL2. |
+| **Nintendo Wii U** | Fully Working | Uses devkitPro and MSYS2 terminal. Outputs `.rpx` and `.wuhb`. |
+| **Web / GX.games** | Fully Supported | Build with the Emscripten SDK installed and activated. Saves are in the browser. |
+| **Android** | Semi-Working | Requires building the Android JNI library. |
+| **PlayStation 4** | Partial | Uses OpenOrbis. Requires .pkg creation manually. |
+| **Nintendo Wii** | Broken | Sometimes doesn't even boot up. Uses libogc for video, input, & audio. SDL2 isn't linked. |
+| **PlayStation 2** | Broken | Sometimes doesn't even boot up. Compiles, but currently out of memory. Catches fire. |
+
+## Screenshots
 
 | Desktop | Wii U (Cemu) |
 | --- | --- |
 | <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/regml.png" alt="Undertale on desktop" width="420"> | <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/wiiu.png" alt="Undertale on Wii U via Cemu" width="420"> |
 | **Desktop (Asriel)** | **Deltarune (Cemu / Wii U)** |
 | <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/asriel.png" alt="Asriel on desktop" width="420"> | <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/king.png" alt="Deltarune King fight on Wii U via Cemu" width="420"> |
-
----
 
 ## Build
 
@@ -68,7 +78,6 @@ Once the build finishes, upload index.html, index.js, & index.wasm from build/we
 
 The PS4 target uses OpenOrbis and its SDL2 port. Install OpenOrbis, clang, lld, and Ninja. Put PS4 builds of libpng 1.6, zlib, libvorbisfile, Vorbis, and Ogg in the folder you set in REGML_PS4_DEPS_ROOT. If the game uses BZ2-QOI textures, add BZip2 there too. Set OO_PS4_TOOLCHAIN to the OpenOrbis folder. REGML_PS4_SDL2_ROOT can point to a separate SDL-PS4 install, and defaults to OO_PS4_TOOLCHAIN.
 
-
 ```powershell
 cmake -S . -B build/ps4 -G Ninja `
   --toolchain cmake/toolchains/ps4-openorbis.cmake `
@@ -78,7 +87,6 @@ cmake --build build/ps4
 ```
 
 That creates build/ps4/regml.elf, build/ps4/regml.oelf, and build/ps4/eboot.bin. The game pkg loads from /app0/data.win and saves go under /data/reGML/saves. This build only makes the executable payload. However, it doesn't create a .pkg installer.
-
 
 ## Run
 
