@@ -4,6 +4,12 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#ifndef REGML_PS2
+#define REGML_PS2 0
+#endif
+#if !REGML_PS2
+#include <mutex>
+#endif
 #include <vector>
 
 #ifndef REGML_WITH_FFMPEG
@@ -15,6 +21,8 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
+#include <libavutil/channel_layout.h>
+#include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 }
 #endif
@@ -26,6 +34,150 @@ constexpr int status_closed = 0;
 constexpr int status_preparing = 1;
 constexpr int status_playing = 2;
 constexpr int status_paused = 3;
+
+#if REGML_WITH_FFMPEG
+constexpr int video_audio_rate = 48000;
+constexpr std::size_t max_video_audio_frames = static_cast<std::size_t>(video_audio_rate) * 60 * 10;
+
+struct AudioDecodeResources {
+    AVFormatContext *format = nullptr;
+    AVCodecContext *decoder = nullptr;
+    AVPacket *packet = nullptr;
+    AVFrame *frame = nullptr;
+    SwrContext *resampler = nullptr;
+
+    ~AudioDecodeResources() {
+        swr_free(&resampler);
+        av_frame_free(&frame);
+        av_packet_free(&packet);
+        avcodec_free_context(&decoder);
+        avformat_close_input(&format);
+    }
+};
+
+std::vector<float> decode_audio_track(const std::filesystem::path &path) {
+    AudioDecodeResources resources;
+    const auto filename = path.string();
+    if (avformat_open_input(&resources.format, filename.c_str(), nullptr, nullptr) < 0 ||
+        avformat_find_stream_info(resources.format, nullptr) < 0)
+        return {};
+
+    const AVCodec *codec = nullptr;
+    const int stream_index =
+        av_find_best_stream(resources.format, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
+    if (stream_index < 0 || !codec)
+        return {};
+    auto *stream = resources.format->streams[stream_index];
+    resources.decoder = avcodec_alloc_context3(codec);
+    if (!resources.decoder || avcodec_parameters_to_context(resources.decoder, stream->codecpar) < 0 ||
+        avcodec_open2(resources.decoder, codec, nullptr) < 0 || resources.decoder->sample_rate <= 0)
+        return {};
+
+    AVChannelLayout output_layout = AV_CHANNEL_LAYOUT_STEREO;
+    AVChannelLayout input_layout{};
+    if (resources.decoder->ch_layout.nb_channels > 0) {
+        if (av_channel_layout_copy(&input_layout, &resources.decoder->ch_layout) < 0)
+            return {};
+    } else {
+        av_channel_layout_default(&input_layout, 2);
+    }
+    const int resampler_result = swr_alloc_set_opts2(&resources.resampler, &output_layout, AV_SAMPLE_FMT_FLT,
+                                                    video_audio_rate, &input_layout,
+                                                    resources.decoder->sample_fmt,
+                                                    resources.decoder->sample_rate, 0, nullptr);
+    av_channel_layout_uninit(&input_layout);
+    if (resampler_result < 0 || !resources.resampler || swr_init(resources.resampler) < 0)
+        return {};
+
+    resources.packet = av_packet_alloc();
+    resources.frame = av_frame_alloc();
+    if (!resources.packet || !resources.frame)
+        return {};
+
+    std::vector<float> samples;
+    const auto append_frame = [&]() -> bool {
+        if (resources.frame->nb_samples <= 0)
+            return true;
+        const auto delayed = swr_get_delay(resources.resampler, resources.decoder->sample_rate);
+        const auto capacity = av_rescale_rnd(delayed + resources.frame->nb_samples, video_audio_rate,
+                                             resources.decoder->sample_rate, AV_ROUND_UP);
+        const auto current_frames = samples.size() / 2;
+        if (capacity <= 0 || static_cast<std::uint64_t>(capacity) > max_video_audio_frames - current_frames)
+            return false;
+        const auto old_size = samples.size();
+        samples.resize(old_size + static_cast<std::size_t>(capacity) * 2);
+        std::uint8_t *output[] = {reinterpret_cast<std::uint8_t *>(samples.data() + old_size)};
+        const int converted = swr_convert(resources.resampler, output, static_cast<int>(capacity),
+                                          const_cast<const std::uint8_t **>(resources.frame->extended_data),
+                                          resources.frame->nb_samples);
+        if (converted < 0) {
+            samples.resize(old_size);
+            return false;
+        }
+        samples.resize(old_size + static_cast<std::size_t>(converted) * 2);
+        return true;
+    };
+    const auto drain_decoder = [&]() -> int {
+        for (;;) {
+            const int result = avcodec_receive_frame(resources.decoder, resources.frame);
+            if (result == AVERROR(EAGAIN) || result == AVERROR_EOF)
+                return 0;
+            if (result < 0)
+                return -1;
+            const bool converted = append_frame();
+            av_frame_unref(resources.frame);
+            if (!converted)
+                return -1;
+        }
+    };
+
+    for (;;) {
+        const int read_result = av_read_frame(resources.format, resources.packet);
+        if (read_result < 0)
+            break;
+        if (resources.packet->stream_index == stream_index) {
+            int sent = avcodec_send_packet(resources.decoder, resources.packet);
+            if (sent == AVERROR(EAGAIN)) {
+                if (drain_decoder() < 0) {
+                    av_packet_unref(resources.packet);
+                    return {};
+                }
+                sent = avcodec_send_packet(resources.decoder, resources.packet);
+            }
+            av_packet_unref(resources.packet);
+            if ((sent < 0 && sent != AVERROR_EOF) || drain_decoder() < 0)
+                return {};
+        } else {
+            av_packet_unref(resources.packet);
+        }
+    }
+    const int flush_result = avcodec_send_packet(resources.decoder, nullptr);
+    if ((flush_result < 0 && flush_result != AVERROR_EOF && flush_result != AVERROR(EAGAIN)) ||
+        drain_decoder() < 0)
+        return {};
+
+    for (;;) {
+        const auto delayed = swr_get_delay(resources.resampler, video_audio_rate);
+        if (delayed <= 0)
+            break;
+        const auto current_frames = samples.size() / 2;
+        if (static_cast<std::uint64_t>(delayed) > max_video_audio_frames - current_frames)
+            return {};
+        const auto old_size = samples.size();
+        samples.resize(old_size + static_cast<std::size_t>(delayed) * 2);
+        std::uint8_t *output[] = {reinterpret_cast<std::uint8_t *>(samples.data() + old_size)};
+        const int converted = swr_convert(resources.resampler, output, static_cast<int>(delayed), nullptr, 0);
+        if (converted < 0) {
+            samples.resize(old_size);
+            return {};
+        }
+        samples.resize(old_size + static_cast<std::size_t>(converted) * 2);
+        if (converted == 0)
+            break;
+    }
+    return samples;
+}
+#endif
 } // namespace
 
 struct VideoPlayer::Impl {
@@ -44,6 +196,14 @@ struct VideoPlayer::Impl {
     Clock::time_point playback_start{};
     Clock::time_point paused_at{};
     Clock::duration paused_total{};
+#if !REGML_PS2
+    mutable std::mutex audio_mutex;
+#endif
+    std::vector<float> audio_samples;
+    double audio_frame = 0;
+    double audio_volume = 1.0;
+    bool audio_paused = false;
+    bool audio_looping = false;
 
 #if REGML_WITH_FFMPEG
     AVFormatContext *format = nullptr;
@@ -236,6 +396,19 @@ bool VideoPlayer::open(const std::filesystem::path &path) {
         state.frame_interval = 1000.0 * rate.den / rate.num;
     state.open = true;
     state.playback_start = Clock::now();
+    try {
+        auto decoded_audio = decode_audio_track(path);
+#if !REGML_PS2
+        std::lock_guard lock(state.audio_mutex);
+#endif
+        state.audio_samples = std::move(decoded_audio);
+        state.audio_frame = 0;
+        state.audio_paused = false;
+        state.audio_looping = false;
+    } catch (...) {
+        // Video playback remains useful when a container has an unsupported
+        // or malformed audio stream, or when allocating its PCM buffer fails.
+    }
     return true;
 #else
     (void)path;
@@ -259,12 +432,27 @@ void VideoPlayer::close() noexcept {
     impl_->frame_position = 0;
     impl_->rgba.clear();
     impl_->paused_total = Clock::duration{};
+#if !REGML_PS2
+    {
+        std::lock_guard lock(impl_->audio_mutex);
+#endif
+        impl_->audio_samples.clear();
+        impl_->audio_frame = 0;
+        impl_->audio_paused = false;
+        impl_->audio_looping = false;
+#if !REGML_PS2
+    }
+#endif
 }
 
 void VideoPlayer::pause() noexcept {
     if (impl_->open && !impl_->paused && !impl_->finished) {
         impl_->paused = true;
         impl_->paused_at = Clock::now();
+#if !REGML_PS2
+        std::lock_guard lock(impl_->audio_mutex);
+#endif
+        impl_->audio_paused = true;
     }
 }
 
@@ -272,11 +460,64 @@ void VideoPlayer::resume() noexcept {
     if (impl_->open && impl_->paused) {
         impl_->paused_total += Clock::now() - impl_->paused_at;
         impl_->paused = false;
+#if !REGML_PS2
+        std::lock_guard lock(impl_->audio_mutex);
+#endif
+        impl_->audio_paused = false;
     }
 }
 
 void VideoPlayer::enable_loop(bool enabled) noexcept {
     impl_->looping = enabled;
+#if !REGML_PS2
+    std::lock_guard lock(impl_->audio_mutex);
+#endif
+    impl_->audio_looping = enabled;
+}
+
+void VideoPlayer::set_volume(double volume) noexcept {
+    const auto clamped = std::isfinite(volume) ? std::clamp(volume, 0.0, 1.0) : 0.0;
+#if !REGML_PS2
+    std::lock_guard lock(impl_->audio_mutex);
+#endif
+    impl_->audio_volume = clamped;
+}
+
+double VideoPlayer::volume() const noexcept {
+#if !REGML_PS2
+    std::lock_guard lock(impl_->audio_mutex);
+#endif
+    return impl_->audio_volume;
+}
+
+void VideoPlayer::mix_audio(std::span<float> output, double playback_rate) noexcept {
+    if (output.size() % 2 != 0 || !std::isfinite(playback_rate) || playback_rate <= 0)
+        return;
+#if !REGML_PS2
+    std::lock_guard lock(impl_->audio_mutex);
+#endif
+    const auto frame_count = impl_->audio_samples.size() / 2;
+    if (frame_count == 0 || impl_->audio_paused || impl_->audio_volume <= 0)
+        return;
+
+    for (std::size_t out_frame = 0; out_frame < output.size() / 2; ++out_frame) {
+        if (impl_->audio_frame >= static_cast<double>(frame_count)) {
+            if (!impl_->audio_looping)
+                break;
+            impl_->audio_frame = std::fmod(impl_->audio_frame, static_cast<double>(frame_count));
+        }
+        const auto source_frame = static_cast<std::size_t>(impl_->audio_frame);
+        const auto next_frame = source_frame + 1 < frame_count ? source_frame + 1
+                                                               : (impl_->audio_looping ? 0 : source_frame);
+        const float fraction = static_cast<float>(impl_->audio_frame - source_frame);
+        for (std::size_t channel = 0; channel < 2; ++channel) {
+            const float first = impl_->audio_samples[source_frame * 2 + channel];
+            const float second = impl_->audio_samples[next_frame * 2 + channel];
+            const float sample = first + (second - first) * fraction;
+            output[out_frame * 2 + channel] += sample * static_cast<float>(impl_->audio_volume);
+        }
+        impl_->audio_frame += playback_rate;
+    }
 }
 
 bool VideoPlayer::update_frame() noexcept {

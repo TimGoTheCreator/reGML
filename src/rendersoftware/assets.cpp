@@ -1782,7 +1782,6 @@ void GameAssets::blit(Canvas &canvas,
         const int bottom = static_cast<int>(std::clamp(y_end, 0.0, static_cast<double>(canvas.height())));
         if (left >= right || top >= bottom)
             return;
-        auto destination = canvas.pixels();
         const auto sample_width = static_cast<std::size_t>(right - left);
         const auto sample_height = static_cast<std::size_t>(bottom - top);
         if (scaled_x_.size() < sample_width)
@@ -1859,34 +1858,12 @@ void GameAssets::blit(Canvas &canvas,
             for (int dx = left; dx < right; ++dx) {
                 const int ux = scaled_x_[static_cast<std::size_t>(dx - left)];
                 const auto pixel = page.pixels[row + static_cast<std::size_t>(ux)];
-                const auto destination_index =
-                    static_cast<std::size_t>(dy) * static_cast<std::size_t>(canvas.width()) +
-                    static_cast<std::size_t>(dx);
-                if (source_alpha_mode == 2) {
-                    destination[destination_index] = pixel;
-                } else if (source_alpha_mode == 1) {
-                    if ((pixel >> 24) == 255)
-                        destination[destination_index] = pixel;
-                } else if (tint == 0xffffff && alpha == 1) {
-                    const auto source_alpha = pixel >> 24;
-                    if (source_alpha == 255) {
-                        destination[destination_index] = pixel;
-                    } else if (source_alpha != 0 && (destination[destination_index] >> 24) == 255) {
-                        const auto previous = destination[destination_index];
-                        const auto inverse = 255 - source_alpha;
-                        unsigned result = 0xff000000;
-                        for (unsigned shift : {0U, 8U, 16U})
-                            result |= (((pixel >> shift & 255) * source_alpha +
-                                        (previous >> shift & 255) * inverse + 127) /
-                                       255)
-                                      << shift;
-                        destination[destination_index] = result;
-                    } else if (source_alpha != 0) {
-                        canvas.rgba_pixel_tinted(dx, dy, pixel, tint, alpha);
-                    }
-                } else {
-                    canvas.rgba_pixel_tinted(dx, dy, pixel, tint, alpha);
-                }
+                // Use the canvas compositor for fallback samples. The opaque
+                // and binary-alpha copy shortcuts above are only safe when
+                // their renderer-state checks pass; a raw pixel assignment
+                // here would skip alpha masks, color-write masks, and custom
+                // blend modes.
+                canvas.rgba_pixel_tinted(dx, dy, pixel, tint, alpha);
             }
         }
         return;
@@ -2036,9 +2013,6 @@ void GameAssets::draw_sprite_pos(
             throw Error(ErrorKind::vm, "nonfinite texture sample coordinate");
         u = std::clamp(u, 0.0, 1.0);
         v = std::clamp(v, 0.0, 1.0);
-        const double pixel_x = u * spr.width - 0.5, pixel_y = v * spr.height - 0.5;
-        const int x0 = static_cast<int>(std::floor(pixel_x)), y0 = static_cast<int>(std::floor(pixel_y));
-        const double fx = pixel_x - x0, fy = pixel_y - y0;
         const auto texel = [&](int x, int y) -> std::uint32_t {
             x = std::clamp(x, 0, spr.width - 1);
             y = std::clamp(y, 0, spr.height - 1);
@@ -2051,17 +2025,7 @@ void GameAssets::draw_sprite_pos(
                 return 0;
             return page.pixels[static_cast<std::size_t>(sy) * static_cast<std::size_t>(page.width) + sx];
         };
-        const std::array<std::uint32_t, 4> colors = {texel(x0, y0), texel(x0 + 1, y0), texel(x0, y0 + 1),
-                                                     texel(x0 + 1, y0 + 1)};
-        const std::array<double, 4> weights = {(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy};
-        std::uint32_t result = 0;
-        for (unsigned shift : {0U, 8U, 16U, 24U}) {
-            double channel = 0;
-            for (std::size_t i = 0; i < colors.size(); ++i)
-                channel += ((colors[i] >> shift) & 255) * weights[i];
-            result |= static_cast<std::uint32_t>(std::lround(channel)) << shift;
-        }
-        return result;
+        return texel(static_cast<int>(u * spr.width), static_cast<int>(v * spr.height));
     };
 
     const auto draw_triangle = [&](std::size_t ia, std::size_t ib, std::size_t ic, std::array<double, 2> uva,
@@ -2201,6 +2165,133 @@ void GameAssets::draw_sprite_part(Canvas &canvas,
     crop.alpha_mode = r.alpha_mode;
     // draw_sprite_part uses the cropped region's top-left, so the sprite origin doesn't matter
     blit(canvas, crop, x + (ix - left) * sx, y + (iy - top) * sy, sx, sy, 0, color, alpha);
+}
+void GameAssets::draw_sprite_general(Canvas &canvas,
+                                     int id,
+                                     double frame,
+                                     double left,
+                                     double top,
+                                     double width,
+                                     double height,
+                                     double x,
+                                     double y,
+                                     double sx,
+                                     double sy,
+                                     double angle,
+                                     const std::array<unsigned, 4> &colors,
+                                     double alpha) {
+    const auto &spr = sprite(id);
+    if (spr.frames.empty())
+        return;
+    if (!std::isfinite(frame + left + top + width + height + x + y + sx + sy + angle + alpha))
+        throw Error(ErrorKind::vm, "nonfinite sprite-general argument");
+    if (width <= 0 || height <= 0 || sx == 0 || sy == 0 || alpha <= 0)
+        return;
+
+    const auto region_index = spr.frames[frame_index(frame, spr.frames.size())];
+    if (region_index == std::numeric_limits<std::uint32_t>::max() || region_index >= regions_.size())
+        return;
+    const auto &region = regions_[region_index].region;
+    const double visible_left = std::max({left, 0.0, static_cast<double>(region.tx)});
+    const double visible_top = std::max({top, 0.0, static_cast<double>(region.ty)});
+    const double visible_right =
+        std::min({left + width, static_cast<double>(spr.width), static_cast<double>(region.tx + region.tw)});
+    const double visible_bottom =
+        std::min({top + height, static_cast<double>(spr.height), static_cast<double>(region.ty + region.th)});
+    if (visible_right <= visible_left || visible_bottom <= visible_top || region.tw <= 0 || region.th <= 0 ||
+        region.w <= 0 || region.h <= 0)
+        return;
+
+    const int source_left = static_cast<int>(std::floor(visible_left));
+    const int source_top = static_cast<int>(std::floor(visible_top));
+    const int source_right = static_cast<int>(std::ceil(visible_right));
+    const int source_bottom = static_cast<int>(std::ceil(visible_bottom));
+    const bool uniform_color = std::all_of(colors.begin() + 1, colors.end(),
+                                           [&](unsigned color) { return color == colors[0]; });
+    if (uniform_color) {
+        Region crop{region.x + static_cast<int>((source_left - region.tx) * region.w / region.tw),
+                    region.y + static_cast<int>((source_top - region.ty) * region.h / region.th),
+                    static_cast<int>((source_right - source_left) * region.w / region.tw),
+                    static_cast<int>((source_bottom - source_top) * region.h / region.th),
+                    0,
+                    0,
+                    source_right - source_left,
+                    source_bottom - source_top,
+                    region.page};
+        crop.alpha_mode = region.alpha_mode;
+        blit(canvas, crop, x + (source_left - left) * sx, y + (source_top - top) * sy, sx, sy, angle,
+             colors[0], alpha);
+        return;
+    }
+
+    int page_x = 0, page_y = 0;
+    const auto &page = region_pixels(region, page_x, page_y);
+    const double radians = angle * 3.14159265358979323846 / 180.0;
+    const double cosine = std::cos(radians), sine = std::sin(radians);
+    const double screen_x =
+        ((x + (source_left - left) * sx - view_x_) * view_sx_ + port_x_) * canvas.render_scale();
+    const double screen_y =
+        ((y + (source_top - top) * sy - view_y_) * view_sy_ + port_y_) * canvas.render_scale();
+    const double screen_sx = sx * view_sx_ * canvas.render_scale();
+    const double screen_sy = sy * view_sy_ * canvas.render_scale();
+    const double draw_width = (source_right - source_left) * screen_sx;
+    const double draw_height = (source_bottom - source_top) * screen_sy;
+    const std::array<double, 4> corner_x = {screen_x, screen_x + draw_width * cosine,
+                                            screen_x + draw_height * sine,
+                                            screen_x + draw_width * cosine + draw_height * sine};
+    const std::array<double, 4> corner_y = {screen_y, screen_y - draw_width * sine,
+                                            screen_y + draw_height * cosine,
+                                            screen_y - draw_width * sine + draw_height * cosine};
+    const int raster_left = static_cast<int>(std::clamp(
+        std::floor(*std::min_element(corner_x.begin(), corner_x.end())), 0.0, double(canvas.width())));
+    const int raster_right = static_cast<int>(std::clamp(
+        std::ceil(*std::max_element(corner_x.begin(), corner_x.end())), 0.0, double(canvas.width())));
+    const int raster_top = static_cast<int>(std::clamp(
+        std::floor(*std::min_element(corner_y.begin(), corner_y.end())), 0.0, double(canvas.height())));
+    const int raster_bottom = static_cast<int>(std::clamp(
+        std::ceil(*std::max_element(corner_y.begin(), corner_y.end())), 0.0, double(canvas.height())));
+    if (raster_left >= raster_right || raster_top >= raster_bottom)
+        return;
+
+    const auto interpolate_color = [&](double u, double v) {
+        std::uint32_t result = 0;
+        for (unsigned shift : {0U, 8U, 16U}) {
+            const double top_channel = ((colors[0] >> shift) & 255) * (1.0 - u) +
+                                       ((colors[1] >> shift) & 255) * u;
+            const double bottom_channel = ((colors[3] >> shift) & 255) * (1.0 - u) +
+                                          ((colors[2] >> shift) & 255) * u;
+            const auto channel = static_cast<std::uint32_t>(std::lround(
+                top_channel * (1.0 - v) + bottom_channel * v));
+            result |= channel << shift;
+        }
+        return ((result & 0xffU) << 16) | (result & 0xff00U) | ((result >> 16) & 0xffU);
+    };
+
+    for (int py = raster_top; py < raster_bottom; ++py) {
+        for (int px = raster_left; px < raster_right; ++px) {
+            const double dx = px + 0.5 - screen_x;
+            const double dy = py + 0.5 - screen_y;
+            const double local_x = (dx * cosine - dy * sine) / screen_sx;
+            const double local_y = (dx * sine + dy * cosine) / screen_sy;
+            if (local_x < 0 || local_y < 0 || local_x >= source_right - source_left ||
+                local_y >= source_bottom - source_top)
+                continue;
+            const double source_px = source_left + local_x;
+            const double source_py = source_top + local_y;
+            if (source_px < left || source_py < top || source_px >= left + width ||
+                source_py >= top + height)
+                continue;
+            const int logical_x = static_cast<int>(std::floor(source_px));
+            const int logical_y = static_cast<int>(std::floor(source_py));
+            const int texture_x = page_x + static_cast<int>((logical_x - region.tx) * region.w / region.tw);
+            const int texture_y = page_y + static_cast<int>((logical_y - region.ty) * region.h / region.th);
+            if (texture_x < 0 || texture_y < 0 || texture_x >= page.width || texture_y >= page.height)
+                continue;
+            const auto rgba = page.pixels[static_cast<std::size_t>(texture_y) * page.width + texture_x];
+            const auto tint = interpolate_color((source_px - left) / width, (source_py - top) / height);
+            canvas.rgba_pixel_tinted(px, py, rgba, tint, alpha);
+        }
+    }
 }
 double GameAssets::text_width(int font, std::string_view text) const {
     if (font < 0 || static_cast<std::size_t>(font) >= fonts_.size())

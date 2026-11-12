@@ -5,8 +5,11 @@
 #include "gmrt_project.hpp"
 #include "gmrt_vm.hpp"
 #include "gmrt_wad.hpp"
+#include "hash.hpp"
+#include "ini.hpp"
 #include "instance_ptr.hpp"
 #include "interpreter.hpp"
+#include "json.hpp"
 #include "linker.hpp"
 #include "lookup.hpp"
 #include "rendersoftware/assets.hpp"
@@ -590,68 +593,6 @@ bool write_gif(const GifCapture &capture, const std::filesystem::path &path) {
     output.flush();
     return output.good();
 }
-std::string md5_hex(std::span<const std::uint8_t> input) {
-    static constexpr std::array<std::uint32_t, 64> shifts{
-        7,  12, 17, 22, 7,  12, 17, 22, 7,  12, 17, 22, 7,  12, 17, 22, 5,  9,  14, 20, 5,  9,
-        14, 20, 5,  9,  14, 20, 5,  9,  14, 20, 4,  11, 16, 23, 4,  11, 16, 23, 4,  11, 16, 23,
-        4,  11, 16, 23, 6,  10, 15, 21, 6,  10, 15, 21, 6,  10, 15, 21, 6,  10, 15, 21};
-    static constexpr std::array<std::uint32_t, 64> constants{
-        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
-        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
-        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
-        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
-        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391};
-    std::vector<std::uint8_t> message(input.begin(), input.end());
-    const std::uint64_t bit_length = static_cast<std::uint64_t>(message.size()) * 8;
-    message.push_back(0x80);
-    while (message.size() % 64 != 56)
-        message.push_back(0);
-    for (unsigned i = 0; i < 8; ++i)
-        message.push_back(static_cast<std::uint8_t>(bit_length >> (i * 8)));
-    std::array<std::uint32_t, 4> state{0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476};
-    for (std::size_t offset = 0; offset < message.size(); offset += 64) {
-        std::array<std::uint32_t, 16> words{};
-        for (std::size_t i = 0; i < words.size(); ++i)
-            for (unsigned j = 0; j < 4; ++j)
-                words[i] |= static_cast<std::uint32_t>(message[offset + i * 4 + j]) << (j * 8);
-        auto [a, b, c, d] = state;
-        for (std::uint32_t i = 0; i < 64; ++i) {
-            std::uint32_t f = 0, g = 0;
-            if (i < 16) {
-                f = (b & c) | (~b & d);
-                g = i;
-            } else if (i < 32) {
-                f = (d & b) | (~d & c);
-                g = (5 * i + 1) % 16;
-            } else if (i < 48) {
-                f = b ^ c ^ d;
-                g = (3 * i + 5) % 16;
-            } else {
-                f = c ^ (b | ~d);
-                g = (7 * i) % 16;
-            }
-            const auto value = a + f + constants[i] + words[g];
-            const auto rotated = (value << shifts[i]) | (value >> (32 - shifts[i]));
-            a = d;
-            d = c;
-            c = b;
-            b += rotated;
-        }
-        state[0] += a;
-        state[1] += b;
-        state[2] += c;
-        state[3] += d;
-    }
-    std::ostringstream result;
-    result << std::hex << std::setfill('0');
-    for (const auto word : state)
-        for (unsigned byte = 0; byte < 4; ++byte)
-            result << std::setw(2) << ((word >> (byte * 8)) & 0xff);
-    return result.str();
-}
 ArrayPtr matrix_value(const Matrix4 &matrix) {
     ArrayPtr result(new ArrayValue);
     result->row_lengths[0] = 16;
@@ -954,6 +895,8 @@ struct GameSession::Impl {
     std::vector<int> surface_target_stack;
     VideoPlayer video_player;
     int video_surface = -1;
+    bool video_start_event_sent = false;
+    bool video_end_event_sent = false;
     bool surface_depth_disabled = false;
     std::unordered_map<int, GifCapture> gif_captures;
     int next_gif_id = 1;
@@ -972,10 +915,8 @@ struct GameSession::Impl {
     int next_particle_type = 1, next_particle_system = 1, next_particle_emitter = 1, next_audio_emitter = 1;
     std::unordered_map<int, std::unique_ptr<std::fstream>> files;
     int next_file = 0;
-    std::filesystem::path save_dir, ini_path;
-    std::map<std::string, std::map<std::string, std::string>> ini;
-    bool ini_dirty = false;
-    bool ini_opened = false;
+    std::filesystem::path save_dir;
+    IniFile ini;
     unsigned draw_color = 0xffffff;
     double draw_alpha = 1;
     std::array<bool, 4> color_write_enable{true, true, true, true};
@@ -2726,6 +2667,29 @@ struct GameSession::Impl {
         for (const auto entry : event_code->code)
             execute(entry, inst, {}, other);
     }
+    void dispatch_video_async_event(std::string_view event_type) {
+        const int map_id = next_ds++;
+        auto [async_map, inserted] = maps.try_emplace(map_id);
+        (void)inserted;
+        async_map->second.set({true, "type"}, Value{std::string(event_type)}, false);
+
+        const Value previous_async_load = engine.at("async_load");
+        engine["async_load"] = std::int32_t{map_id};
+        const auto event_targets = instances;
+        try {
+            for (const auto &target : event_targets) {
+                if (target->alive &&
+                    find_event_owner(objects[static_cast<std::size_t>(target->object)], {7, 70}) >= 0)
+                    event(target, 7, 70);
+            }
+        } catch (...) {
+            engine["async_load"] = previous_async_load;
+            maps.erase(map_id);
+            throw;
+        }
+        engine["async_load"] = previous_async_load;
+        maps.erase(map_id);
+    }
     int audio_recorder_count() const {
 #if REGML_WITH_SDL2 && !REGML_WEB
         if (!(SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO) && SDL_InitSubSystem(SDL_INIT_AUDIO) < 0)
@@ -3605,7 +3569,7 @@ struct GameSession::Impl {
                         if (!found)
                             return std::monostate{};
                         const int id = number(found->vars.at("sprite_index"));
-                        if (id < 0)
+                        if (!assets.sprite_exists(id))
                             return 0.0;
                         const auto &spr = assets.sprite(id);
                         if (name == "sprite_width")
@@ -3615,9 +3579,11 @@ struct GameSession::Impl {
                             return static_cast<double>(spr.height) *
                                    std::fabs(value_number(found->vars.at("image_yscale")));
                         if (name == "sprite_xoffset")
-                            return static_cast<double>(spr.ox);
+                            return static_cast<double>(spr.ox) *
+                                   value_number(found->vars.at("image_xscale"));
                         if (name == "sprite_yoffset")
-                            return static_cast<double>(spr.oy);
+                            return static_cast<double>(spr.oy) *
+                                   value_number(found->vars.at("image_yscale"));
                         return static_cast<double>(spr.frames.size());
                     }
                     VariableStore *store = nullptr;
@@ -6599,132 +6565,60 @@ struct GameSession::Impl {
             }
             if (name == "json_encode") {
                 const auto &map = maps.at(static_cast<int>(n(0)));
-                auto quote = [](std::string_view value) {
-                    std::string out = "\"";
-                    for (const unsigned char c : value) {
-                        if (c == '"' || c == '\\') {
-                            out += '\\';
-                            out += static_cast<char>(c);
-                        } else if (c == '\n')
-                            out += "\\n";
-                        else if (c == '\r')
-                            out += "\\r";
-                        else if (c == '\t')
-                            out += "\\t";
-                        else if (c >= 0x20)
-                            out += static_cast<char>(c);
-                    }
-                    return out + '"';
-                };
-                std::string json = "{";
-                bool first = true;
+                JsonObject object;
+                object.reserve(map.size());
                 for (const auto &[key, value] : map) {
-                    if (!first)
-                        json += ',';
-                    first = false;
-                    json += quote(key.size() >= 2 ? std::string_view(key).substr(2) : std::string_view(key));
-                    json += ':';
                     const auto decoded = value.to_value();
+                    JsonValue serialized;
                     if (value_is_string(decoded))
-                        json += quote(value_string_view(decoded));
+                        serialized = std::string(value_string_view(decoded));
                     else if (const auto *boolean = std::get_if<bool>(&decoded))
-                        json += *boolean ? "true" : "false";
+                        serialized = *boolean;
                     else if (std::holds_alternative<std::monostate>(decoded))
-                        json += "null";
+                        serialized = std::monostate{};
                     else if (const auto *array = std::get_if<ArrayPtr>(&decoded); array && *array) {
-                        json += '[';
+                        JsonValue::Array values;
                         int length = 0;
                         if (const auto found = (*array)->row_lengths.find(0);
                             found != (*array)->row_lengths.end())
                             length = found->second;
+                        values.reserve(static_cast<std::size_t>(std::max(0, length)));
                         for (int index = 0; index < length; ++index) {
-                            if (index)
-                                json += ',';
                             const auto *element = (*array)->elements.find(index);
                             const Value item = element ? *element : Value{std::int32_t{0}};
                             if (value_is_string(item))
-                                json += quote(value_string_view(item));
+                                values.emplace_back(std::string(value_string_view(item)));
                             else if (const auto *item_boolean = std::get_if<bool>(&item))
-                                json += *item_boolean ? "true" : "false";
+                                values.emplace_back(*item_boolean);
                             else if (std::holds_alternative<std::monostate>(item))
-                                json += "null";
+                                values.emplace_back(std::monostate{});
                             else
-                                json += value_text(item);
+                                values.emplace_back(JsonNumber{value_text(item)});
                         }
-                        json += ']';
+                        serialized = std::move(values);
                     } else
-                        json += value_text(decoded);
+                        serialized = JsonNumber{value_text(decoded)};
+                    object.emplace_back(key.size() >= 2 ? key.substr(2) : key, std::move(serialized));
                 }
-                return json + '}';
+                return json_encode(object);
             }
             if (name == "json_decode") {
-                const std::string json = text(0);
                 const int id = next_ds++;
                 auto &map = maps[id];
-                std::size_t i = json.find('{');
-                if (i == std::string::npos)
-                    return std::int32_t{id};
-                ++i;
-                auto whitespace = [&] {
-                    while (i < json.size() && std::isspace(static_cast<unsigned char>(json[i])))
-                        ++i;
-                };
-                auto parse_string = [&]() {
-                    std::string out;
-                    if (i >= json.size() || json[i++] != '"')
-                        return out;
-                    while (i < json.size() && json[i] != '"') {
-                        char c = json[i++];
-                        if (c == '\\' && i < json.size()) {
-                            c = json[i++];
-                            if (c == 'n')
-                                c = '\n';
-                            else if (c == 'r')
-                                c = '\r';
-                            else if (c == 't')
-                                c = '\t';
-                        }
-                        out += c;
-                    }
-                    if (i < json.size())
-                        ++i;
-                    return out;
-                };
-                whitespace();
-                while (i < json.size() && json[i] == '"') {
-                    auto key = parse_string();
-                    whitespace();
-                    if (i >= json.size() || json[i++] != ':')
-                        break;
-                    whitespace();
-                    Value value;
-                    if (i < json.size() && json[i] == '"')
-                        value = parse_string();
-                    else {
-                        const auto start = i;
-                        while (i < json.size() && json[i] != ',' && json[i] != '}' &&
-                               !std::isspace(static_cast<unsigned char>(json[i])))
-                            ++i;
-                        const auto token = std::string_view(json).substr(start, i - start);
-                        if (token == "true")
-                            value = true;
-                        else if (token == "false")
-                            value = false;
-                        else if (token == "null")
-                            value = std::monostate{};
-                        else {
-                            try {
-                                value = std::stod(std::string(token));
-                            } catch (...) {
-                                value = std::string(token);
-                            }
+                for (auto &[key, decoded] : json_decode(text(0))) {
+                    Value value = std::monostate{};
+                    if (const auto *string = std::get_if<std::string>(&decoded.value))
+                        value = *string;
+                    else if (const auto *boolean = std::get_if<bool>(&decoded.value))
+                        value = *boolean;
+                    else if (const auto *number = std::get_if<JsonNumber>(&decoded.value)) {
+                        try {
+                            value = std::stod(number->text);
+                        } catch (...) {
+                            value = number->text;
                         }
                     }
-                    map.set({true, key}, value, false);
-                    whitespace();
-                    if (i >= json.size() || json[i++] != ',')
-                        break;
-                    whitespace();
+                    map.set({true, std::move(key)}, value, false);
                 }
                 return std::int32_t{id};
             }
@@ -7649,102 +7543,51 @@ struct GameSession::Impl {
                 return std::monostate{};
             }
             if (name == "ini_open" || name == "ini_open_from_string") {
-                if (ini_opened)
+                if (ini.opened())
                     call("ini_close", {}, self, other);
-                ini_path = name == "ini_open" ? save_path(text(0)) : std::filesystem::path{};
-                ini.clear();
-                ini_dirty = false;
-                std::string line, section;
-                auto parse_line = [&](const std::string &raw) {
-                    line = raw;
-                    if (!line.empty() && line.back() == '\r')
-                        line.pop_back();
-                    if (line.size() > 1 && line.front() == '[' && line.back() == ']')
-                        section = line.substr(1, line.size() - 2);
-                    else if (const auto eq = line.find('='); eq != std::string::npos)
-                        ini[section][line.substr(0, eq)] = line.substr(eq + 1);
-                };
+                std::string contents_storage;
+                const auto contents = text_view(0, contents_storage);
                 if (name == "ini_open") {
-                    std::ifstream file(ini_path);
-                    while (std::getline(file, line))
-                        parse_line(line);
+                    ini.open_file(save_path(std::string(contents)));
                 } else {
-                    std::istringstream input(text(0));
-                    while (std::getline(input, line))
-                        parse_line(line);
+                    ini.open_from_string(contents);
                 }
-                ini_opened = true;
                 return std::monostate{};
             }
             if (name == "ini_read_real" || name == "ini_read_string") {
-                if (!ini_opened)
-                    throw Error(ErrorKind::vm, "INI read without open");
-                const auto section = ini.find(text(0));
-                if (section == ini.end())
-                    return args[2];
-                const auto entry = section->second.find(text(1));
-                if (entry == section->second.end())
-                    return args[2];
-                auto value = entry->second;
-                // GameMaker INI files store string values in double quotes (for
-                // example LANG="en"). The values are passed to GML without
-                // those delimiters, so remove them before either conversion.
-                if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
-                    value = value.substr(1, value.size() - 2);
+                std::string section_storage, key_storage;
+                const auto section = text_view(0, section_storage);
+                const auto key = text_view(1, key_storage);
                 if (name == "ini_read_string")
-                    return value;
-                try {
-                    return std::stod(value);
-                } catch (const std::exception &) {
-                    return args[2];
-                }
+                    return ini.read_string(section, key, args[2]);
+                return ini.read_real(section, key, args[2]);
             }
             if (name == "ini_write_real" || name == "ini_write_string") {
-                if (!ini_opened)
-                    throw Error(ErrorKind::vm, "INI write without open");
-                ini[text(0)][text(1)] = text(2);
-                ini_dirty = true;
+                std::string section_storage, key_storage, value_storage;
+                ini.write(text_view(0, section_storage), text_view(1, key_storage),
+                          text_view(2, value_storage));
                 return std::monostate{};
             }
-            if (name == "ini_section_exists")
-                return ini.contains(text(0));
+            if (name == "ini_section_exists") {
+                std::string section_storage;
+                return ini.section_exists(text_view(0, section_storage));
+            }
             if (name == "ini_key_exists") {
-                const auto section = ini.find(text(0));
-                return section != ini.end() && section->second.contains(text(1));
+                std::string section_storage, key_storage;
+                return ini.key_exists(text_view(0, section_storage), text_view(1, key_storage));
             }
             if (name == "ini_section_delete") {
-                ini.erase(text(0));
-                ini_dirty = true;
+                std::string section_storage;
+                ini.delete_section(text_view(0, section_storage));
                 return std::monostate{};
             }
             if (name == "ini_key_delete") {
-                if (auto section = ini.find(text(0)); section != ini.end())
-                    section->second.erase(text(1));
-                ini_dirty = true;
+                std::string section_storage, key_storage;
+                ini.delete_key(text_view(0, section_storage), text_view(1, key_storage));
                 return std::monostate{};
             }
             if (name == "ini_close") {
-                if (ini_dirty && !ini_path.empty()) {
-                    if (!prepare_save_directory()) {
-                        ini_path.clear();
-                        ini.clear();
-                        ini_dirty = false;
-                        ini_opened = false;
-                        return std::monostate{};
-                    }
-                    std::ofstream file(ini_path);
-                    if (file) {
-                        for (const auto &[section, entries] : ini) {
-                            file << '[' << section << "]\n";
-                            for (const auto &[key, value] : entries)
-                                file << key << '=' << value << '\n';
-                        }
-                    }
-                }
-                ini_path.clear();
-                ini.clear();
-                ini_dirty = false;
-                ini_opened = false;
+                ini.close([&] { return prepare_save_directory(); });
                 return std::monostate{};
             }
             return std::nullopt;
@@ -9181,8 +9024,10 @@ struct GameSession::Impl {
                 return std::int32_t{0};
             if (name == "sprite_exists")
                 return assets.sprite_exists(static_cast<int>(n(0)));
-            if (name == "sprite_get_name")
-                return std::string(assets.sprite_name(static_cast<int>(n(0))));
+            if (name == "sprite_get_name") {
+                const int id = static_cast<int>(n(0));
+                return assets.sprite_exists(id) ? std::string(assets.sprite_name(id)) : std::string{};
+            }
             if (name == "sprite_set_offset") {
                 assets.set_sprite_offset(static_cast<int>(n(0)), static_cast<int>(n(1)),
                                          static_cast<int>(n(2)));
@@ -9218,14 +9063,20 @@ struct GameSession::Impl {
                 const auto [width, height] = assets.background_size(static_cast<int>(n(0)));
                 return std::int32_t{name == "background_get_width" ? width : height};
             }
-            if (name == "sprite_get_width")
-                return std::int32_t{assets.sprite(static_cast<int>(n(0))).width};
-            if (name == "sprite_get_height")
-                return std::int32_t{assets.sprite(static_cast<int>(n(0))).height};
-            if (name == "sprite_get_xoffset")
-                return std::int32_t{assets.sprite(static_cast<int>(n(0))).ox};
-            if (name == "sprite_get_yoffset")
-                return std::int32_t{assets.sprite(static_cast<int>(n(0))).oy};
+            if (name == "sprite_get_width" || name == "sprite_get_height" || name == "sprite_get_xoffset" ||
+                name == "sprite_get_yoffset") {
+                const int id = static_cast<int>(n(0));
+                if (!assets.sprite_exists(id))
+                    return std::int32_t{0};
+                const auto &spr = assets.sprite(id);
+                if (name == "sprite_get_width")
+                    return std::int32_t{spr.width};
+                if (name == "sprite_get_height")
+                    return std::int32_t{spr.height};
+                if (name == "sprite_get_xoffset")
+                    return std::int32_t{spr.ox};
+                return std::int32_t{spr.oy};
+            }
             if (name == "sprite_set_bbox") {
                 assets.set_sprite_bbox(number(args[0]), number(args[1]), number(args[2]), number(args[3]),
                                        number(args[4]));
@@ -9670,6 +9521,8 @@ struct GameSession::Impl {
         auto dispatch_builtins_7 = [&]() REGML_NOINLINE_LAMBDA -> std::optional<Value> {
             if (name == "video_open") {
                 video_player.close();
+                video_start_event_sent = false;
+                video_end_event_sent = false;
                 if (video_surface >= 0) {
                     forget_surface_texture(video_surface);
                     surfaces.erase(video_surface);
@@ -9696,10 +9549,14 @@ struct GameSession::Impl {
                     video_surface = -1;
                     return std::monostate{};
                 }
+                video_start_event_sent = true;
+                dispatch_video_async_event("video_start");
                 return std::monostate{};
             }
             if (name == "video_close") {
                 video_player.close();
+                video_start_event_sent = false;
+                video_end_event_sent = false;
                 if (video_surface >= 0) {
                     forget_surface_texture(video_surface);
                     surfaces.erase(video_surface);
@@ -9719,6 +9576,12 @@ struct GameSession::Impl {
                 video_player.resume();
                 return std::monostate{};
             }
+            if (name == "video_set_volume") {
+                video_player.set_volume(n(0));
+                return std::monostate{};
+            }
+            if (name == "video_get_volume")
+                return video_player.volume();
             if (name == "video_get_duration")
                 return video_player.duration_ms();
             if (name == "video_get_position")
@@ -9741,6 +9604,10 @@ struct GameSession::Impl {
                     return result;
                 }
                 if (video_player.status() == 0) {
+                    if (video_start_event_sent && !video_end_event_sent) {
+                        video_end_event_sent = true;
+                        dispatch_video_async_event("video_end");
+                    }
                     result->row_lengths[0] = 1;
                     result->elements[0] = std::int32_t{-2};
                     return result;
@@ -9787,8 +9654,8 @@ struct GameSession::Impl {
             }
             if (name == "surface_resize") {
                 const int id = static_cast<int>(n(0));
-                const int width = static_cast<int>(std::clamp(n(1), 1.0, 4096.0));
-                const int height = static_cast<int>(std::clamp(n(2), 1.0, 4096.0));
+                const int width = static_cast<int>(std::clamp(n(1), 1.0, 8192.0));
+                const int height = static_cast<int>(std::clamp(n(2), 1.0, 8192.0));
                 if (static_cast<std::uint64_t>(width) * height > 64ULL * 1024 * 1024)
                     return std::monostate{};
                 if (id == 0) {
@@ -10358,6 +10225,17 @@ struct GameSession::Impl {
                                         n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1), n(2),
                                         n(3), n(4), n(5), n(6), n(7), n(8), n(9),
                                         static_cast<unsigned>(n(10)), n(11));
+                return std::monostate{};
+            }
+            if (name == "draw_sprite_general") {
+                if (args.size() < 16)
+                    throw Error(ErrorKind::vm, "draw_sprite_general requires 16 arguments");
+                const double frame = n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1);
+                const std::array<unsigned, 4> colors = {
+                    static_cast<unsigned>(n(11)), static_cast<unsigned>(n(12)),
+                    static_cast<unsigned>(n(13)), static_cast<unsigned>(n(14))};
+                assets.draw_sprite_general(current_canvas(), static_cast<int>(n(0)), frame, n(2), n(3), n(4),
+                                           n(5), n(6), n(7), n(8), n(9), n(10), colors, n(15));
                 return std::monostate{};
             }
             return std::nullopt;
@@ -13444,10 +13322,10 @@ void GameSession::mix_audio(std::span<float> output, double playback_rate) noexc
     std::lock_guard lock(audio_mutex_);
 #endif
     impl_->audio.mix(output, playback_rate);
+    impl_->video_player.mix_audio(output, playback_rate);
     const auto master_gain = static_cast<float>(impl_->audio_master_gain.load(std::memory_order_relaxed));
-    if (master_gain != 1.0f)
-        for (auto &sample : output)
-            sample *= master_gain;
+    for (auto &sample : output)
+        sample = std::clamp(sample * master_gain, -1.0f, 1.0f);
 }
 double GameSession::speed() const {
     return value_number(impl_->engine.at("room_speed"));

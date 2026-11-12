@@ -19,6 +19,9 @@ class VideoPlayer {
     void pause() noexcept;
     void resume() noexcept;
     void enable_loop(bool enabled) noexcept;
+    void set_volume(double volume) noexcept;
+    [[nodiscard]] double volume() const noexcept;
+    void mix_audio(std::span<float> stereo_output, double playback_rate = 1.0) noexcept;
     bool update_frame() noexcept;
 
     [[nodiscard]] bool loaded() const noexcept;

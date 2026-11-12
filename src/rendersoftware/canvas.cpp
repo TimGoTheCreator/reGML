@@ -673,8 +673,11 @@ Canvas::Canvas(int width, int height, bool main_screen)
 #else
     (void)main_screen;
 #endif
-    if (width < 1 || height < 1 || width > 4096 || height > 4096)
-        throw Error(ErrorKind::unsupported, "framebuffer dimensions must be between 1 and 4096");
+    constexpr int max_canvas_dimension = 8192;
+    constexpr std::uint64_t max_canvas_pixels = 64ULL * 1024 * 1024;
+    if (width < 1 || height < 1 || width > max_canvas_dimension || height > max_canvas_dimension ||
+        static_cast<std::uint64_t>(width_) * static_cast<std::uint64_t>(height_) > max_canvas_pixels)
+        throw Error(ErrorKind::unsupported, "canvas dimensions exceed the supported 8192x8192 limit");
     pixels_.resize(static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_), 0xff000000);
 }
 void Canvas::gpu_target(bool enabled) {
