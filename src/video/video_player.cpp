@@ -19,9 +19,11 @@
 #if REGML_WITH_FFMPEG
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavcodec/version.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/version.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 }
@@ -62,7 +64,11 @@ std::vector<float> decode_audio_track(const std::filesystem::path &path) {
         avformat_find_stream_info(resources.format, nullptr) < 0)
         return {};
 
+#if LIBAVCODEC_VERSION_MAJOR >= 59
     const AVCodec *codec = nullptr;
+#else
+    AVCodec *codec = nullptr;
+#endif
     const int stream_index =
         av_find_best_stream(resources.format, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
     if (stream_index < 0 || !codec)
@@ -73,6 +79,7 @@ std::vector<float> decode_audio_track(const std::filesystem::path &path) {
         avcodec_open2(resources.decoder, codec, nullptr) < 0 || resources.decoder->sample_rate <= 0)
         return {};
 
+#if LIBAVUTIL_VERSION_MAJOR >= 57
     AVChannelLayout output_layout = AV_CHANNEL_LAYOUT_STEREO;
     AVChannelLayout input_layout{};
     if (resources.decoder->ch_layout.nb_channels > 0) {
@@ -88,6 +95,16 @@ std::vector<float> decode_audio_track(const std::filesystem::path &path) {
     av_channel_layout_uninit(&input_layout);
     if (resampler_result < 0 || !resources.resampler || swr_init(resources.resampler) < 0)
         return {};
+#else
+    std::int64_t input_layout = resources.decoder->channel_layout;
+    if (!input_layout)
+        input_layout = av_get_default_channel_layout(std::max(resources.decoder->channels, 1));
+    resources.resampler = swr_alloc_set_opts(resources.resampler, AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_FLT,
+                                             video_audio_rate, input_layout, resources.decoder->sample_fmt,
+                                             resources.decoder->sample_rate, 0, nullptr);
+    if (!resources.resampler || swr_init(resources.resampler) < 0)
+        return {};
+#endif
 
     resources.packet = av_packet_alloc();
     resources.frame = av_frame_alloc();
@@ -358,7 +375,11 @@ bool VideoPlayer::open(const std::filesystem::path &path) {
         close();
         return false;
     }
+#if LIBAVCODEC_VERSION_MAJOR >= 59
     const AVCodec *codec = nullptr;
+#else
+    AVCodec *codec = nullptr;
+#endif
     state.stream_index = av_find_best_stream(state.format, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
     if (state.stream_index < 0 || !codec) {
         close();

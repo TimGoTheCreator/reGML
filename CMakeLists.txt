@@ -212,15 +212,14 @@ if(REGML_SDL2 AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_PS4 AND NOT REG
     find_package(SDL2 REQUIRED)
 endif()
 
-# Video decoding is optional so the smaller console toolchains can keep using
-# their native SDKs. Desktop builds use FFmpeg when its development packages
-# are present; video built-ins remain available and fail cleanly otherwise.
+# Video decoding is optional. Desktop builds use FFmpeg when available.
+# Wii U builds can use the devkitPPC FFmpeg port through pkg-config.
 set(REGML_FFMPEG_AVAILABLE OFF)
-if(NOT REGML_ANDROID AND NOT REGML_WEB AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_PS4 AND NOT PS2)
+if(NOT REGML_ANDROID AND NOT REGML_WEB AND NOT REGML_WII AND NOT REGML_PS4 AND NOT PS2)
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
         pkg_check_modules(REGML_FFMPEG QUIET IMPORTED_TARGET
-            libavformat libavcodec libavutil libswscale)
+            libavformat libavcodec libavutil libswresample libswscale)
         if(REGML_FFMPEG_FOUND)
             set(REGML_FFMPEG_AVAILABLE ON)
         endif()
