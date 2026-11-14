@@ -881,9 +881,11 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
     try {
 #if REGML_PS4
         game = std::make_unique<GameSession>(package, options.seed, options.save_directory,
-                                             video_window ? video_window->gamepad_state() : GamepadState{});
+                                             video_window ? video_window->gamepad_state() : GamepadState{},
+                                             options.start_room);
 #else
-        game = std::make_unique<GameSession>(package, options.seed, options.save_directory);
+        game = std::make_unique<GameSession>(package, options.seed, options.save_directory, GamepadState{},
+                                             options.start_room);
 #endif
         trace_stage("session.ready", game.get());
     } catch (const Error &error) {

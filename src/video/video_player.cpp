@@ -1,11 +1,15 @@
 #include "video_player.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <limits>
 #ifndef REGML_PS2
 #define REGML_PS2 0
+#endif
+#ifndef REGML_WIIU
+#define REGML_WIIU 0
 #endif
 #if !REGML_PS2
 #include <mutex>
@@ -40,6 +44,34 @@ constexpr int status_paused = 3;
 #if REGML_WITH_FFMPEG
 constexpr int video_audio_rate = 48000;
 constexpr std::size_t max_video_audio_frames = static_cast<std::size_t>(video_audio_rate) * 60 * 10;
+constexpr AVPixelFormat video_pixel_format =
+    std::endian::native == std::endian::big ? AV_PIX_FMT_ARGB : AV_PIX_FMT_BGRA;
+
+bool has_video_parameters(const AVFormatContext *format) {
+    for (unsigned int i = 0; i < format->nb_streams; ++i) {
+        const auto *parameters = format->streams[i]->codecpar;
+        if (parameters && parameters->codec_type == AVMEDIA_TYPE_VIDEO && parameters->width > 0 &&
+            parameters->height > 0)
+            return true;
+    }
+    return false;
+}
+
+bool has_audio_parameters(const AVFormatContext *format) {
+    for (unsigned int i = 0; i < format->nb_streams; ++i) {
+        const auto *parameters = format->streams[i]->codecpar;
+        if (!parameters || parameters->codec_type != AVMEDIA_TYPE_AUDIO || parameters->sample_rate <= 0)
+            continue;
+#if LIBAVUTIL_VERSION_MAJOR >= 57
+        if (parameters->ch_layout.nb_channels > 0)
+            return true;
+#else
+        if (parameters->channels > 0)
+            return true;
+#endif
+    }
+    return false;
+}
 
 struct AudioDecodeResources {
     AVFormatContext *format = nullptr;
@@ -60,7 +92,9 @@ struct AudioDecodeResources {
 std::vector<float> decode_audio_track(const std::filesystem::path &path) {
     AudioDecodeResources resources;
     const auto filename = path.string();
-    if (avformat_open_input(&resources.format, filename.c_str(), nullptr, nullptr) < 0 ||
+    if (avformat_open_input(&resources.format, filename.c_str(), nullptr, nullptr) < 0)
+        return {};
+    if (!has_audio_parameters(resources.format) &&
         avformat_find_stream_info(resources.format, nullptr) < 0)
         return {};
 
@@ -258,19 +292,27 @@ struct VideoPlayer::Impl {
         for (;;) {
             int result = avcodec_receive_frame(decoder, frame);
             if (result == 0) {
-                const auto timestamp = frame->best_effort_timestamp;
+                const auto timestamp = frame->best_effort_timestamp != AV_NOPTS_VALUE
+                                           ? frame->best_effort_timestamp
+                                           : frame->pts;
                 if (timestamp != AV_NOPTS_VALUE) {
                     if (timestamp_origin == AV_NOPTS_VALUE)
                         timestamp_origin = timestamp;
-                    frame_position = std::max(0.0, static_cast<double>(timestamp - timestamp_origin) *
-                                                       av_q2d(stream->time_base) * 1000.0);
+                    const double decoded_position =
+                        std::max(0.0, static_cast<double>(timestamp - timestamp_origin) *
+                                          av_q2d(stream->time_base) * 1000.0);
+                    if (frame_ready && decoded_position <= frame_position) {
+                        av_frame_unref(frame);
+                        continue;
+                    }
+                    frame_position = decoded_position;
                 } else {
                     frame_position = fallback_frame_position;
                 }
                 fallback_frame_position = frame_position + frame_interval;
                 scaler = sws_getCachedContext(scaler, frame->width, frame->height,
                                               static_cast<AVPixelFormat>(frame->format), width, height,
-                                              AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+                                              video_pixel_format, SWS_BILINEAR, nullptr, nullptr, nullptr);
                 if (!scaler) {
                     av_frame_unref(frame);
                     error = true;
@@ -371,7 +413,7 @@ bool VideoPlayer::open(const std::filesystem::path &path) {
     const auto filename = path.string();
     if (avformat_open_input(&state.format, filename.c_str(), nullptr, nullptr) < 0)
         return false;
-    if (avformat_find_stream_info(state.format, nullptr) < 0) {
+    if (!has_video_parameters(state.format) && avformat_find_stream_info(state.format, nullptr) < 0) {
         close();
         return false;
     }
@@ -387,8 +429,19 @@ bool VideoPlayer::open(const std::filesystem::path &path) {
     }
     state.stream = state.format->streams[state.stream_index];
     state.decoder = avcodec_alloc_context3(codec);
-    if (!state.decoder || avcodec_parameters_to_context(state.decoder, state.stream->codecpar) < 0 ||
-        avcodec_open2(state.decoder, codec, nullptr) < 0) {
+    if (!state.decoder || avcodec_parameters_to_context(state.decoder, state.stream->codecpar) < 0) {
+        close();
+        return false;
+    }
+    state.decoder->pkt_timebase = state.stream->time_base;
+#if REGML_WIIU
+    // The Wii U FFmpeg build has pthread support. Decode independent H.264
+    // frames across the three Espresso cores instead of making video share
+    // the game thread's entire frame budget.
+    state.decoder->thread_count = 3;
+    state.decoder->thread_type = FF_THREAD_FRAME;
+#endif
+    if (avcodec_open2(state.decoder, codec, nullptr) < 0) {
         close();
         return false;
     }
@@ -416,7 +469,6 @@ bool VideoPlayer::open(const std::filesystem::path &path) {
     if (rate.num > 0 && rate.den > 0)
         state.frame_interval = 1000.0 * rate.den / rate.num;
     state.open = true;
-    state.playback_start = Clock::now();
     try {
         auto decoded_audio = decode_audio_track(path);
 #if !REGML_PS2
@@ -430,6 +482,9 @@ bool VideoPlayer::open(const std::filesystem::path &path) {
         // Video playback remains useful when a container has an unsupported
         // or malformed audio stream, or when allocating its PCM buffer fails.
     }
+    // Audio is fully decoded during open(). Start the media clock afterward so
+    // its setup cost cannot make the first draw skip ahead through the clip.
+    state.playback_start = Clock::now();
     return true;
 #else
     (void)path;

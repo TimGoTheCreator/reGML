@@ -59,7 +59,8 @@ class GameSession {
     explicit GameSession(const std::filesystem::path &package,
                          std::optional<std::uint32_t> seed = {},
                          const std::filesystem::path &save_directory = {},
-                         const GamepadState &gamepad = {});
+                         const GamepadState &gamepad = {},
+                         std::string_view start_room = {});
     ~GameSession();
     void tick(const KeyboardState &held, const KeyboardState &pressed);
     void set_gamepad_state(const GamepadState &state);

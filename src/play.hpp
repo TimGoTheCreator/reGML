@@ -1,6 +1,7 @@
 #pragma once
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <string_view>
 namespace regml {
 struct PlayOptions {
@@ -17,6 +18,7 @@ struct PlayOptions {
     std::filesystem::path profile_log;
     std::optional<std::uint32_t> seed;
     std::filesystem::path save_directory;
+    std::string start_room;
 };
 struct PlayReport {
     std::size_t frames = 0, instructions = 0;

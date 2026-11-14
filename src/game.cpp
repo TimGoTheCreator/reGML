@@ -1001,7 +1001,8 @@ struct GameSession::Impl {
     explicit Impl(const std::filesystem::path &path,
                   std::optional<std::uint32_t> seed,
                   const std::filesystem::path &save_directory,
-                  const GamepadState &initial_gamepad = {})
+                  const GamepadState &initial_gamepad = {},
+                  std::string_view start_room = {})
         : package(load_stage("package metadata", [&] { return load_game_package(path); })),
           gmrt_project(package.is_gmrt() ? std::optional<GmrtProject>(GmrtProject::load_for_wad(path))
                                          : std::nullopt),
@@ -1103,8 +1104,85 @@ struct GameSession::Impl {
                 execute(code, {}, {});
             return true;
         });
+        // A direct room start skips the game's title/menu flow, where Deltarune
+        // normally initializes its language selection before room Create events.
+        // Keep the debugging shortcut deterministic and usable with an empty save.
+        if (!start_room.empty()) {
+            if (!globals.contains("savedata")) {
+                const int savedata = next_ds++;
+                maps.try_emplace(savedata);
+                globals["savedata"] = std::int32_t{savedata};
+            }
+            globals.try_emplace("savedata_async_id", std::int32_t{-1});
+            globals.try_emplace("lang", std::string("en"));
+            globals.try_emplace("debug", false);
+#if REGML_WIIU || REGML_WII || REGML_PS4 || REGML_PS2
+            globals.try_emplace("is_console", true);
+#else
+            globals.try_emplace("is_console", false);
+#endif
+        }
+        int initial_room = order.at(0);
+        if (!start_room.empty()) {
+            const auto lowercase = [](std::string_view value) {
+                std::string result(value);
+                std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch) {
+                    return static_cast<char>(std::tolower(ch));
+                });
+                return result;
+            };
+            const auto requested = lowercase(start_room);
+            std::vector<int> matches;
+            bool exact_match = false;
+            for (std::size_t i = 0; i < rooms.size(); ++i) {
+                if (rooms[i].name.empty())
+                    continue;
+                const auto name = lowercase(rooms[i].name);
+                if (name == requested) {
+                    initial_room = static_cast<int>(i);
+                    exact_match = true;
+                    break;
+                }
+                if (name.find(requested) != std::string::npos)
+                    matches.push_back(static_cast<int>(i));
+            }
+            if (!exact_match) {
+                if (matches.size() == 1)
+                    initial_room = matches.front();
+                else {
+                    std::string message = matches.empty()
+                                              ? "no room name matches start room: " + std::string(start_room)
+                                              : "start room is ambiguous; choose one of:";
+                    for (const int id : matches) {
+                        message += " ";
+                        message += rooms[static_cast<std::size_t>(id)].name;
+                        message += " (" + std::to_string(id) + ")";
+                    }
+                    throw Error(ErrorKind::usage, std::move(message));
+                }
+            }
+        }
         load_stage("initial room", [&] {
-            enter(order.at(0));
+            const int startup_room = order.at(0);
+            enter(startup_room);
+            if (initial_room != startup_room) {
+                // Deltarune creates font_map and its other localization maps
+                // during the normal title flow. A direct start skips that
+                // flow; initialize localization after startup-room setup and
+                // before the requested room's Create/Draw events.
+                if (!start_room.empty()) {
+                    if (const auto localization = code_ids.find("gml_Script_scr_84_init_localization");
+                        localization != code_ids.end()) {
+                        globals["lang_loaded"] = std::string("__regml_direct_room_start__");
+                        wiiu_load_trace("direct-start.localization.begin code=" +
+                                        std::to_string(localization->second));
+                        execute(localization->second, {}, {});
+                        wiiu_load_trace(std::string("direct-start.localization.end font_map=") +
+                                        (globals.contains("font_map") ? "1" : "0"));
+                    }
+                }
+                enter(initial_room);
+            }
             return true;
         });
     }
@@ -3413,6 +3491,12 @@ struct GameSession::Impl {
                 const auto &ins = program.instructions[instruction_index];
                 const auto opcode = ins.opcode();
 #if REGML_WIIU
+                if (!event_stack.empty() && event_stack.back().type == 8 && (executed_in_code & 63U) == 0)
+                    wiiu_load_trace(std::string("draw-vm-progress code=") +
+                                    std::string(package.code_name(static_cast<std::size_t>(code))) +
+                                    " executed=" + std::to_string(executed_in_code) +
+                                    " pc=" + std::to_string(pc) + " opcode=" +
+                                    std::string(opcode_name(opcode)));
                 if (code == 44 && executed_in_code <= 120)
                     wiiu_load_trace(std::string("launch-param-step pc=") + std::to_string(pc) +
                                     " opcode=" + std::string(opcode_name(opcode)));
@@ -4409,6 +4493,11 @@ struct GameSession::Impl {
 #if REGML_PS2
             ps2_error_trace(package.code_name(static_cast<std::size_t>(code)), pc, e.what());
 #endif
+#if REGML_WIIU
+            wiiu_load_trace(std::string("vm-error code=") +
+                            std::string(package.code_name(static_cast<std::size_t>(code))) +
+                            " pc=" + std::to_string(last_instruction_pc) + " error=" + e.what());
+#endif
             throw Error(e.kind(),
                         std::move(error_text) + " in " +
                             std::string(package.code_name(static_cast<std::size_t>(code))),
@@ -4427,6 +4516,11 @@ struct GameSession::Impl {
             }
             ps2_memory_trace("bad_alloc", pc, map_entries);
 #endif
+#if REGML_WIIU
+            wiiu_load_trace(std::string("vm-bad-alloc code=") +
+                            std::string(package.code_name(static_cast<std::size_t>(code))) +
+                            " pc=" + std::to_string(last_instruction_pc));
+#endif
             throw Error(ErrorKind::io,
                         "out of memory in " + std::string(package.code_name(static_cast<std::size_t>(code))),
                         program.origin + pc);
@@ -4436,6 +4530,11 @@ struct GameSession::Impl {
 #endif
             current_code = code;
             current_vm_address = program.origin + pc;
+#if REGML_WIIU
+            wiiu_load_trace(std::string("vm-host-lookup-error code=") +
+                            std::string(package.code_name(static_cast<std::size_t>(code))) +
+                            " pc=" + std::to_string(last_instruction_pc) + " error=" + e.what());
+#endif
             throw Error(ErrorKind::vm,
                         std::string("host lookup failed: ") + e.what() + " in " +
                             std::string(package.code_name(static_cast<std::size_t>(code))),
@@ -9597,7 +9696,17 @@ struct GameSession::Impl {
                     result->elements[0] = std::int32_t{-1};
                     return result;
                 }
+#if REGML_WIIU
+                wiiu_load_trace("video-draw.update.begin position=" +
+                                std::to_string(video_player.position_ms()));
+#endif
                 video_player.update_frame();
+#if REGML_WIIU
+                wiiu_load_trace("video-draw.update.end failed=" + std::to_string(video_player.failed()) +
+                                " status=" + std::to_string(video_player.status()) +
+                                " frame=" + std::to_string(video_player.has_frame()) +
+                                " position=" + std::to_string(video_player.position_ms()));
+#endif
                 if (video_player.failed()) {
                     result->row_lengths[0] = 1;
                     result->elements[0] = std::int32_t{-1};
@@ -9620,6 +9729,9 @@ struct GameSession::Impl {
                     if (frame_pixels.size() == surface.pixels().size())
                         std::copy(frame_pixels.begin(), frame_pixels.end(), surface.pixels().begin());
                 }
+#if REGML_WIIU
+                wiiu_load_trace("video-draw.complete surface=" + std::to_string(video_surface));
+#endif
                 result->row_lengths[0] = 2;
                 result->elements[0] = std::int32_t{0};
                 result->elements[1] = std::int32_t{video_surface};
@@ -13208,8 +13320,9 @@ struct GameSession::Impl {
 GameSession::GameSession(const std::filesystem::path &path,
                          std::optional<std::uint32_t> seed,
                          const std::filesystem::path &save_directory,
-                         const GamepadState &gamepad)
-    : impl_(std::make_unique<Impl>(path, seed, save_directory, gamepad)) {}
+                         const GamepadState &gamepad,
+                         std::string_view start_room)
+    : impl_(std::make_unique<Impl>(path, seed, save_directory, gamepad, start_room)) {}
 GameSession::~GameSession() = default;
 void GameSession::set_gamepad_state(const GamepadState &state) {
     impl_->gamepad = state;

@@ -55,7 +55,8 @@ void help() {
            "  regml --help | --version\n"
            "Run options: --frames N, --headless, --hidden, --screenshot FILE,\n"
            "             --input-script FILE, --seed N, --save-dir DIR, --speed Nx,\n"
-           "             --speed-control, --debug-overlay, --profile-log FILE\n";
+           "             --start-room NAME, --speed-control, --debug-overlay,\n"
+           "             --profile-log FILE\n";
 }
 void print_instruction(const regml::Instruction &ins, std::size_t origin, bool resolved = false) {
     std::cout << "  0x" << std::hex << std::setw(8) << std::setfill('0') << origin + ins.offset << "  "
@@ -407,7 +408,7 @@ int command(int argc, char **argv) {
                 options.debug_overlay = true;
             else if (flag == "--frames" || flag == "--screenshot" || flag == "--input-script" ||
                      flag == "--seed" || flag == "--save-dir" || flag == "--speed" ||
-                     flag == "--profile-log") {
+                     flag == "--start-room" || flag == "--profile-log") {
                 if (++i >= argc)
                     throw regml::Error(regml::ErrorKind::usage, "missing value for " + std::string(flag));
                 if (flag == "--frames") {
@@ -427,6 +428,8 @@ int command(int argc, char **argv) {
                     options.seed = static_cast<std::uint32_t>(seed);
                 } else if (flag == "--speed")
                     options.speed_multiplier = parse_speed(argv[i]);
+                else if (flag == "--start-room")
+                    options.start_room = argv[i];
                 else
                     options.input_script = argv[i];
             } else
