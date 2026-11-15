@@ -1,13 +1,19 @@
 #pragma once
 
+#include "backends/software/canvas.hpp"
 #include "input.hpp"
-#include "rendersoftware/canvas.hpp"
+#include <memory>
 #if REGML_PS2
 #include <gsKit.h>
 #endif
 
 namespace regml {
 class GameSession;
+#if REGML_PS2
+namespace render {
+class Ps2GsKitRenderer;
+}
+#endif
 void initialize_ps2_storage();
 
 class Ps2Frontend {
@@ -31,13 +37,10 @@ class Ps2Frontend {
     KeyboardState take_pressed() noexcept;
 #if REGML_PS2
     GSGLOBAL *gs_ = nullptr;
-    GSTEXTURE texture_{};
-    bool gpu_initialized_ = false;
-    bool uncapped_ = false;
+    std::unique_ptr<render::Ps2GsKitRenderer> renderer_;
 #else
     void *gs_ = nullptr;
 #endif
-    void *texture_memory_ = nullptr;
     KeyboardState held_{}, pressed_{}, previous_{};
     alignas(64) unsigned char pad_buffer_[256]{};
 };

@@ -1,9 +1,9 @@
 #include "frontend.hpp"
 
 #if REGML_PS2
+#include "backends/ps2_gskit/renderer.hpp"
 #include "error.hpp"
 #include "game.hpp"
-#include "gpu.hpp"
 #include <algorithm>
 #include <audsrv.h>
 #include <cstdint>
@@ -37,25 +37,7 @@ extern unsigned int size_audsrv_irx;
 
 namespace regml {
 namespace {
-#if REGML_240P
-constexpr int kTextureWidth = 512;
-constexpr int kTextureHeight = 256;
-#else
-constexpr int kTextureWidth = 1024;
-constexpr int kTextureHeight = 512;
-#endif
-constexpr int kDisplayWidth = 640;
-constexpr int kDisplayHeight = 448;
-constexpr std::size_t kTexturePixels = static_cast<std::size_t>(kTextureWidth) * kTextureHeight;
-constexpr std::size_t kTextureBytes = kTexturePixels * sizeof(std::uint16_t);
 constexpr std::size_t kMappedKeys[] = {37, 38, 39, 40, 'Z', 'X', 'C', 13};
-
-std::uint16_t rgba5551(std::uint32_t argb) noexcept {
-    const auto red = (argb >> 19) & 0x1f;
-    const auto green = (argb >> 11) & 0x1f;
-    const auto blue = (argb >> 3) & 0x1f;
-    return static_cast<std::uint16_t>(0x8000u | red | (green << 5) | (blue << 10));
-}
 } // namespace
 
 void initialize_ps2_storage() {
@@ -81,8 +63,7 @@ void initialize_ps2_storage() {
     load_irx(audsrv_irx, size_audsrv_irx, "AUDSRV");
 }
 
-Ps2Frontend::Ps2Frontend(bool hidden, bool escape_quits, bool speed_controls, bool uncapped)
-    : uncapped_(uncapped) {
+Ps2Frontend::Ps2Frontend(bool hidden, bool escape_quits, bool speed_controls, bool uncapped) {
     (void)hidden;
     (void)escape_quits;
     (void)speed_controls;
@@ -108,13 +89,14 @@ Ps2Frontend::Ps2Frontend(bool hidden, bool escape_quits, bool speed_controls, bo
     if (SifLoadModule("rom0:SIO2MAN", 0, nullptr) < 0 || SifLoadModule("rom0:PADMAN", 0, nullptr) < 0 ||
         padInit(0) != 1 || padPortOpen(0, 0, pad_buffer_) == 0)
         throw Error(ErrorKind::io, "PS2 controller initialization failed");
+
+    renderer_ = std::make_unique<render::Ps2GsKitRenderer>(gs_, uncapped);
 }
 
 Ps2Frontend::~Ps2Frontend() {
-    ps2_gpu_shutdown();
+    renderer_.reset();
     if (gs_)
         gsKit_deinit_global(gs_);
-    std::free(texture_memory_);
 }
 
 bool Ps2Frontend::poll(double *speed_multiplier) {
@@ -167,12 +149,12 @@ KeyboardState Ps2Frontend::take_pressed() noexcept {
 void Ps2Frontend::tick_game(GameSession &session,
                             const KeyboardState *replay,
                             const KeyboardState *replay_pressed) {
-    if (!gpu_initialized_) {
-        ps2_gpu_initialize(gs_, session.canvas().width(), session.canvas().height());
-        session.canvas().gpu_target(true);
-        gpu_initialized_ = true;
-    }
-    ps2_gpu_begin();
+    const auto width = session.canvas().width();
+    const auto height = session.canvas().height();
+    const bool accelerated =
+        renderer_ &&
+        renderer_->begin_frame({{static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)}, 0});
+    session.canvas().gpu_target(accelerated);
     const auto pressed = take_pressed();
     session.tick(replay ? *replay : held_,
                  replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed);
@@ -180,68 +162,12 @@ void Ps2Frontend::tick_game(GameSession &session,
 
 void Ps2Frontend::present(const Canvas &canvas) {
     if (canvas.gpu_target()) {
-        ps2_gpu_flush();
-        if (uncapped_) {
-            if (!gs_->FirstFrame && gs_->DoubleBuffering == GS_SETTING_ON) {
-                GS_SET_DISPFB2(gs_->ScreenBuffer[gs_->ActiveBuffer & 1] / 8192, gs_->Width / 64, gs_->PSM, 0,
-                               0);
-                gs_->ActiveBuffer ^= 1;
-            }
-            gsKit_setactive(gs_);
-        } else {
-            gsKit_sync_flip(gs_);
-        }
-        ps2_gpu_presented();
+        if (renderer_ && renderer_->end_frame())
+            renderer_->present();
         return;
     }
-
-    if (!texture_memory_) {
-        auto *pixels = static_cast<std::uint16_t *>(memalign(64, kTextureBytes));
-        if (!pixels)
-            throw Error(ErrorKind::io, "PS2 software framebuffer allocation failed");
-        texture_memory_ = pixels;
-        std::memset(pixels, 0, kTextureBytes);
-        texture_.Width = kTextureWidth;
-        texture_.Height = kTextureHeight;
-        texture_.PSM = GS_PSM_CT16;
-        texture_.TBW = kTextureWidth / 64;
-        texture_.Mem = static_cast<u32 *>(texture_memory_);
-        texture_.Filter = GS_FILTER_NEAREST;
-        texture_.Vram = gsKit_vram_alloc(gs_, gsKit_texture_size(kTextureWidth, kTextureHeight, GS_PSM_CT16),
-                                         GSKIT_ALLOC_USERBUFFER);
-        if (texture_.Vram == GSKIT_ALLOC_ERROR)
-            throw Error(ErrorKind::io, "PS2 software framebuffer VRAM allocation failed");
-    }
-    auto *pixels = static_cast<std::uint16_t *>(texture_memory_);
-    const auto source = canvas.pixels();
-    const auto width = std::min(canvas.width(), kTextureWidth);
-    const auto height = std::min(canvas.height(), kTextureHeight);
-    for (int y = 0; y < height; ++y) {
-        auto *row = pixels + static_cast<std::size_t>(y) * kTextureWidth;
-        const auto *src = source.data() + static_cast<std::size_t>(y) * canvas.width();
-        for (int x = 0; x < width; ++x)
-            row[x] = rgba5551(src[x]);
-        std::fill(row + width, row + kTextureWidth, 0);
-    }
-    for (int y = height; y < kTextureHeight; ++y) {
-        auto *row = pixels + static_cast<std::size_t>(y) * kTextureWidth;
-        std::fill(row, row + kTextureWidth, 0);
-    }
-
-    gsKit_texture_upload(gs_, &texture_);
-
-    const float scale = std::min(static_cast<float>(kDisplayWidth) / canvas.width(),
-                                 static_cast<float>(kDisplayHeight) / canvas.height());
-    const float draw_width = canvas.width() * scale;
-    const float draw_height = canvas.height() * scale;
-    const float left = (kDisplayWidth - draw_width) * 0.5f;
-    const float top = (kDisplayHeight - draw_height) * 0.5f;
-    gsKit_clear(gs_, GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0));
-    gsKit_prim_sprite_texture(gs_, &texture_, left, top, 0.0f, 0.0f, left + draw_width, top + draw_height,
-                              static_cast<float>(canvas.width()), static_cast<float>(canvas.height()), 1,
-                              GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0));
-    gsKit_queue_exec(gs_);
-    gsKit_sync_flip(gs_);
+    if (renderer_)
+        renderer_->present_canvas(canvas);
 }
 } // namespace regml
 #endif

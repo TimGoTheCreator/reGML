@@ -1,5 +1,8 @@
 #pragma once
 #include "error.hpp"
+#if REGML_WIIU
+#include "render/renderer.hpp"
+#endif
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -9,16 +12,23 @@
 namespace regml {
 class GameAssets;
 std::array<unsigned, 7> font_bitmap(unsigned char character);
-// sdl just puts it on screen
+// Software Canvas rasterizes CPU fallbacks and can submit supported draws to a
+// platform-selected renderer.
 class Canvas {
   public:
     using PixelShader = std::uint32_t (*)(void *context, int x, int y, std::uint32_t rgba) noexcept;
-    Canvas(int width, int height, bool main_screen = false);
+    Canvas(int width, int height, bool main_screen = false, double resolution_scale = 1.0);
     double render_scale() const noexcept { return render_scale_; }
     int logical_width() const noexcept { return logical_width_; }
     int logical_height() const noexcept { return logical_height_; }
     void gpu_target(bool enabled);
-    bool gpu_target() const noexcept { return gpu_; }
+    bool gpu_target() const noexcept {
+#if REGML_WIIU
+        return gpu_ || renderer_ != nullptr;
+#else
+        return gpu_;
+#endif
+    }
     void profile_text(bool enabled) noexcept { profile_text_ = enabled; }
     double take_text_profile_ms() noexcept {
         const double result = text_profile_ms_;
@@ -27,11 +37,24 @@ class Canvas {
     }
     [[nodiscard]] int width() const noexcept { return width_; }
     [[nodiscard]] int height() const noexcept { return height_; }
-    [[nodiscard]] std::span<std::uint32_t> pixels() noexcept { return pixels_; }
-    [[nodiscard]] std::span<const std::uint32_t> pixels() const noexcept { return pixels_; }
+#if REGML_WIIU
+    // Non-owning renderer binding used by the Wii U command bridge. A missing
+    // target surface denotes the renderer's display framebuffer.
+    void set_renderer(render::IRenderer *renderer, render::SurfaceHandle target = {}) noexcept;
+    [[nodiscard]] render::IRenderer *renderer() const noexcept { return renderer_; }
+    [[nodiscard]] render::SurfaceHandle render_target() const noexcept { return render_target_; }
+    [[nodiscard]] bool renderer_commands_active() const noexcept;
+    [[nodiscard]] bool force_software_fallback() noexcept;
+    [[nodiscard]] bool sync_from_renderer() noexcept;
+    [[nodiscard]] bool sync_to_renderer() noexcept;
+    [[nodiscard]] bool renderer_failed() const noexcept { return renderer_failure_; }
+    bool submit_render_command(render::RenderCommand command);
+#endif
+    [[nodiscard]] std::span<std::uint32_t> pixels();
+    [[nodiscard]] std::span<const std::uint32_t> pixels() const;
     [[nodiscard]] std::uint32_t pixel(int x, int y) const;
     void clear(std::uint32_t gml_bgr);
-    void clear_transparent() noexcept;
+    void clear_transparent();
     void color(std::uint32_t gml_bgr) noexcept;
     void alpha(double alpha);
     void blend_enable(bool enabled) noexcept { blend_enabled_ = enabled; }
@@ -168,6 +191,12 @@ class Canvas {
     int width_, height_;
     std::vector<std::uint32_t> pixels_;
     mutable std::vector<std::uint32_t> readback_scratch_;
+#if REGML_WIIU
+    render::IRenderer *renderer_ = nullptr;
+    render::SurfaceHandle render_target_{};
+    mutable bool renderer_failure_ = false;
+    mutable bool renderer_cpu_synced_ = false;
+#endif
     std::uint32_t rgb_ = 0xffffff;
     unsigned alpha_ = 255;
     int font_scale_ = 1;

@@ -1,4 +1,4 @@
-#include "renderer.hpp"
+#include "presenter.hpp"
 #include "gpu.hpp"
 #include "lookup.hpp"
 
@@ -9,8 +9,6 @@
 #include <cstring>
 #include <gccore.h>
 #include <malloc.h>
-#include <ogc/pad.h>
-#include <wiiuse/wpad.h>
 
 #if defined(__GNUC__) || defined(__clang__)
 #define REGML_ALWAYS_INLINE __attribute__((always_inline)) inline
@@ -41,18 +39,6 @@ constexpr std::size_t kTileBytes = 64;
 constexpr std::size_t kTextureBytes = kPixelCount * 4;
 constexpr std::size_t kFifoSize = 256 * 1024;
 constexpr std::size_t kDispListSize = 128;
-
-constexpr std::size_t kKeyLeft = 37;
-constexpr std::size_t kKeyUp = 38;
-constexpr std::size_t kKeyRight = 39;
-constexpr std::size_t kKeyDown = 40;
-constexpr std::size_t kKeyConfirm = 'Z';
-constexpr std::size_t kKeyCancel = 'X';
-constexpr std::size_t kKeyMenu = 'C';
-constexpr std::size_t kKeyStart = 13;
-
-constexpr std::size_t kMappedKeys[8] = {kKeyLeft,    kKeyUp,     kKeyRight, kKeyDown,
-                                        kKeyConfirm, kKeyCancel, kKeyMenu,  kKeyStart};
 
 REGML_ALWAYS_INLINE void ppc_dcbz(void *ptr) noexcept {
 #ifdef __powerpc__
@@ -193,7 +179,6 @@ struct WiiHardwareState {
 
     volatile u32 retrace_counter = 0;
     u32 last_presented_retrace = 0;
-    bool input_initialized = false;
 };
 
 WiiHardwareState g_hw{};
@@ -599,15 +584,6 @@ void configure_gx_pipeline(GXRModeObj *vmode) noexcept {
     GX_SetDispCopyGamma(GX_GM_1_0);
 }
 
-void ensure_controllers_initialized() noexcept {
-    if (REGML_LIKELY(g_hw.input_initialized))
-        return;
-    PAD_Init();
-    WPAD_Init();
-    WPAD_SetDataFormat(WPAD_CHAN_ALL, WPAD_FMT_BTNS_ACC);
-    g_hw.input_initialized = true;
-}
-
 } // namespace
 
 WiiRenderer::WiiRenderer() {
@@ -678,7 +654,6 @@ WiiRenderer::WiiRenderer() {
     GX_LoadTexObj(&g_hw.tex_obj, GX_TEXMAP0);
     compile_fullscreen_quad_display_list();
 
-    ensure_controllers_initialized();
     g_hw.retrace_counter = 0;
     g_hw.last_presented_retrace = g_hw.retrace_counter;
     g_hw.signature_valid = false;
@@ -687,44 +662,15 @@ WiiRenderer::WiiRenderer() {
 }
 
 REGML_HOT void WiiRenderer::present(const Canvas &canvas) {
+    if (canvas.gpu_target()) {
+        present_gpu();
+        return;
+    }
+
     if (REGML_UNLIKELY(!framebuffers_[0] || !framebuffers_[1])) {
         return;
     }
 
-    if (canvas.gpu_target()) {
-        wii_gpu_flush();
-#if REGML_240P
-        GX_SetTexCopySrc(0, 0, render_width, render_height);
-        GX_SetTexCopyDst(render_width, render_height, GX_TF_RGBA8, GX_FALSE);
-        GX_SetCopyFilter(GX_FALSE, g_hw.video_mode->sample_pattern, GX_FALSE, g_hw.video_mode->vfilter);
-        GX_CopyTex(texture_pixels_, GX_FALSE);
-        GX_PixModeSync();
-        configure_gx_pipeline(g_hw.video_mode);
-        GX_InitTexObj(&g_hw.tex_obj, texture_pixels_, render_width, render_height, GX_TF_RGBA8, GX_CLAMP,
-                      GX_CLAMP, GX_FALSE);
-        GX_InitTexObjLOD(&g_hw.tex_obj, GX_NEAR, GX_NEAR, 0, 0, 0, GX_FALSE, GX_FALSE, GX_ANISO_1);
-        GX_InvalidateTexAll();
-        GX_LoadTexObj(&g_hw.tex_obj, GX_TEXMAP0);
-        GX_CallDispList(g_hw.quad_disp_list, g_hw.quad_disp_list_size);
-#else
-        if (texture_pixels_) {
-            GX_DrawDone();
-            std::free(texture_pixels_);
-            texture_pixels_ = nullptr;
-            std::free(g_hw.tile_signatures);
-            g_hw.tile_signatures = nullptr;
-        }
-#endif
-        const int slot = framebuffer_ & 1;
-        GX_CopyDisp(framebuffers_[slot], GX_FALSE);
-        GX_DrawDone();
-        wii_gpu_presented();
-        VIDEO_SetNextFramebuffer(framebuffers_[slot]);
-        VIDEO_Flush();
-        VIDEO_WaitVSync();
-        framebuffer_ = slot ^ 1;
-        return;
-    }
     if (!texture_pixels_)
         return;
     void *target_tex_mem = texture_pixels_;
@@ -816,112 +762,41 @@ REGML_HOT void WiiRenderer::present(const Canvas &canvas) {
     framebuffer_ = fb_slot ^ 1;
 }
 
-REGML_HOT bool WiiInput::poll() {
-    ensure_controllers_initialized();
-
-    PAD_ScanPads();
-    WPAD_ScanPads();
-
-    u32 wii_held_all = 0;
-    u32 wii_down_all = 0;
-    u32 pad_held_all = 0;
-
-    bool stick_left = false;
-    bool stick_right = false;
-    bool stick_up = false;
-    bool stick_down = false;
-
-    for (int chan = 0; chan < 4; ++chan) {
-        wii_held_all |= WPAD_ButtonsHeld(chan);
-        wii_down_all |= WPAD_ButtonsDown(chan);
-        pad_held_all |= PAD_ButtonsHeld(chan);
-
-        // deadzone for the GameCube stick
-        const s8 gc_x = PAD_StickX(chan);
-        const s8 gc_y = PAD_StickY(chan);
-        stick_left = stick_left || (gc_x < -36);
-        stick_right = stick_right || (gc_x > 36);
-        stick_up = stick_up || (gc_y > 36);
-        stick_down = stick_down || (gc_y < -36);
-
-        // read analog input from the attached extensions
-        const WPADData *wdata = WPAD_Data(chan);
-        if (wdata) {
-            if (wdata->exp.type == WPAD_EXP_NUNCHUK) {
-                const int nx = static_cast<int>(wdata->exp.nunchuk.js.pos.x) -
-                               static_cast<int>(wdata->exp.nunchuk.js.center.x);
-                const int ny = static_cast<int>(wdata->exp.nunchuk.js.pos.y) -
-                               static_cast<int>(wdata->exp.nunchuk.js.center.y);
-                stick_left = stick_left || (nx < -36);
-                stick_right = stick_right || (nx > 36);
-                stick_up = stick_up || (ny > 36);
-                stick_down = stick_down || (ny < -36);
-            } else if (wdata->exp.type == WPAD_EXP_CLASSIC) {
-                const int cx = static_cast<int>(wdata->exp.classic.ljs.pos.x) -
-                               static_cast<int>(wdata->exp.classic.ljs.center.x);
-                const int cy = static_cast<int>(wdata->exp.classic.ljs.pos.y) -
-                               static_cast<int>(wdata->exp.classic.ljs.center.y);
-                stick_left = stick_left || (cx < -12);
-                stick_right = stick_right || (cx > 12);
-                stick_up = stick_up || (cy > 12);
-                stick_down = stick_down || (cy < -12);
-            }
+REGML_HOT void WiiRenderer::present_gpu() {
+    if (REGML_UNLIKELY(!framebuffers_[0] || !framebuffers_[1])) {
+        return;
+    }
+    wii_gpu_flush();
+#if REGML_240P
+        GX_SetTexCopySrc(0, 0, render_width, render_height);
+        GX_SetTexCopyDst(render_width, render_height, GX_TF_RGBA8, GX_FALSE);
+        GX_SetCopyFilter(GX_FALSE, g_hw.video_mode->sample_pattern, GX_FALSE, g_hw.video_mode->vfilter);
+        GX_CopyTex(texture_pixels_, GX_FALSE);
+        GX_PixModeSync();
+        configure_gx_pipeline(g_hw.video_mode);
+        GX_InitTexObj(&g_hw.tex_obj, texture_pixels_, render_width, render_height, GX_TF_RGBA8, GX_CLAMP,
+                      GX_CLAMP, GX_FALSE);
+        GX_InitTexObjLOD(&g_hw.tex_obj, GX_NEAR, GX_NEAR, 0, 0, 0, GX_FALSE, GX_FALSE, GX_ANISO_1);
+        GX_InvalidateTexAll();
+        GX_LoadTexObj(&g_hw.tex_obj, GX_TEXMAP0);
+        GX_CallDispList(g_hw.quad_disp_list, g_hw.quad_disp_list_size);
+#else
+        if (texture_pixels_) {
+            GX_DrawDone();
+            std::free(texture_pixels_);
+            texture_pixels_ = nullptr;
+            std::free(g_hw.tile_signatures);
+            g_hw.tile_signatures = nullptr;
         }
-    }
-
-    const bool next_left = ((wii_held_all & (WPAD_BUTTON_LEFT | WPAD_CLASSIC_BUTTON_LEFT)) != 0u) ||
-                           ((pad_held_all & PAD_BUTTON_LEFT) != 0u) || stick_left;
-
-    const bool next_up = ((wii_held_all & (WPAD_BUTTON_UP | WPAD_CLASSIC_BUTTON_UP)) != 0u) ||
-                         ((pad_held_all & PAD_BUTTON_UP) != 0u) || stick_up;
-
-    const bool next_right = ((wii_held_all & (WPAD_BUTTON_RIGHT | WPAD_CLASSIC_BUTTON_RIGHT)) != 0u) ||
-                            ((pad_held_all & PAD_BUTTON_RIGHT) != 0u) || stick_right;
-
-    const bool next_down = ((wii_held_all & (WPAD_BUTTON_DOWN | WPAD_CLASSIC_BUTTON_DOWN)) != 0u) ||
-                           ((pad_held_all & PAD_BUTTON_DOWN) != 0u) || stick_down;
-
-    const bool next_confirm =
-        ((wii_held_all & (WPAD_BUTTON_A | WPAD_CLASSIC_BUTTON_A | WPAD_NUNCHUK_BUTTON_Z)) != 0u) ||
-        ((pad_held_all & PAD_BUTTON_A) != 0u);
-
-    const bool next_cancel =
-        ((wii_held_all & (WPAD_BUTTON_B | WPAD_CLASSIC_BUTTON_B | WPAD_NUNCHUK_BUTTON_C)) != 0u) ||
-        ((pad_held_all & PAD_BUTTON_B) != 0u);
-
-    const bool next_menu =
-        ((wii_held_all & (WPAD_BUTTON_1 | WPAD_BUTTON_2 | WPAD_CLASSIC_BUTTON_X | WPAD_CLASSIC_BUTTON_Y)) !=
-         0u) ||
-        ((pad_held_all & (PAD_BUTTON_X | PAD_BUTTON_Y)) != 0u);
-
-    const bool next_start = ((wii_held_all & (WPAD_BUTTON_PLUS | WPAD_CLASSIC_BUTTON_PLUS)) != 0u) ||
-                            ((pad_held_all & PAD_BUTTON_START) != 0u);
-
-    held_[kKeyLeft] = next_left;
-    held_[kKeyUp] = next_up;
-    held_[kKeyRight] = next_right;
-    held_[kKeyDown] = next_down;
-    held_[kKeyConfirm] = next_confirm;
-    held_[kKeyCancel] = next_cancel;
-    held_[kKeyMenu] = next_menu;
-    held_[kKeyStart] = next_start;
-
-    for (const std::size_t key : kMappedKeys) {
-        const bool is_held = held_[key];
-        pressed_[key] = is_held && !previous_[key];
-        previous_[key] = is_held;
-    }
-
-    return (wii_down_all & (WPAD_BUTTON_HOME | WPAD_CLASSIC_BUTTON_HOME)) == 0u;
-}
-
-KeyboardState WiiInput::take_pressed() noexcept {
-    KeyboardState result{};
-    for (const std::size_t key : kMappedKeys) {
-        result[key] = pressed_[key];
-        pressed_[key] = false;
-    }
-    return result;
+#endif
+        const int slot = framebuffer_ & 1;
+        GX_CopyDisp(framebuffers_[slot], GX_FALSE);
+        GX_DrawDone();
+        wii_gpu_presented();
+        VIDEO_SetNextFramebuffer(framebuffers_[slot]);
+        VIDEO_Flush();
+        VIDEO_WaitVSync();
+        framebuffer_ = slot ^ 1;
 }
 
 } // namespace regml

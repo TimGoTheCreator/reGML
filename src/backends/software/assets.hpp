@@ -2,7 +2,7 @@
 #include "canvas.hpp"
 #include "package.hpp"
 #if REGML_PS2
-#include "platform/ps2/gpu.hpp"
+#include "backends/ps2_gskit/gpu.hpp"
 #endif
 #include <array>
 #include <bitset>
@@ -21,6 +21,11 @@ class GameAssets {
   public:
     explicit GameAssets(const Package &package);
     GameAssets(const Package &package, const GmrtProject &project);
+    ~GameAssets();
+    GameAssets(const GameAssets &) = delete;
+    GameAssets &operator=(const GameAssets &) = delete;
+    GameAssets(GameAssets &&) = default;
+    GameAssets &operator=(GameAssets &&) = delete;
     struct Sprite {
         std::string_view name;
         int width = 0, height = 0, ox = 0, oy = 0, left = 0, right = 0, top = 0, bottom = 0;
@@ -76,6 +81,10 @@ class GameAssets {
                            std::optional<std::size_t> animation_frame = std::nullopt) const;
     void prefetch(int id);
     void prefetch(int id, double frame);
+    [[nodiscard]] bool texture_page_exists(std::uint32_t page_id) const noexcept {
+        return page_id < pages_.size();
+    }
+    bool prefetch_texture_page(std::uint32_t page_id);
     bool prefetch_texture_group(std::string_view name);
     void flush_texture_group(std::string_view name);
     void draw_background(Canvas &canvas, int id, double x, double y);
@@ -237,6 +246,13 @@ class GameAssets {
     std::vector<std::uint32_t> sprite_frame_regions_;
     std::vector<std::uint8_t> mask_data_;
     std::vector<Page> pages_;
+#if REGML_WIIU
+    struct RendererTexture {
+        render::TextureHandle handle{};
+        int width = 0, height = 0;
+    };
+    std::unordered_map<render::IRenderer *, std::unordered_map<int, RendererTexture>> renderer_textures_;
+#endif
     Page scratch_page_;
     int scratch_page_id_ = -1;
     std::array<int, 5> scratch_region_key_{};
@@ -295,6 +311,9 @@ class GameAssets {
     [[nodiscard]] const Region *find_region(std::size_t pointer) const noexcept;
     std::uint64_t image_cache_key(const Region &region) const noexcept;
     Page &load_page(int id);
+#if REGML_WIIU
+    render::TextureHandle renderer_page_texture(Canvas &canvas, int page_id, int &width, int &height);
+#endif
     void release_scratch_page() noexcept;
     void blit(Canvas &canvas,
               const Region &r,

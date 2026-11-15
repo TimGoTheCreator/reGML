@@ -1,13 +1,22 @@
 #include "canvas.hpp"
-#include "platform/ps2/gpu.hpp"
-#include "platform/wii/gpu.hpp"
+#if REGML_PS2
+#include "backends/ps2_gskit/gpu.hpp"
+#endif
+#if REGML_WII
+#include "backends/wii_gx/gpu.hpp"
+#endif
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <fstream>
+#include <limits>
 #include <png.h>
+#if REGML_WIIU
+#include <optional>
+#endif
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || _M_IX86_FP >= 2
 #include <emmintrin.h>
 #define REGML_CANVAS_SSE2 1
@@ -19,6 +28,171 @@ namespace {
 std::uint32_t to_rgb(std::uint32_t bgr) {
     return ((bgr & 0xff) << 16) | (bgr & 0xff00) | ((bgr >> 16) & 0xff);
 }
+#if REGML_WIIU
+std::optional<render::BlendFactor> renderer_blend_factor(int factor) noexcept {
+    switch (factor) {
+    case 1:
+        return render::BlendFactor::Zero;
+    case 2:
+        return render::BlendFactor::One;
+    case 3:
+        return render::BlendFactor::SourceColor;
+    case 4:
+        return render::BlendFactor::OneMinusSourceColor;
+    case 5:
+        return render::BlendFactor::SourceAlpha;
+    case 6:
+        return render::BlendFactor::OneMinusSourceAlpha;
+    case 7:
+        return render::BlendFactor::DestinationAlpha;
+    case 8:
+        return render::BlendFactor::OneMinusDestinationAlpha;
+    case 9:
+        return render::BlendFactor::DestinationColor;
+    case 10:
+        return render::BlendFactor::OneMinusDestinationColor;
+    case 11:
+        return render::BlendFactor::SourceAlphaSaturate;
+    default:
+        return std::nullopt;
+    }
+}
+std::optional<render::BlendEquation> renderer_blend_equation(int equation) noexcept {
+    switch (equation) {
+    case 0:
+        return render::BlendEquation::Add;
+    case 1:
+        return render::BlendEquation::Subtract;
+    case 2:
+        return render::BlendEquation::ReverseSubtract;
+    case 3:
+        return render::BlendEquation::Minimum;
+    case 4:
+        return render::BlendEquation::Maximum;
+    default:
+        return std::nullopt;
+    }
+}
+render::ColorRGBA8 renderer_color(std::uint32_t rgba) noexcept {
+    return {static_cast<std::uint8_t>(rgba >> 16), static_cast<std::uint8_t>(rgba >> 8),
+            static_cast<std::uint8_t>(rgba), static_cast<std::uint8_t>(rgba >> 24)};
+}
+struct RendererMesh {
+    std::vector<render::Vertex2D> vertices;
+
+    void triangle(double ax, double ay, double bx, double by, double cx, double cy, std::uint32_t rgba) {
+        const auto color = renderer_color(rgba);
+        vertices.push_back({static_cast<float>(ax), static_cast<float>(ay), 0, 0, color});
+        vertices.push_back({static_cast<float>(bx), static_cast<float>(by), 0, 0, color});
+        vertices.push_back({static_cast<float>(cx), static_cast<float>(cy), 0, 0, color});
+    }
+    void quad(double x0, double y0, double x1, double y1, double x2, double y2, double x3, double y3,
+              std::uint32_t rgba) {
+        triangle(x0, y0, x1, y1, x2, y2, rgba);
+        triangle(x0, y0, x2, y2, x3, y3, rgba);
+    }
+    bool submit(Canvas &canvas) const {
+        if (vertices.empty())
+            return true;
+        render::DrawTrianglesCommand draw;
+        draw.vertices = std::span<const render::Vertex2D>(vertices);
+        return canvas.submit_render_command(render::RenderCommand{draw});
+    }
+};
+std::size_t curve_segments(double radius) noexcept {
+    return static_cast<std::size_t>(std::clamp(std::ceil(radius * 1.25), 12.0, 128.0));
+}
+void append_ellipse_ring(RendererMesh &mesh,
+                         double center_x,
+                         double center_y,
+                         double radius_x,
+                         double radius_y,
+                         double inner_x,
+                         double inner_y,
+                         std::uint32_t rgba,
+                         std::size_t segments) {
+    constexpr double tau = 6.28318530717958647692;
+    for (std::size_t i = 0; i < segments; ++i) {
+        const double first = tau * static_cast<double>(i) / segments;
+        const double second = tau * static_cast<double>(i + 1) / segments;
+        const double outer_x0 = center_x + radius_x * std::cos(first);
+        const double outer_y0 = center_y + radius_y * std::sin(first);
+        const double outer_x1 = center_x + radius_x * std::cos(second);
+        const double outer_y1 = center_y + radius_y * std::sin(second);
+        const double inner_x0 = center_x + inner_x * std::cos(first);
+        const double inner_y0 = center_y + inner_y * std::sin(first);
+        const double inner_x1 = center_x + inner_x * std::cos(second);
+        const double inner_y1 = center_y + inner_y * std::sin(second);
+        mesh.quad(outer_x0, outer_y0, outer_x1, outer_y1, inner_x1, inner_y1, inner_x0, inner_y0,
+                  rgba);
+    }
+}
+void append_filled_ellipse(RendererMesh &mesh,
+                           double center_x,
+                           double center_y,
+                           double radius_x,
+                           double radius_y,
+                           std::uint32_t rgba,
+                           std::size_t segments) {
+    constexpr double tau = 6.28318530717958647692;
+    for (std::size_t i = 0; i < segments; ++i) {
+        const double first = tau * static_cast<double>(i) / segments;
+        const double second = tau * static_cast<double>(i + 1) / segments;
+        mesh.triangle(center_x, center_y, center_x + radius_x * std::cos(first),
+                      center_y + radius_y * std::sin(first), center_x + radius_x * std::cos(second),
+                      center_y + radius_y * std::sin(second), rgba);
+    }
+}
+void append_line_quad(RendererMesh &mesh,
+                      double x1,
+                      double y1,
+                      double x2,
+                      double y2,
+                      double width,
+                      std::uint32_t rgba) {
+    const double dx = x2 - x1, dy = y2 - y1;
+    const double length = std::hypot(dx, dy);
+    if (length == 0) {
+        mesh.quad(x1 - width / 2, y1 - width / 2, x1 + width / 2, y1 - width / 2,
+                  x1 + width / 2, y1 + width / 2, x1 - width / 2, y1 + width / 2, rgba);
+        return;
+    }
+    const double nx = -dy / length * width / 2, ny = dx / length * width / 2;
+    mesh.quad(x1 + nx, y1 + ny, x2 + nx, y2 + ny, x2 - nx, y2 - ny, x1 - nx, y1 - ny, rgba);
+}
+void append_capsule(RendererMesh &mesh,
+                    double x1,
+                    double y1,
+                    double x2,
+                    double y2,
+                    double radius,
+                    std::uint32_t rgba) {
+    const double dx = x2 - x1, dy = y2 - y1;
+    if (dx == 0 && dy == 0) {
+        append_filled_ellipse(mesh, x1, y1, radius, radius, rgba, curve_segments(radius));
+        return;
+    }
+    const double direction = std::atan2(dy, dx);
+    const auto half_segments = std::max<std::size_t>(4, curve_segments(radius) / 2);
+    std::vector<std::array<double, 2>> points;
+    points.reserve(half_segments * 2 + 2);
+    constexpr double pi = 3.14159265358979323846;
+    for (std::size_t i = 0; i <= half_segments; ++i) {
+        const double angle = direction - pi / 2 + pi * static_cast<double>(i) / half_segments;
+        points.push_back({x2 + radius * std::cos(angle), y2 + radius * std::sin(angle)});
+    }
+    for (std::size_t i = 0; i <= half_segments; ++i) {
+        const double angle = direction + pi / 2 + pi * static_cast<double>(i) / half_segments;
+        points.push_back({x1 + radius * std::cos(angle), y1 + radius * std::sin(angle)});
+    }
+    const double center_x = (x1 + x2) / 2, center_y = (y1 + y2) / 2;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        const auto &a = points[i];
+        const auto &b = points[(i + 1) % points.size()];
+        mesh.triangle(center_x, center_y, a[0], a[1], b[0], b[1], rgba);
+    }
+}
+#endif
 void finite(double value) {
     if (!std::isfinite(value))
         throw Error(ErrorKind::vm, "drawing coordinate must be finite");
@@ -662,13 +836,21 @@ const GlyphShape &glyph_shape(unsigned char character) {
 std::array<unsigned, 7> font_bitmap(unsigned char character) {
     return glyph(static_cast<char>(character));
 }
-Canvas::Canvas(int width, int height, bool main_screen)
+Canvas::Canvas(int width, int height, bool main_screen, double resolution_scale)
     : logical_width_(width), logical_height_(height), width_(width), height_(height) {
+    if (!std::isfinite(resolution_scale) || resolution_scale <= 0 || resolution_scale > 1)
+        throw Error(ErrorKind::unsupported, "canvas resolution scale must be between 0 and 1");
+    if (resolution_scale < 1) {
+        render_scale_ = coordinate_scale_ = resolution_scale;
+        width_ = std::max(1, static_cast<int>(std::ceil(width * resolution_scale)));
+        height_ = std::max(1, static_cast<int>(std::ceil(height * resolution_scale)));
+    }
 #if REGML_240P
     if (main_screen) {
-        render_scale_ = coordinate_scale_ = 0.5;
-        width_ = (width + 1) / 2;
-        height_ = (height + 1) / 2;
+        render_scale_ *= 0.5;
+        coordinate_scale_ *= 0.5;
+        width_ = (width_ + 1) / 2;
+        height_ = (height_ + 1) / 2;
     }
 #else
     (void)main_screen;
@@ -679,6 +861,166 @@ Canvas::Canvas(int width, int height, bool main_screen)
         static_cast<std::uint64_t>(width_) * static_cast<std::uint64_t>(height_) > max_canvas_pixels)
         throw Error(ErrorKind::unsupported, "canvas dimensions exceed the supported 8192x8192 limit");
     pixels_.resize(static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_), 0xff000000);
+}
+#if REGML_WIIU
+void Canvas::set_renderer(render::IRenderer *renderer, render::SurfaceHandle target) noexcept {
+    renderer_ = renderer;
+    render_target_ = target;
+    renderer_failure_ = false;
+    renderer_cpu_synced_ = false;
+}
+bool Canvas::renderer_commands_active() const noexcept {
+    // Wii U draw calls must stay on GX2. A failed native draw is surfaced at
+    // the frame boundary; it must never make the software rasterizer active.
+    return renderer_ != nullptr;
+}
+bool Canvas::force_software_fallback() noexcept {
+    if (!renderer_)
+        return true;
+    // The Wii U backend intentionally has no software-renderer fallback.
+    // Keep callers from silently continuing into the CPU rasterizer.
+    renderer_failure_ = true;
+    return false;
+}
+bool Canvas::sync_from_renderer() noexcept {
+    if (!renderer_)
+        return false;
+    if (renderer_cpu_synced_)
+        return true;
+    const auto byte_count = static_cast<std::uint64_t>(width_) * height_ * 4;
+    if (byte_count > std::numeric_limits<std::size_t>::max()) {
+        renderer_failure_ = true;
+        return false;
+    }
+    try {
+        std::vector<std::byte> rgba(static_cast<std::size_t>(byte_count));
+        const render::Extent2D size{static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_)};
+        const render::PixelBufferView pixels{std::span<std::byte>(rgba), size,
+                                             static_cast<std::size_t>(width_) * 4,
+                                             render::PixelFormat::RGBA8};
+        if (!renderer_->read_surface(render_target_, pixels)) {
+            renderer_failure_ = true;
+            return false;
+        }
+        if (pixels_.size() != static_cast<std::size_t>(width_) * height_)
+            pixels_.resize(static_cast<std::size_t>(width_) * height_);
+        for (std::size_t i = 0; i < pixels_.size(); ++i) {
+            const auto *source = rgba.data() + i * 4;
+            const auto red = std::to_integer<std::uint32_t>(source[0]);
+            const auto green = std::to_integer<std::uint32_t>(source[1]);
+            const auto blue = std::to_integer<std::uint32_t>(source[2]);
+            const auto alpha = std::to_integer<std::uint32_t>(source[3]);
+            pixels_[i] = (alpha << 24) | (red << 16) | (green << 8) | blue;
+        }
+        renderer_cpu_synced_ = true;
+        return true;
+    } catch (...) {
+        renderer_failure_ = true;
+        return false;
+    }
+}
+bool Canvas::sync_to_renderer() noexcept {
+    if (!renderer_ || !render_target_.valid()) {
+        renderer_cpu_synced_ = false;
+        return true;
+    }
+    if (pixels_.size() != static_cast<std::size_t>(width_) * height_) {
+        renderer_failure_ = true;
+        return false;
+    }
+    try {
+        std::vector<std::byte> rgba(pixels_.size() * 4);
+        for (std::size_t i = 0; i < pixels_.size(); ++i) {
+            const auto pixel = pixels_[i];
+            rgba[i * 4 + 0] = static_cast<std::byte>((pixel >> 16) & 0xff);
+            rgba[i * 4 + 1] = static_cast<std::byte>((pixel >> 8) & 0xff);
+            rgba[i * 4 + 2] = static_cast<std::byte>(pixel & 0xff);
+            rgba[i * 4 + 3] = static_cast<std::byte>(pixel >> 24);
+        }
+        const render::Extent2D size{static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_)};
+        const render::ConstPixelBufferView pixels{std::span<const std::byte>(rgba), size,
+                                                  static_cast<std::size_t>(width_) * 4,
+                                                  render::PixelFormat::RGBA8};
+        if (!renderer_->update_surface(render_target_, pixels)) {
+            renderer_failure_ = true;
+            return false;
+        }
+        renderer_cpu_synced_ = false;
+        return true;
+    } catch (...) {
+        renderer_failure_ = true;
+        return false;
+    }
+}
+bool Canvas::submit_render_command(render::RenderCommand command) {
+    if (!renderer_)
+        return false;
+    if (renderer_failure_)
+        throw Error(ErrorKind::io, "Wii U GX2 renderer has already rejected a draw command");
+    if (pixel_shader_) {
+        renderer_failure_ = true;
+        throw Error(ErrorKind::unsupported, "Wii U GX2 does not support this pixel shader");
+    }
+    if (auto *clear = std::get_if<render::ClearCommand>(&command)) {
+        if (!color_write_all()) {
+            renderer_failure_ = true;
+            throw Error(ErrorKind::unsupported, "Wii U GX2 clear does not support a partial color mask");
+        }
+        clear->target.surface = render_target_;
+    } else {
+        auto &draw = std::get<render::DrawTrianglesCommand>(command);
+        const auto source_rgb = renderer_blend_factor(blend_factors_[0]);
+        const auto destination_rgb = renderer_blend_factor(blend_factors_[1]);
+        const auto source_alpha = renderer_blend_factor(blend_factors_[2]);
+        const auto destination_alpha = renderer_blend_factor(blend_factors_[3]);
+        const auto equation_rgb = renderer_blend_equation(blend_equations_[0]);
+        const auto equation_alpha = renderer_blend_equation(blend_equations_[1]);
+        if (!source_rgb || !destination_rgb || !source_alpha || !destination_alpha || !equation_rgb ||
+            !equation_alpha) {
+            renderer_failure_ = true;
+            throw Error(ErrorKind::unsupported, "Wii U GX2 does not support the requested blend state");
+        }
+        draw.target.surface = render_target_;
+        draw.blend = {.enabled = blend_enabled_,
+                      .source_rgb = *source_rgb,
+                      .destination_rgb = *destination_rgb,
+                      .source_alpha = *source_alpha,
+                      .destination_alpha = *destination_alpha,
+                      .equation_rgb = *equation_rgb,
+                      .equation_alpha = *equation_alpha};
+        draw.alpha_test = {alpha_test_enabled_, render::AlphaCompare::Greater,
+                           static_cast<std::uint8_t>(alpha_test_ref_)};
+        draw.color_write = {(color_write_mask_ & 0x00ff0000U) != 0,
+                            (color_write_mask_ & 0x0000ff00U) != 0,
+                            (color_write_mask_ & 0x000000ffU) != 0,
+                            (color_write_mask_ & 0xff000000U) != 0};
+    }
+    const auto result = renderer_->submit(command);
+    if (result == render::SubmitResult::Submitted) {
+        renderer_cpu_synced_ = false;
+        return true;
+    }
+    renderer_failure_ = true;
+    throw Error(result == render::SubmitResult::Unsupported ? ErrorKind::unsupported : ErrorKind::io,
+                result == render::SubmitResult::Unsupported
+                    ? "Wii U GX2 does not support this draw command"
+                    : "Wii U GX2 failed to submit this draw command");
+}
+#endif
+std::span<std::uint32_t> Canvas::pixels() {
+#if REGML_WIIU
+    if (renderer_failure_ || (renderer_ && !sync_from_renderer()))
+        throw Error(ErrorKind::io, "Wii U GX2 framebuffer readback failed before CPU pixel access");
+#endif
+    return pixels_;
+}
+std::span<const std::uint32_t> Canvas::pixels() const {
+#if REGML_WIIU
+    if (renderer_failure_ ||
+        (renderer_ && !const_cast<Canvas *>(this)->sync_from_renderer()))
+        throw Error(ErrorKind::io, "Wii U GX2 framebuffer readback failed before CPU pixel access");
+#endif
+    return pixels_;
 }
 void Canvas::gpu_target(bool enabled) {
 #if REGML_WII || REGML_PS2
@@ -711,6 +1053,12 @@ bool Canvas::gpu_readback(std::span<std::uint32_t> pixels) const noexcept {
 std::uint32_t Canvas::pixel(int x, int y) const {
     if (x < 0 || y < 0 || x >= width_ || y >= height_)
         throw Error(ErrorKind::usage, "pixel is outside framebuffer");
+#if REGML_WIIU
+    if (renderer_failure_)
+        throw Error(ErrorKind::io, "Wii U GX2 draw failed before pixel read");
+    if (renderer_ && !const_cast<Canvas *>(this)->sync_from_renderer())
+        throw Error(ErrorKind::io, "Wii U GX2 framebuffer readback failed before pixel read");
+#endif
 #if REGML_WII
     if (gpu_)
         return wii_gpu_pixel(x, y);
@@ -722,6 +1070,22 @@ std::uint32_t Canvas::pixel(int x, int y) const {
                    static_cast<std::size_t>(x)];
 }
 void Canvas::clear(std::uint32_t bgr) {
+#if REGML_WIIU
+    if (renderer_failure_)
+        throw Error(ErrorKind::unsupported, "renderer fallback failed before clear");
+    if (renderer_commands_active() && !color_write_all() && !force_software_fallback())
+        throw Error(ErrorKind::unsupported, "masked clear requires unavailable software fallback");
+    if (renderer_commands_active() && color_write_all()) {
+        render::ClearCommand clear;
+        clear.color = renderer_color(0xff000000U | to_rgb(bgr));
+        if (submit_render_command(render::RenderCommand{clear}))
+            return;
+    }
+#endif
+#if REGML_WIIU
+    if (renderer_failure_)
+        throw Error(ErrorKind::unsupported, "renderer fallback failed before clear");
+#endif
 #if REGML_WII
     if (gpu_) {
         wii_gpu_begin();
@@ -743,7 +1107,23 @@ void Canvas::clear(std::uint32_t bgr) {
         for (int x = 0; x < width_; ++x)
             store_pixel(x, y, rgba);
 }
-void Canvas::clear_transparent() noexcept {
+void Canvas::clear_transparent() {
+#if REGML_WIIU
+    if (renderer_failure_)
+        throw Error(ErrorKind::unsupported, "renderer fallback failed before clear");
+    if (renderer_commands_active() && !color_write_all() && !force_software_fallback())
+        throw Error(ErrorKind::unsupported, "masked clear requires unavailable software fallback");
+    if (renderer_commands_active() && color_write_all()) {
+        render::ClearCommand clear;
+        clear.color = {0, 0, 0, 0};
+        if (submit_render_command(render::RenderCommand{clear}))
+            return;
+    }
+#endif
+#if REGML_WIIU
+    if (renderer_failure_)
+        throw Error(ErrorKind::unsupported, "renderer fallback failed before clear");
+#endif
     std::fill(pixels_.begin(), pixels_.end(), 0);
 }
 void Canvas::rgba_pixel(int x, int y, std::uint32_t rgba, std::uint32_t bgr, double opacity) {
@@ -760,6 +1140,14 @@ void Canvas::store_pixel(int x, int y, std::uint32_t rgba) noexcept {
     dest = (rgba & color_write_mask_) | (dest & ~color_write_mask_);
 }
 void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, double opacity) noexcept {
+#if REGML_WIIU
+    if (renderer_failure_)
+        return;
+    if (renderer_commands_active() && !force_software_fallback())
+        return;
+    if (renderer_failure_)
+        return;
+#endif
     if (x < 0 || y < 0 || x >= width_ || y >= height_)
         return;
     if (!gpu_ && pixel_shader_)
@@ -924,6 +1312,14 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
     store_pixel(x, y, result);
 }
 void Canvas::rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tint, double opacity) noexcept {
+#if REGML_WIIU
+    if (renderer_failure_)
+        return;
+    if (renderer_commands_active() && !force_software_fallback())
+        return;
+    if (renderer_failure_)
+        return;
+#endif
     if (y < 0 || y >= height_ || count <= 0 || x >= width_ || opacity <= 0)
         return;
     const int end =
@@ -1067,6 +1463,14 @@ void Canvas::blit_rgba(std::span<const std::uint32_t> source,
                        unsigned tint,
                        double opacity,
                        std::int8_t source_alpha_mode) noexcept {
+#if REGML_WIIU
+    if (renderer_failure_)
+        return;
+    if (renderer_commands_active() && !force_software_fallback())
+        return;
+    if (renderer_failure_)
+        return;
+#endif
     if (opacity <= 0)
         return;
     const bool source_overlaps_canvas = overlaps_canvas_pixels(source, pixels_);
@@ -1501,6 +1905,49 @@ void Canvas::draw_surface(const Canvas &source,
     finite(opacity);
     if (sx == 0 || sy == 0 || source.width_ == 0 || source.height_ == 0 || opacity <= 0)
         return;
+#if REGML_WIIU
+    if (renderer_failure_)
+        throw Error(ErrorKind::unsupported, "renderer fallback failed before surface draw");
+    if (renderer_commands_active()) {
+        // Sampling from the active render target is a framebuffer feedback
+        // loop on GX2. The application surface is normally composited to a
+        // different display target; self-sampling remains a harmless no-op.
+        if (source.renderer_ == renderer_ && source.render_target_ == render_target_)
+            return;
+        if (source.renderer_ == renderer_ && source.render_target_.valid() &&
+            source.render_target_ != render_target_ && !pixel_shader_) {
+            const double radians = angle * 3.14159265358979323846 / 180.0;
+            const double cosine = std::cos(radians), sine = std::sin(radians);
+            const double draw_width = source.logical_width_ * sx, draw_height = source.logical_height_ * sy;
+            const double x1 = x + draw_width * cosine, y1 = y - draw_width * sine;
+            const double x2 = x + draw_height * sine, y2 = y + draw_height * cosine;
+            const double x3 = x1 + draw_height * sine, y3 = y1 + draw_height * cosine;
+            const auto color = renderer_color(0xff000000U | to_rgb(tint));
+            const render::Vertex2D vertices[] = {
+                {static_cast<float>(x), static_cast<float>(y), 0, 0, {}},
+                {static_cast<float>(x1), static_cast<float>(y1), 1, 0, {}},
+                {static_cast<float>(x3), static_cast<float>(y3), 1, 1, {}},
+                {static_cast<float>(x), static_cast<float>(y), 0, 0, {}},
+                {static_cast<float>(x3), static_cast<float>(y3), 1, 1, {}},
+                {static_cast<float>(x2), static_cast<float>(y2), 0, 1, {}},
+            };
+            render::DrawTrianglesCommand draw;
+            draw.source = source.render_target_;
+            draw.vertices = std::span<const render::Vertex2D>(vertices);
+            draw.tint = color;
+            draw.opacity = static_cast<float>(std::clamp(opacity, 0.0, 1.0));
+            if (submit_render_command(render::RenderCommand{draw}))
+                return;
+        } else if (!force_software_fallback()) {
+            throw Error(ErrorKind::unsupported, "surface source unsupported and software fallback failed");
+        }
+    }
+#endif
+#if REGML_WIIU
+    if (renderer_ && source.renderer_ == renderer_ && !source.renderer_cpu_synced_ &&
+        !renderer_commands_active() && !const_cast<Canvas &>(source).sync_from_renderer())
+        throw Error(ErrorKind::unsupported, "surface fallback could not synchronize source pixels");
+#endif
 #if REGML_WII
     if (gpu_) {
         wii_gpu_image(source.pixels_, source.width_, 0, 0, source.width_, source.height_, x, y,
@@ -1630,6 +2077,52 @@ void Canvas::draw_surface_part(const Canvas &source,
     const double source_right = clipped_right * source_scale;
     const double source_bottom = clipped_bottom * source_scale;
 
+#if REGML_WIIU
+    if (renderer_failure_)
+        throw Error(ErrorKind::unsupported, "renderer fallback failed before partial surface draw");
+    if (renderer_commands_active()) {
+        if (source.renderer_ == renderer_ && source.render_target_ == render_target_)
+            return;
+        if (source.renderer_ == renderer_ && source.render_target_.valid() &&
+            source.render_target_ != render_target_ && !pixel_shader_) {
+            const double u0 = source_left / source.width_, v0 = source_top / source.height_;
+            const double u1 = source_right / source.width_, v1 = source_bottom / source.height_;
+            const double far_x = draw_x + draw_width, far_y = draw_y + draw_height;
+            const auto color = renderer_color(0xff000000U | to_rgb(tint));
+            const render::Vertex2D vertices[] = {
+                {static_cast<float>(draw_x), static_cast<float>(draw_y), static_cast<float>(u0),
+                 static_cast<float>(v0), {}},
+                {static_cast<float>(far_x), static_cast<float>(draw_y), static_cast<float>(u1),
+                 static_cast<float>(v0), {}},
+                {static_cast<float>(far_x), static_cast<float>(far_y), static_cast<float>(u1),
+                 static_cast<float>(v1), {}},
+                {static_cast<float>(draw_x), static_cast<float>(draw_y), static_cast<float>(u0),
+                 static_cast<float>(v0), {}},
+                {static_cast<float>(far_x), static_cast<float>(far_y), static_cast<float>(u1),
+                 static_cast<float>(v1), {}},
+                {static_cast<float>(draw_x), static_cast<float>(far_y), static_cast<float>(u0),
+                 static_cast<float>(v1), {}},
+            };
+            render::DrawTrianglesCommand draw;
+            draw.source = source.render_target_;
+            draw.vertices = std::span<const render::Vertex2D>(vertices);
+            draw.tint = color;
+            draw.opacity = static_cast<float>(std::clamp(opacity, 0.0, 1.0));
+            if (submit_render_command(render::RenderCommand{draw}))
+                return;
+        } else if (!force_software_fallback()) {
+            throw Error(ErrorKind::unsupported,
+                        "partial surface source unsupported and software fallback failed");
+        }
+    }
+#endif
+
+#if REGML_WIIU
+    if (renderer_ && source.renderer_ == renderer_ && !source.renderer_cpu_synced_ &&
+        !renderer_commands_active() && !const_cast<Canvas &>(source).sync_from_renderer())
+        throw Error(ErrorKind::unsupported, "partial surface fallback could not synchronize source pixels");
+#endif
+
 #if REGML_WII
     if (gpu_) {
         wii_gpu_image(source.pixels_, source.width_, static_cast<int>(std::floor(source_left)),
@@ -1704,6 +2197,14 @@ void Canvas::font(int id) {
     font_scale_ = id + 1;
 }
 void Canvas::plot(int x, int y) {
+#if REGML_WIIU
+    if (renderer_failure_)
+        throw Error(ErrorKind::unsupported, "renderer fallback failed during rasterization");
+    if (renderer_commands_active() && !force_software_fallback())
+        throw Error(ErrorKind::unsupported, "renderer fallback failed during rasterization");
+    if (renderer_failure_)
+        throw Error(ErrorKind::unsupported, "renderer fallback failed during rasterization");
+#endif
     if (x < 0 || y < 0 || x >= width_ || y >= height_)
         return;
     if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
@@ -1711,6 +2212,14 @@ void Canvas::plot(int x, int y) {
     plot_in_bounds(x, y);
 }
 void Canvas::plot_in_bounds(int x, int y) {
+#if REGML_WIIU
+    if (renderer_failure_)
+        throw Error(ErrorKind::unsupported, "renderer fallback failed during rasterization");
+    if (renderer_commands_active() && !force_software_fallback())
+        throw Error(ErrorKind::unsupported, "renderer fallback failed during rasterization");
+    if (renderer_failure_)
+        throw Error(ErrorKind::unsupported, "renderer fallback failed during rasterization");
+#endif
 #if REGML_WII
     if (gpu_) {
         wii_gpu_box(x, y, 1, 1, (alpha_ << 24) | rgb_);
@@ -1745,6 +2254,14 @@ void Canvas::plot_in_bounds(int x, int y) {
     store_pixel(x, y, result);
 }
 void Canvas::plot_span_in_bounds(int left, int right, int y) {
+#if REGML_WIIU
+    if (renderer_failure_)
+        throw Error(ErrorKind::unsupported, "renderer fallback failed during rasterization");
+    if (renderer_commands_active() && !force_software_fallback())
+        throw Error(ErrorKind::unsupported, "renderer fallback failed during rasterization");
+    if (renderer_failure_)
+        throw Error(ErrorKind::unsupported, "renderer fallback failed during rasterization");
+#endif
     if (y < 0 || y >= height_)
         return;
     left = std::max(left, 0);
@@ -1809,6 +2326,27 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
     const int b = static_cast<int>(std::clamp(bottom, 0.0, static_cast<double>(height_)));
     if (l >= r || t >= b)
         return;
+#if REGML_WIIU
+    if (renderer_commands_active()) {
+        RendererMesh mesh;
+        const auto rgba = (alpha_ << 24) | rgb_;
+        if (!outline) {
+            mesh.quad(l, t, r, t, r, b, l, b, rgba);
+        } else {
+            mesh.quad(l, t, r, t, r, std::min(t + 1, b), l, std::min(t + 1, b), rgba);
+            if (b - t > 1)
+                mesh.quad(l, b - 1, r, b - 1, r, b, l, b, rgba);
+            if (b - t > 2) {
+                mesh.quad(l, t + 1, std::min(l + 1, r), t + 1, std::min(l + 1, r), b - 1, l, b - 1,
+                          rgba);
+                if (r - l > 1)
+                    mesh.quad(r - 1, t + 1, r, t + 1, r, b - 1, r - 1, b - 1, rgba);
+            }
+        }
+        if (mesh.submit(*this))
+            return;
+    }
+#endif
 #if REGML_WII
     if (gpu_ && !outline) {
         wii_gpu_box(l, t, r - l, b - t, (alpha_ << 24) | rgb_);
@@ -1896,6 +2434,21 @@ void Canvas::circle(double x, double y, double radius, bool outline) {
     // the canvas and use hypot below so the distance test cannot overflow.
     if (x + radius < 0 || x - radius > width_ || y + radius < 0 || y - radius > height_)
         return;
+#if REGML_WIIU
+    if (renderer_commands_active()) {
+        if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
+            return;
+        RendererMesh mesh;
+        const auto rgba = (alpha_ << 24) | rgb_;
+        if (outline)
+            append_ellipse_ring(mesh, x, y, radius, radius, std::max(0.0, radius - 1.0),
+                                std::max(0.0, radius - 1.0), rgba, curve_segments(radius));
+        else
+            append_filled_ellipse(mesh, x, y, radius, radius, rgba, curve_segments(radius));
+        if (mesh.submit(*this))
+            return;
+    }
+#endif
 #if REGML_WII
     if (gpu_) {
         wii_gpu_circle(x, y, radius, outline, (alpha_ << 24) | rgb_);
@@ -2001,6 +2554,23 @@ void Canvas::ellipse(double x1, double y1, double x2, double y2, bool outline) {
     const double radius_y = (bottom_edge - top_edge) / 2;
     if (radius_x <= 0 || radius_y <= 0)
         return;
+#if REGML_WIIU
+    if (renderer_commands_active()) {
+        if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
+            return;
+        RendererMesh mesh;
+        const auto rgba = (alpha_ << 24) | rgb_;
+        const auto segments = curve_segments(std::max(radius_x, radius_y));
+        if (outline)
+            append_ellipse_ring(mesh, center_x, center_y, radius_x, radius_y,
+                                std::max(0.0, radius_x - 1.0), std::max(0.0, radius_y - 1.0), rgba,
+                                segments);
+        else
+            append_filled_ellipse(mesh, center_x, center_y, radius_x, radius_y, rgba, segments);
+        if (mesh.submit(*this))
+            return;
+    }
+#endif
 #if REGML_PS2
     if (gpu_) {
         if (!alpha_test_enabled_ || alpha_ > alpha_test_ref_)
@@ -2108,6 +2678,57 @@ void Canvas::round_rectangle(
         rectangle(x1, y1, x2, y2, outline);
         return;
     }
+#if REGML_WIIU
+    if (renderer_commands_active()) {
+        if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
+            return;
+        const double center_x = (left_edge + right_edge) / 2;
+        const double center_y = (top_edge + bottom_edge) / 2;
+        const auto rgba = (alpha_ << 24) | rgb_;
+        const auto segments = std::max<std::size_t>(3, curve_segments(std::max(x_radius, y_radius)) / 4);
+        std::vector<std::array<double, 2>> outer, inner;
+        outer.reserve(segments * 4);
+        inner.reserve(segments * 4);
+        const std::array<std::array<double, 2>, 4> corner_centers = {{{right_edge - x_radius, top_edge + y_radius},
+                                                                     {right_edge - x_radius, bottom_edge - y_radius},
+                                                                     {left_edge + x_radius, bottom_edge - y_radius},
+                                                                     {left_edge + x_radius, top_edge + y_radius}}};
+        const std::array<double, 4> angle_starts = {-1.5707963267948966, 0.0,
+                                                    1.5707963267948966, 3.1415926535897932};
+        for (std::size_t corner = 0; corner < 4; ++corner) {
+            for (std::size_t i = 0; i < segments; ++i) {
+                const double angle = angle_starts[corner] +
+                                     1.5707963267948966 * static_cast<double>(i) / segments;
+                outer.push_back({corner_centers[corner][0] + x_radius * std::cos(angle),
+                                 corner_centers[corner][1] + y_radius * std::sin(angle)});
+                const double inset_rx = std::max(0.0, x_radius - 1.0);
+                const double inset_ry = std::max(0.0, y_radius - 1.0);
+                inner.push_back({corner_centers[corner][0] + (corner_centers[corner][0] < center_x ? -1.0 : 1.0) +
+                                     inset_rx * std::cos(angle),
+                                 corner_centers[corner][1] + (corner_centers[corner][1] < center_y ? -1.0 : 1.0) +
+                                     inset_ry * std::sin(angle)});
+            }
+        }
+        RendererMesh mesh;
+        if (!outline) {
+            for (std::size_t i = 0; i < outer.size(); ++i) {
+                const auto &a = outer[i];
+                const auto &b = outer[(i + 1) % outer.size()];
+                mesh.triangle(center_x, center_y, a[0], a[1], b[0], b[1], rgba);
+            }
+        } else {
+            for (std::size_t i = 0; i < outer.size(); ++i) {
+                const auto &a = outer[i];
+                const auto &b = outer[(i + 1) % outer.size()];
+                const auto &c = inner[(i + 1) % inner.size()];
+                const auto &d = inner[i];
+                mesh.quad(a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1], rgba);
+            }
+        }
+        if (mesh.submit(*this))
+            return;
+    }
+#endif
 #if REGML_PS2
     if (gpu_) {
         if (!alpha_test_enabled_ || alpha_ > alpha_test_ref_)
@@ -2210,6 +2831,16 @@ void Canvas::line(double x1, double y1, double x2, double y2, double width) {
     if (width <= 0 || width > 2048 ||
         std::max({std::fabs(x1), std::fabs(y1), std::fabs(x2), std::fabs(y2)}) > 1e9)
         throw Error(ErrorKind::unsupported, "line is outside supported limits");
+#if REGML_WIIU
+    if (renderer_commands_active()) {
+        if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
+            return;
+        RendererMesh mesh;
+        append_capsule(mesh, x1, y1, x2, y2, std::max(0.5, (width - 1) / 2), (alpha_ << 24) | rgb_);
+        if (mesh.submit(*this))
+            return;
+    }
+#endif
 #if REGML_WII
     if (gpu_) {
         const double dx = x2 - x1, dy = y2 - y1, length = std::hypot(dx, dy);
@@ -2308,6 +2939,23 @@ void Canvas::triangle(double x1, double y1, double x2, double y2, double x3, dou
     finite(y2);
     finite(x3);
     finite(y3);
+#if REGML_WIIU
+    if (renderer_commands_active()) {
+        if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
+            return;
+        const auto rgba = (alpha_ << 24) | rgb_;
+        RendererMesh mesh;
+        if (outline) {
+            append_line_quad(mesh, x1, y1, x2, y2, 1, rgba);
+            append_line_quad(mesh, x2, y2, x3, y3, 1, rgba);
+            append_line_quad(mesh, x3, y3, x1, y1, 1, rgba);
+        } else {
+            mesh.triangle(x1, y1, x2, y2, x3, y3, rgba);
+        }
+        if (mesh.submit(*this))
+            return;
+    }
+#endif
     if (outline) {
         line(x1, y1, x2, y2);
         line(x2, y2, x3, y3);
@@ -2397,6 +3045,10 @@ void Canvas::text(
     const double anchor_x = x * scale, anchor_y = y * scale;
     const double inverse_width = sine != 0 ? 1.0 / (sx * scale) : 0;
     const double inverse_height = sine != 0 ? 1.0 / (sy * scale) : 0;
+#if REGML_WIIU
+    const bool gx2_text = renderer_commands_active();
+    RendererMesh gx2_text_mesh;
+#endif
 #if REGML_PS2
     const bool ps2_text_atlas = gpu_ && ps2_gpu_text_atlas_ready();
     std::array<Ps2TextGlyph, 64> ps2_text_batch{};
@@ -2456,6 +3108,22 @@ void Canvas::text(
             const double right = pen_x + rectangle_shape.right * font_scale_;
             const double top = pen_y + rectangle_shape.top * font_scale_;
             const double bottom = pen_y + rectangle_shape.bottom * font_scale_;
+#if REGML_WIIU
+            if (gx2_text) {
+                const auto transform_x = [&](double px, double py) {
+                    return anchor_x + (px * sx * cosine + py * sy * sine) * scale;
+                };
+                const auto transform_y = [&](double px, double py) {
+                    return anchor_y + (-px * sx * sine + py * sy * cosine) * scale;
+                };
+                gx2_text_mesh.quad(transform_x(left, top), transform_y(left, top),
+                                   transform_x(right, top), transform_y(right, top),
+                                   transform_x(right, bottom), transform_y(right, bottom),
+                                   transform_x(left, bottom), transform_y(left, bottom),
+                                   (alpha_ << 24) | rgb_);
+                continue;
+            }
+#endif
             if (sine == 0) {
                 rectangle(x + left * sx, y + top * sy, x + right * sx, y + bottom * sy, false);
                 continue;
@@ -2504,6 +3172,10 @@ void Canvas::text(
 #if REGML_PS2
     flush_ps2_text();
 #endif
+#if REGML_WIIU
+    if (gx2_text)
+        (void)gx2_text_mesh.submit(*this);
+#endif
     if (profile_text_)
         text_profile_ms_ +=
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - profile_start)
@@ -2550,6 +3222,10 @@ void Canvas::debug_text_overlay(std::span<const std::string_view> lines) {
 #endif
 }
 std::uint64_t Canvas::hash() const noexcept {
+#if REGML_WIIU
+    if (renderer_failure_ || (renderer_ && !const_cast<Canvas *>(this)->sync_from_renderer()))
+        return 0;
+#endif
     std::uint64_t value = 14695981039346656037ULL;
     const auto add_pixel = [&](std::uint32_t pixel) {
         for (unsigned shift : {0U, 8U, 16U, 24U}) {
@@ -2586,6 +3262,10 @@ std::uint64_t Canvas::hash() const noexcept {
     return value;
 }
 void Canvas::save_bmp(const std::filesystem::path &path) const {
+#if REGML_WIIU
+    if (renderer_failure_ || (renderer_ && !const_cast<Canvas *>(this)->sync_from_renderer()))
+        throw Error(ErrorKind::io, "Wii U GX2 framebuffer readback failed while saving screenshot");
+#endif
     std::span<const std::uint32_t> source = pixels_;
     if (gpu_) {
         readback_scratch_.resize(static_cast<std::size_t>(width_) * height_);
@@ -2638,6 +3318,10 @@ void Canvas::save_bmp(const std::filesystem::path &path) const {
         throw Error(ErrorKind::io, "screenshot write failed");
 }
 void Canvas::save_png(const std::filesystem::path &path) const {
+#if REGML_WIIU
+    if (renderer_failure_ || (renderer_ && !const_cast<Canvas *>(this)->sync_from_renderer()))
+        throw Error(ErrorKind::io, "Wii U GX2 framebuffer readback failed while saving PNG");
+#endif
     std::span<const std::uint32_t> source = pixels_;
     if (gpu_) {
         readback_scratch_.resize(static_cast<std::size_t>(width_) * height_);

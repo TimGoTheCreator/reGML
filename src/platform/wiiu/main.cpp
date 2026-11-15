@@ -5,9 +5,15 @@
 #include <fstream>
 #include <iostream>
 #include <string_view>
+#include <whb/proc.h>
 #include <whb/sdcard.h>
 
 int main(int argc, char **argv) {
+    WHBProcInit();
+    struct ProcUiShutdown {
+        ~ProcUiShutdown() { WHBProcShutdown(); }
+    } proc_ui_shutdown;
+
     if (!WHBMountSdCard()) {
         std::cerr << "reGML Wii U error: failed to mount the SD card\n";
         return 1;

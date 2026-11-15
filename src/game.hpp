@@ -1,7 +1,7 @@
 #pragma once
 #include "input.hpp"
 #include "interpreter.hpp"
-#include "rendersoftware/canvas.hpp"
+#include "backends/software/canvas.hpp"
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -14,6 +14,9 @@
 #include <string_view>
 #include <vector>
 namespace regml {
+namespace render {
+class IRenderer;
+}
 class GameSession {
   public:
     struct TickProfile {
@@ -60,9 +63,12 @@ class GameSession {
                          std::optional<std::uint32_t> seed = {},
                          const std::filesystem::path &save_directory = {},
                          const GamepadState &gamepad = {},
-                         std::string_view start_room = {});
+                         std::string_view start_room = {},
+                         render::IRenderer *renderer = nullptr);
     ~GameSession();
     void tick(const KeyboardState &held, const KeyboardState &pressed);
+    void begin_render_frame();
+    void finish_render_frame();
     void set_gamepad_state(const GamepadState &state);
     void profile_tick(bool enabled) noexcept;
     TickProfile take_tick_profile() noexcept;

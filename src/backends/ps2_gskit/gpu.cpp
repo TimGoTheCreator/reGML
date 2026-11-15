@@ -2,7 +2,7 @@
 
 #if REGML_PS2
 #include "error.hpp"
-#include "rendersoftware/canvas.hpp"
+#include "backends/software/canvas.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>

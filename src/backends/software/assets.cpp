@@ -1,9 +1,17 @@
 ﻿#include "assets.hpp"
-#include "../gmrt_project.hpp"
+#include "gmrt_project.hpp"
 #include "bit_cast.hpp"
-#include "platform/ps2/gpu.hpp"
-#include "platform/wii/gpu.hpp"
+#if REGML_PS2
+#include "backends/ps2_gskit/gpu.hpp"
+#endif
+#if REGML_WII
+#include "backends/wii_gx/gpu.hpp"
+#endif
 #include <algorithm>
+#if REGML_WIIU
+#include <atomic>
+#endif
+#include <cstddef>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -15,6 +23,13 @@
 namespace regml {
 namespace {
 std::uint32_t next_asset_cache_generation = 0;
+#if REGML_WIIU
+std::atomic<std::uint32_t> next_renderer_texture_id{1};
+render::ColorRGBA8 renderer_color_from_gml(std::uint32_t color) noexcept {
+    return {static_cast<std::uint8_t>(color), static_cast<std::uint8_t>(color >> 8),
+            static_cast<std::uint8_t>(color >> 16), 255};
+}
+#endif
 struct DecodedQoi {
     int width = 0, height = 0;
     std::vector<std::uint32_t> pixels;
@@ -645,6 +660,18 @@ GameAssets::GameAssets(const Package &package, const GmrtProject &project)
                                   .subspan(ranges[id].first, ranges[id].second);
 }
 
+GameAssets::~GameAssets() {
+#if REGML_WIIU
+    for (const auto &[renderer, textures] : renderer_textures_) {
+        if (!renderer)
+            continue;
+        for (const auto &[page, texture] : textures) {
+            (void)page;
+            renderer->destroy_texture(texture.handle);
+        }
+    }
+#endif
+}
 const GameAssets::Sprite &GameAssets::sprite(int id) const {
     id = unpack_sprite_reference(id);
     if (!sprite_exists(id))
@@ -1190,6 +1217,54 @@ GameAssets::Page &GameAssets::load_page(int id) {
     page_cache_bytes_ += allocation_bytes;
     return page;
 }
+#if REGML_WIIU
+render::TextureHandle GameAssets::renderer_page_texture(Canvas &canvas, int page_id, int &width, int &height) {
+    auto *renderer = canvas.renderer();
+    if (!renderer || !canvas.renderer_commands_active() || page_id < 0 ||
+        static_cast<std::size_t>(page_id) >= pages_.size())
+        return {};
+    auto &textures = renderer_textures_[renderer];
+    if (const auto found = textures.find(page_id); found != textures.end()) {
+        width = found->second.width;
+        height = found->second.height;
+        return found->second.handle;
+    }
+
+    const auto &page = load_page(page_id);
+    if (page.width <= 0 || page.height <= 0 ||
+        page.pixels.size() != static_cast<std::size_t>(page.width) * page.height)
+        throw Error(ErrorKind::malformed, "texture page pixels do not match page dimensions");
+    const auto handle_id = next_renderer_texture_id.fetch_add(1, std::memory_order_relaxed);
+    if (handle_id == 0)
+        throw Error(ErrorKind::unsupported, "renderer texture handle space exhausted");
+    const render::TextureHandle handle{handle_id};
+    std::vector<std::byte> rgba(page.pixels.size() * 4);
+    for (std::size_t i = 0; i < page.pixels.size(); ++i) {
+        const auto pixel = page.pixels[i];
+        rgba[i * 4 + 0] = static_cast<std::byte>((pixel >> 16) & 0xff);
+        rgba[i * 4 + 1] = static_cast<std::byte>((pixel >> 8) & 0xff);
+        rgba[i * 4 + 2] = static_cast<std::byte>(pixel & 0xff);
+        rgba[i * 4 + 3] = static_cast<std::byte>(pixel >> 24);
+    }
+    const render::TextureDesc description{{static_cast<std::uint32_t>(page.width),
+                                           static_cast<std::uint32_t>(page.height)},
+                                          render::PixelFormat::RGBA8,
+                                          false};
+    const render::ConstPixelBufferView pixels{std::span<const std::byte>(rgba),
+                                               description.size,
+                                               static_cast<std::size_t>(page.width) * 4,
+                                               render::PixelFormat::RGBA8};
+    if (!renderer->create_texture(handle, description, pixels)) {
+        if (!canvas.force_software_fallback())
+            throw Error(ErrorKind::io, "Wii U GX2 texture upload failed");
+        return {};
+    }
+    width = page.width;
+    height = page.height;
+    textures.emplace(page_id, RendererTexture{handle, width, height});
+    return handle;
+}
+#endif
 void GameAssets::release_scratch_page() noexcept {
     std::vector<std::uint32_t>().swap(scratch_page_.pixels);
     scratch_page_.width = scratch_page_.height = 0;
@@ -1227,17 +1302,23 @@ void GameAssets::prefetch(int id, double frame) {
     (void)source_y;
 #endif
 }
+bool GameAssets::prefetch_texture_page(std::uint32_t page_id) {
+    if (!texture_page_exists(page_id))
+        return false;
+    if constexpr (page_cache_limit_ != 0)
+        return true;
+    (void)load_page(static_cast<int>(page_id));
+    return true;
+}
 bool GameAssets::prefetch_texture_group(std::string_view name) {
     if (!package_.texture_group_exists(name))
         return false;
     const auto page_ids = package_.texture_group_pages(name);
-    if constexpr (page_cache_limit_ != 0)
-        return true;
-    for (const auto page_id : page_ids) {
-        if (page_id >= pages_.size())
+    for (const auto page_id : page_ids)
+        if (!texture_page_exists(page_id))
             throw Error(ErrorKind::malformed, "texture group references an invalid page");
-        (void)load_page(static_cast<int>(page_id));
-    }
+    for (const auto page_id : page_ids)
+        (void)prefetch_texture_page(page_id);
     return true;
 }
 void GameAssets::flush_texture_group(std::string_view name) {
@@ -1405,11 +1486,51 @@ void GameAssets::draw_tile(Canvas &canvas,
         std::clamp(std::ceil(target_y + target_h - 0.5), 0.0, static_cast<double>(canvas.height())));
     if (dest_left >= dest_right || dest_top >= dest_bottom)
         return;
+    const double alpha = static_cast<double>(color >> 24) / 255;
+
+#if REGML_WIIU
+    if (canvas.renderer_commands_active()) {
+        int page_width = 0, page_height = 0;
+        const auto texture = renderer_page_texture(canvas, cut.page, page_width, page_height);
+        if (!texture.valid() || page_width <= 0 || page_height <= 0)
+            throw Error(ErrorKind::io, "Wii U GX2 could not create the transformed tile texture");
+        const auto source_uv = [&](double u, double v) {
+            if (transform & rotate_mask) {
+                const auto old_u = u;
+                u = v;
+                v = 1 - old_u;
+            }
+            if (flip)
+                v = 1 - v;
+            if (mirror)
+                u = 1 - u;
+            return std::array<float, 2>{
+                static_cast<float>(cut.x + u * cut.w) / page_width,
+                static_cast<float>(cut.y + v * cut.h) / page_height};
+        };
+        const auto uv0 = source_uv(0, 0), uv1 = source_uv(1, 0),
+                   uv2 = source_uv(1, 1), uv3 = source_uv(0, 1);
+        const float x0 = static_cast<float>(target_x), y0 = static_cast<float>(target_y);
+        const float x1 = static_cast<float>(target_x + target_w),
+                    y1 = static_cast<float>(target_y + target_h);
+        const render::Vertex2D vertices[] = {
+            {x0, y0, uv0[0], uv0[1], {}}, {x1, y0, uv1[0], uv1[1], {}},
+            {x1, y1, uv2[0], uv2[1], {}}, {x0, y0, uv0[0], uv0[1], {}},
+            {x1, y1, uv2[0], uv2[1], {}}, {x0, y1, uv3[0], uv3[1], {}},
+        };
+        render::DrawTrianglesCommand draw;
+        draw.source = texture;
+        draw.vertices = std::span<const render::Vertex2D>(vertices);
+        draw.tint = renderer_color_from_gml(color);
+        draw.opacity = static_cast<float>(alpha);
+        (void)canvas.submit_render_command(render::RenderCommand{draw});
+        return;
+    }
+#endif
 
     int page_x = 0, page_y = 0;
     const auto &page = region_pixels(cut, page_x, page_y);
     const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
-    const double alpha = static_cast<double>(color >> 24) / 255;
     for (int dy = dest_top; dy < dest_bottom; ++dy) {
         for (int dx = dest_left; dx < dest_right; ++dx) {
             double u = (dx + 0.5 - target_x) / target_w;
@@ -1604,6 +1725,49 @@ void GameAssets::blit(Canvas &canvas,
         return;
     int source_x = 0, source_y = 0;
     const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
+#if REGML_WIIU
+    if (canvas.renderer_failed())
+        throw Error(ErrorKind::unsupported, "renderer fallback failed before sprite draw");
+    if (canvas.renderer_commands_active()) {
+        if (canvas.pixel_shader_active()) {
+            if (!canvas.force_software_fallback())
+                throw Error(ErrorKind::unsupported, "Wii U GX2 cannot render a software pixel shader");
+        } else {
+            int page_width = 0, page_height = 0;
+            const auto texture = renderer_page_texture(canvas, r.page, page_width, page_height);
+            if (!texture.valid())
+                throw Error(ErrorKind::io, "Wii U GX2 could not create the sprite texture");
+            if (texture.valid() && canvas.renderer_commands_active()) {
+                const double radians = angle * 3.14159265358979323846 / 180.0;
+                const double cosine = std::cos(radians), sine = std::sin(radians);
+                const double draw_width = r.tw * sx, draw_height = r.th * sy;
+                const double x1 = x + draw_width * cosine, y1 = y - draw_width * sine;
+                const double x2 = x + draw_height * sine, y2 = y + draw_height * cosine;
+                const double x3 = x1 + draw_height * sine, y3 = y1 + draw_height * cosine;
+                const float u0 = static_cast<float>(r.x) / page_width;
+                const float v0 = static_cast<float>(r.y) / page_height;
+                const float u1 = static_cast<float>(r.x + r.w) / page_width;
+                const float v1 = static_cast<float>(r.y + r.h) / page_height;
+                const render::Vertex2D vertices[] = {
+                    {static_cast<float>(x), static_cast<float>(y), u0, v0, {}},
+                    {static_cast<float>(x1), static_cast<float>(y1), u1, v0, {}},
+                    {static_cast<float>(x3), static_cast<float>(y3), u1, v1, {}},
+                    {static_cast<float>(x), static_cast<float>(y), u0, v0, {}},
+                    {static_cast<float>(x3), static_cast<float>(y3), u1, v1, {}},
+                    {static_cast<float>(x2), static_cast<float>(y2), u0, v1, {}},
+                };
+                render::DrawTrianglesCommand draw;
+                draw.source = texture;
+                draw.vertices = std::span<const render::Vertex2D>(vertices);
+                draw.tint = {static_cast<std::uint8_t>(tint >> 16), static_cast<std::uint8_t>(tint >> 8),
+                             static_cast<std::uint8_t>(tint), 255};
+                draw.opacity = static_cast<float>(std::clamp(alpha, 0.0, 1.0));
+                if (canvas.submit_render_command(render::RenderCommand{draw}))
+                    return;
+            }
+        }
+    }
+#endif
 #if REGML_WII || REGML_PS2
     if (canvas.gpu_target()) {
 #if REGML_WII
@@ -1958,9 +2122,9 @@ void GameAssets::draw_sprite_pos(
         }
     }
 
-    // PS2 and Wii submit drawing directly to their hardware framebuffers. Keep
-    // those paths batched through the existing sprite renderer; software
-    // canvases below can rasterize the full, possibly skewed quadrilateral.
+#if REGML_WII || REGML_PS2
+    // The Wii and PS2 paths have their own sprite APIs and approximate a
+    // skewed quadrilateral with its bounding rectangle.
     if (canvas.gpu_target()) {
         double left = corners[0], right = corners[0], top = corners[1], bottom = corners[1];
         for (std::size_t i = 2; i < corners.size(); i += 2) {
@@ -1973,6 +2137,7 @@ void GameAssets::draw_sprite_pos(
         draw_sprite(canvas, id, frame, left + spr.ox * sx, top + spr.oy * sy, sx, sy, 0, 0xffffff, alpha);
         return;
     }
+#endif
 
     std::array<std::array<double, 2>, 4> points{};
     for (std::size_t i = 0; i < points.size(); ++i) {
@@ -2006,6 +2171,89 @@ void GameAssets::draw_sprite_pos(
     if (spr.width <= 0 || spr.height <= 0 || region.tw <= 0 || region.th <= 0 || region.w <= 0 ||
         region.h <= 0)
         return;
+#if REGML_WIIU
+    if (canvas.renderer_commands_active()) {
+        int page_width = 0, page_height = 0;
+        const auto texture = renderer_page_texture(canvas, region.page, page_width, page_height);
+        if (!texture.valid() || page_width <= 0 || page_height <= 0)
+            throw Error(ErrorKind::io, "Wii U GX2 could not create the draw_sprite_pos texture");
+
+        const double u0 = std::clamp(static_cast<double>(region.tx) / spr.width, 0.0, 1.0);
+        const double v0 = std::clamp(static_cast<double>(region.ty) / spr.height, 0.0, 1.0);
+        const double u1 = std::clamp(static_cast<double>(region.tx + region.tw) / spr.width, 0.0, 1.0);
+        const double v1 = std::clamp(static_cast<double>(region.ty + region.th) / spr.height, 0.0, 1.0);
+        using ParamPoint = std::array<double, 2>;
+        const auto clip_polygon = [](std::vector<ParamPoint> polygon,
+                                    std::size_t axis,
+                                    double boundary,
+                                    bool keep_greater) {
+            std::vector<ParamPoint> clipped;
+            if (polygon.empty())
+                return clipped;
+            const auto inside = [&](const ParamPoint &point) {
+                return keep_greater ? point[axis] >= boundary : point[axis] <= boundary;
+            };
+            ParamPoint previous = polygon.back();
+            bool previous_inside = inside(previous);
+            for (const auto &current : polygon) {
+                const bool current_inside = inside(current);
+                if (current_inside != previous_inside) {
+                    const double t = (boundary - previous[axis]) / (current[axis] - previous[axis]);
+                    clipped.push_back({previous[0] + (current[0] - previous[0]) * t,
+                                       previous[1] + (current[1] - previous[1]) * t});
+                }
+                if (current_inside)
+                    clipped.push_back(current);
+                previous = current;
+                previous_inside = current_inside;
+            }
+            return clipped;
+        };
+        std::vector<render::Vertex2D> vertices;
+        vertices.reserve(36);
+        const auto add_clipped_triangle = [&](bool first_triangle, std::vector<ParamPoint> polygon) {
+            polygon = clip_polygon(std::move(polygon), 0, u0, true);
+            polygon = clip_polygon(std::move(polygon), 0, u1, false);
+            polygon = clip_polygon(std::move(polygon), 1, v0, true);
+            polygon = clip_polygon(std::move(polygon), 1, v1, false);
+            if (polygon.size() < 3)
+                return;
+            const auto make_vertex = [&](const ParamPoint &point) {
+                const double u = point[0], v = point[1];
+                double px, py;
+                if (first_triangle) {
+                    px = points[0][0] + u * (points[1][0] - points[0][0]) +
+                         v * (points[2][0] - points[1][0]);
+                    py = points[0][1] + u * (points[1][1] - points[0][1]) +
+                         v * (points[2][1] - points[1][1]);
+                } else {
+                    px = points[0][0] + u * (points[2][0] - points[3][0]) +
+                         v * (points[3][0] - points[0][0]);
+                    py = points[0][1] + u * (points[2][1] - points[3][1]) +
+                         v * (points[3][1] - points[0][1]);
+                }
+                const float tex_u = static_cast<float>(region.x + (u - u0) / (u1 - u0) * region.w) /
+                                    page_width;
+                const float tex_v = static_cast<float>(region.y + (v - v0) / (v1 - v0) * region.h) /
+                                    page_height;
+                return render::Vertex2D{static_cast<float>(px), static_cast<float>(py), tex_u, tex_v, {}};
+            };
+            for (std::size_t i = 1; i + 1 < polygon.size(); ++i) {
+                vertices.push_back(make_vertex(polygon[0]));
+                vertices.push_back(make_vertex(polygon[i]));
+                vertices.push_back(make_vertex(polygon[i + 1]));
+            }
+        };
+        add_clipped_triangle(true, {{0, 0}, {1, 0}, {1, 1}});
+        add_clipped_triangle(false, {{0, 0}, {1, 1}, {0, 1}});
+        render::DrawTrianglesCommand draw;
+        draw.source = texture;
+        draw.vertices = std::span<const render::Vertex2D>(vertices);
+        draw.opacity = static_cast<float>(std::clamp(alpha, 0.0, 1.0));
+        (void)canvas.submit_render_command(render::RenderCommand{draw});
+        return;
+    }
+#endif
     int source_x = 0, source_y = 0;
     const auto &page = region_pixels(region, source_x, source_y);
     const auto sample = [&](double u, double v) {
@@ -2242,6 +2490,58 @@ void GameAssets::draw_sprite_general(Canvas &canvas,
     const std::array<double, 4> corner_y = {screen_y, screen_y - draw_width * sine,
                                             screen_y + draw_height * cosine,
                                             screen_y - draw_width * sine + draw_height * cosine};
+#if REGML_WIIU
+    if (canvas.renderer_commands_active()) {
+        int page_width = 0, page_height = 0;
+        const auto texture = renderer_page_texture(canvas, region.page, page_width, page_height);
+        if (!texture.valid() || page_width <= 0 || page_height <= 0)
+            throw Error(ErrorKind::io, "Wii U GX2 could not create the tinted sprite texture");
+
+        const double texel_scale_x = static_cast<double>(region.w) / region.tw;
+        const double texel_scale_y = static_cast<double>(region.h) / region.th;
+        const float u0 = static_cast<float>(region.x + (source_left - region.tx) * texel_scale_x) / page_width;
+        const float v0 = static_cast<float>(region.y + (source_top - region.ty) * texel_scale_y) / page_height;
+        const float u1 = static_cast<float>(region.x + (source_right - region.tx) * texel_scale_x) / page_width;
+        const float v1 = static_cast<float>(region.y + (source_bottom - region.ty) * texel_scale_y) / page_height;
+        const auto gradient_color = [&](double u, double v) {
+            std::uint32_t gml_color = 0;
+            for (unsigned shift : {0U, 8U, 16U}) {
+                const double top_channel = ((colors[0] >> shift) & 255) * (1.0 - u) +
+                                           ((colors[1] >> shift) & 255) * u;
+                const double bottom_channel = ((colors[3] >> shift) & 255) * (1.0 - u) +
+                                              ((colors[2] >> shift) & 255) * u;
+                const auto channel = static_cast<std::uint32_t>(std::clamp(
+                    std::lround(top_channel * (1.0 - v) + bottom_channel * v), 0L, 255L));
+                gml_color |= channel << shift;
+            }
+            return renderer_color_from_gml(gml_color);
+        };
+        const double gradient_u0 = (source_left - left) / width;
+        const double gradient_u1 = (source_right - left) / width;
+        const double gradient_v0 = (source_top - top) / height;
+        const double gradient_v1 = (source_bottom - top) / height;
+        const render::Vertex2D vertices[] = {
+            {static_cast<float>(corner_x[0]), static_cast<float>(corner_y[0]), u0, v0,
+             gradient_color(gradient_u0, gradient_v0)},
+            {static_cast<float>(corner_x[1]), static_cast<float>(corner_y[1]), u1, v0,
+             gradient_color(gradient_u1, gradient_v0)},
+            {static_cast<float>(corner_x[2]), static_cast<float>(corner_y[2]), u1, v1,
+             gradient_color(gradient_u1, gradient_v1)},
+            {static_cast<float>(corner_x[0]), static_cast<float>(corner_y[0]), u0, v0,
+             gradient_color(gradient_u0, gradient_v0)},
+            {static_cast<float>(corner_x[2]), static_cast<float>(corner_y[2]), u1, v1,
+             gradient_color(gradient_u1, gradient_v1)},
+            {static_cast<float>(corner_x[3]), static_cast<float>(corner_y[3]), u0, v1,
+             gradient_color(gradient_u0, gradient_v1)},
+        };
+        render::DrawTrianglesCommand draw;
+        draw.source = texture;
+        draw.vertices = std::span<const render::Vertex2D>(vertices);
+        draw.opacity = static_cast<float>(std::clamp(alpha, 0.0, 1.0));
+        (void)canvas.submit_render_command(render::RenderCommand{draw});
+        return;
+    }
+#endif
     const int raster_left = static_cast<int>(std::clamp(
         std::floor(*std::min_element(corner_x.begin(), corner_x.end())), 0.0, double(canvas.width())));
     const int raster_right = static_cast<int>(std::clamp(

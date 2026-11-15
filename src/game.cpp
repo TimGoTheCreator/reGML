@@ -12,7 +12,10 @@
 #include "json.hpp"
 #include "linker.hpp"
 #include "lookup.hpp"
-#include "rendersoftware/assets.hpp"
+#include "backends/software/assets.hpp"
+#if REGML_WIIU
+#include "render/renderer.hpp"
+#endif
 #include "video/video_player.hpp"
 #if REGML_WIIU
 #include "platform/wiiu/paths.hpp"
@@ -21,7 +24,7 @@
 #include "platform/wii/host.hpp"
 #endif
 #if REGML_PS2
-#include "platform/ps2/gpu.hpp"
+#include "backends/ps2_gskit/gpu.hpp"
 #endif
 #include <algorithm>
 #include <atomic>
@@ -418,6 +421,17 @@ struct GameBuffer {
     std::size_t position = 0;
     int type = 0;
 };
+struct AsyncBufferResult {
+    bool status = false;
+};
+struct AsyncBufferGroup {
+    std::string name;
+    std::vector<AsyncBufferResult> requests;
+};
+struct AsyncBufferCompletion {
+    int id = -1;
+    bool status = false;
+};
 struct ParticleTypeState {
     int sprite = -1, life_min = 60, life_max = 60, death_type = -1, death_count = 0;
     double direction_min = 0, direction_max = 360, speed_min = 0, speed_max = 0;
@@ -648,6 +662,7 @@ struct GameSession::Impl {
     std::unordered_map<int, int> surface_texture_ids;
     std::unordered_map<int, int> texture_surfaces;
     std::unordered_set<std::string> loaded_texture_groups;
+    std::unordered_set<std::uint32_t> loaded_texture_pages;
     std::unordered_map<int, int> shader_texture_stages;
     int next_sprite_texture = 1;
     int active_shader = -1;
@@ -655,7 +670,18 @@ struct GameSession::Impl {
     std::array<int, 3> shoujo_sampler_uniforms{-1, -1, -1};
     std::array<bool, 3> shoujo_texture_failed{};
     std::atomic<float> audio_master_gain{1.0f};
+#if REGML_WIIU
+    render::IRenderer *renderer = nullptr;
+    bool renderer_frame_active = false;
+    bool application_surface_renderer_created = false;
+#endif
+    // GameMaker renders the room into application_surface, then composites it
+    // to the display before Draw Post and GUI events.
     Canvas canvas{640, 480, true};
+    Canvas display_canvas{640, 480, true};
+    bool application_surface_enabled = true;
+    bool application_surface_draw_enabled = true;
+    bool drawing_to_display = false;
     std::vector<Path> paths;
     int next_mp_grid_id = 0;
     std::unordered_map<int, MotionPlanningGrid> mp_grids;
@@ -870,6 +896,8 @@ struct GameSession::Impl {
     };
     std::unordered_map<int, std::vector<PriorityItem>> priorities;
     std::unordered_map<int, GameBuffer> buffers;
+    std::vector<AsyncBufferGroup> async_buffer_groups;
+    std::vector<AsyncBufferCompletion> pending_async_buffer_completions;
     std::unordered_map<int, ParticleTypeState> particle_types;
     std::unordered_map<int, ParticleSystemState> particle_systems;
     std::unordered_map<int, ParticleEmitterState> particle_emitters;
@@ -991,18 +1019,19 @@ struct GameSession::Impl {
     mutable std::unordered_map<std::string, std::vector<std::uint8_t>> load_chunks;
     void update_gui_transform() {
         const double width = engine.contains("gui_width") ? value_number(engine.at("gui_width"))
-                                                          : static_cast<double>(render_width);
+                                                          : static_cast<double>(display_canvas.logical_width());
         const double height = engine.contains("gui_height") ? value_number(engine.at("gui_height"))
-                                                            : static_cast<double>(render_height);
-        const double scale_x = std::isfinite(width) && width > 0 ? canvas.logical_width() / width : 1.0;
-        const double scale_y = std::isfinite(height) && height > 0 ? canvas.logical_height() / height : 1.0;
+                                                            : static_cast<double>(display_canvas.logical_height());
+        const double scale_x = std::isfinite(width) && width > 0 ? display_canvas.logical_width() / width : 1.0;
+        const double scale_y = std::isfinite(height) && height > 0 ? display_canvas.logical_height() / height : 1.0;
         assets.view(0, 0, scale_x, scale_y, 0, 0);
     }
     explicit Impl(const std::filesystem::path &path,
                   std::optional<std::uint32_t> seed,
                   const std::filesystem::path &save_directory,
                   const GamepadState &initial_gamepad = {},
-                  std::string_view start_room = {})
+                  std::string_view start_room = {},
+                  render::IRenderer *render_backend = nullptr)
         : package(load_stage("package metadata", [&] { return load_game_package(path); })),
           gmrt_project(package.is_gmrt() ? std::optional<GmrtProject>(GmrtProject::load_for_wad(path))
                                          : std::nullopt),
@@ -1020,8 +1049,28 @@ struct GameSession::Impl {
                                 return GameAssets(package);
                             })),
           audio(load_stage("audio metadata", [&] { return GameAudio(package, path.parent_path()); })),
+#if REGML_WIIU
+          renderer(render_backend),
+#endif
           game_dir(path.parent_path()), package_path(path), fixed_seed(seed) {
+#if !REGML_WIIU
+        (void)render_backend;
+#endif
         gamepad = initial_gamepad;
+#if REGML_WIIU
+        if (renderer) {
+            const auto output = renderer->presentation_size();
+            if (output.width > 0 && output.height > 0) {
+                const auto logical_width = static_cast<int>(std::clamp(output.width, 1U, 8192U));
+                const auto logical_height = static_cast<int>(std::clamp(output.height, 1U, 8192U));
+                // Expose the complete display coordinate space to GUI drawing.
+                // The application surface remains at the game's native size and
+                // is fitted into this output, leaving the surrounding area for
+                // platform-neutral GUI and border drawing from the game itself.
+                display_canvas = Canvas(logical_width, logical_height, true);
+            }
+        }
+#endif
         if (gmrt_project) {
             const auto wad = load_stage("GMRT modules", [&] { return GmrtWad::load(path); });
             gmrt_modules.reserve(wad.modules().size());
@@ -1065,6 +1114,10 @@ struct GameSession::Impl {
         std::unordered_map<std::size_t, std::size_t>{}.swap(linked.function_at);
 #if REGML_PS4
         constexpr std::int32_t os_type = 14;
+#elif REGML_WIIU
+        // GameMaker has no Wii U os_type. Use the nearest supported Nintendo
+        // platform identity for platform compatibility checks.
+        constexpr std::int32_t os_type = 21;
 #else
         constexpr std::int32_t os_type = 0;
 #endif
@@ -1092,6 +1145,14 @@ struct GameSession::Impl {
                   {"mouse_x", 0.0},
                   {"mouse_y", 0.0},
                   {"mouse_button", std::int32_t{0}}};
+#if REGML_WIIU
+        if (renderer) {
+            engine["window_width"] = static_cast<double>(display_canvas.logical_width());
+            engine["window_height"] = static_cast<double>(display_canvas.logical_height());
+            engine["gui_width"] = static_cast<double>(display_canvas.logical_width());
+            engine["gui_height"] = static_cast<double>(display_canvas.logical_height());
+        }
+#endif
 #if REGML_PS4
         if (!globals.contains("savedata")) {
             const int savedata = next_ds++;
@@ -1187,6 +1248,16 @@ struct GameSession::Impl {
         });
     }
     ~Impl() {
+#if REGML_WIIU
+        if (renderer) {
+            if (application_surface_renderer_created)
+                renderer->destroy_surface(application_surface_handle);
+            for (const auto &[id, surface] : surfaces) {
+                (void)surface;
+                renderer->destroy_surface(renderer_surface_handle(id));
+            }
+        }
+#endif
 #if REGML_WITH_SDL2 && !REGML_WEB
         for (auto &[channel, recorder] : audio_recorders) {
             (void)channel;
@@ -1335,6 +1406,29 @@ struct GameSession::Impl {
         return handle;
     }
     bool surface_exists(int id) const { return id == 0 || surfaces.contains(id); }
+    Canvas create_surface_canvas(int width, int height) const {
+#if REGML_WIIU
+        // Room-sized render surfaces can be much larger than the TV canvas.
+        // Keep the game's logical surface size while bounding the GX2 target
+        // and CPU mirror to avoid oversized allocations on Wii U.
+        constexpr double max_surface_dimension = 1024.0;
+        const double scale = std::min(1.0, max_surface_dimension / std::max(width, height));
+        return Canvas(width, height, false, scale);
+#else
+        return Canvas(width, height);
+#endif
+    }
+    Canvas &active_draw_canvas() {
+        while (surface_target != 0) {
+            const auto found = surfaces.find(surface_target);
+            if (found != surfaces.end())
+                return found->second;
+            surface_target = surface_target_stack.empty() ? 0 : surface_target_stack.back();
+            if (!surface_target_stack.empty())
+                surface_target_stack.pop_back();
+        }
+        return !application_surface_enabled || drawing_to_display ? display_canvas : canvas;
+    }
     int surface_texture_handle(int surface) {
         if (!surface_exists(surface))
             return -1;
@@ -1353,6 +1447,114 @@ struct GameSession::Impl {
         surface_texture_ids.erase(found);
         std::erase_if(shader_texture_stages,
                       [&](const auto &stage) { return stage.second == found->second; });
+    }
+#if REGML_WIIU
+    static constexpr render::SurfaceHandle application_surface_handle{0xffffffffU};
+    render::SurfaceHandle renderer_surface_handle(int surface) const noexcept {
+        return surface > 0 ? render::SurfaceHandle{static_cast<std::uint32_t>(surface)}
+                           : render::SurfaceHandle{};
+    }
+    void create_application_renderer_surface() {
+        if (!renderer || application_surface_renderer_created)
+            return;
+        const render::SurfaceDesc description{{static_cast<std::uint32_t>(canvas.width()),
+                                               static_cast<std::uint32_t>(canvas.height())},
+                                              render::PixelFormat::RGBA8,
+                                              true};
+        if (!renderer->create_surface(application_surface_handle, description))
+            throw Error(ErrorKind::io, "could not create application surface render target");
+        application_surface_renderer_created = true;
+    }
+    void create_renderer_surface(int id, Canvas &surface) {
+        if (!renderer)
+            return;
+        const auto handle = renderer_surface_handle(id);
+        if (!handle.valid())
+            throw Error(ErrorKind::unsupported, "renderer surface ID is outside the supported range");
+        const render::SurfaceDesc description{{static_cast<std::uint32_t>(surface.width()),
+                                               static_cast<std::uint32_t>(surface.height())},
+                                              render::PixelFormat::RGBA8,
+                                              true};
+        if (!renderer->create_surface(handle, description))
+            throw Error(ErrorKind::io, "could not create renderer surface (" +
+                                          std::to_string(surface.width()) + "x" +
+                                          std::to_string(surface.height()) + ")");
+        surface.set_renderer(renderer, handle);
+        // Newly-created Canvas objects are transparent/black in CPU memory.
+        // Upload that initial contents before their first draw or sample.
+        if (!surface.sync_to_renderer())
+            throw Error(ErrorKind::io, "could not initialize renderer surface pixels");
+        if (!renderer_frame_active)
+            surface.set_renderer(nullptr);
+    }
+    void upload_renderer_surface_pixels(int id, Canvas &surface) {
+        if (!renderer)
+            return;
+        const bool bound_for_frame = renderer_frame_active;
+        if (!bound_for_frame)
+            surface.set_renderer(renderer, renderer_surface_handle(id));
+        if (!surface.sync_to_renderer())
+            throw Error(ErrorKind::io, "could not update renderer surface pixels");
+        if (!bound_for_frame)
+            surface.set_renderer(nullptr);
+    }
+    void upload_renderer_video_frame(int id, Canvas &surface, std::span<const std::uint32_t> source) {
+        if (!renderer || source.size() != static_cast<std::size_t>(surface.width()) * surface.height())
+            throw Error(ErrorKind::io, "video frame dimensions do not match its renderer surface");
+        std::vector<std::byte> rgba(source.size() * 4);
+        for (std::size_t i = 0; i < source.size(); ++i) {
+            const auto pixel = source[i];
+            rgba[i * 4 + 0] = static_cast<std::byte>((pixel >> 16) & 0xff);
+            rgba[i * 4 + 1] = static_cast<std::byte>((pixel >> 8) & 0xff);
+            rgba[i * 4 + 2] = static_cast<std::byte>(pixel & 0xff);
+            rgba[i * 4 + 3] = static_cast<std::byte>(pixel >> 24);
+        }
+        const render::Extent2D size{static_cast<std::uint32_t>(surface.width()),
+                                    static_cast<std::uint32_t>(surface.height())};
+        const render::ConstPixelBufferView pixels{rgba,
+                                                  size,
+                                                  static_cast<std::size_t>(surface.width()) * 4,
+                                                  render::PixelFormat::RGBA8};
+        if (!renderer->update_surface(renderer_surface_handle(id), pixels))
+            throw Error(ErrorKind::io, "could not upload decoded video frame to renderer");
+    }
+    void destroy_renderer_surface(int id) noexcept {
+        if (renderer)
+            renderer->destroy_surface(renderer_surface_handle(id));
+    }
+    void bind_renderer_canvases() {
+        if (!renderer)
+            return;
+        create_application_renderer_surface();
+        canvas.set_renderer(renderer, application_surface_handle);
+        canvas.pixel_shader(nullptr);
+        display_canvas.set_renderer(renderer);
+        display_canvas.pixel_shader(nullptr);
+        for (auto &[id, surface] : surfaces) {
+            surface.set_renderer(renderer, renderer_surface_handle(id));
+            surface.pixel_shader(nullptr);
+        }
+        renderer_frame_active = true;
+    }
+    void finish_renderer_canvases() {
+        if (!renderer || !renderer_frame_active)
+            return;
+        bool ok = !canvas.renderer_failed() && !display_canvas.renderer_failed();
+        for (auto &[id, surface] : surfaces) {
+            (void)id;
+            ok = ok && !surface.renderer_failed();
+        }
+        renderer_frame_active = false;
+        if (!ok)
+            throw Error(ErrorKind::io, "renderer surface synchronization failed");
+    }
+#endif
+    void erase_surface(int id) {
+#if REGML_WIIU
+        destroy_renderer_surface(id);
+#endif
+        forget_surface_texture(id);
+        surfaces.erase(id);
     }
     std::uint32_t sample_shader_stage(int sampler, double u, double v) {
         const auto slot = std::find(shoujo_sampler_uniforms.begin(), shoujo_sampler_uniforms.end(), sampler);
@@ -1424,13 +1626,21 @@ struct GameSession::Impl {
             return rgba;
         }
     }
-    bool shader_is_supported(int shader) const noexcept { return shader == shoujo_shader && shader >= 0; }
+    bool shader_is_supported(int shader) const noexcept {
+#if REGML_WIIU
+        (void)shader;
+        return false;
+#else
+        return shader == shoujo_shader && shader >= 0;
+#endif
+    }
     void configure_blend(Canvas &target) const noexcept {
         target.blend_mode(gpu_blend_factors[0], gpu_blend_factors[1], gpu_blend_factors[2],
                           gpu_blend_factors[3], gpu_blend_equations[0], gpu_blend_equations[1]);
     }
     void configure_blend() noexcept {
         configure_blend(canvas);
+        configure_blend(display_canvas);
         for (auto &[id, surface] : surfaces) {
             (void)id;
             configure_blend(surface);
@@ -2767,6 +2977,35 @@ struct GameSession::Impl {
         }
         engine["async_load"] = previous_async_load;
         maps.erase(map_id);
+    }
+    void dispatch_async_buffer_event(int request_id, bool status) {
+        const int map_id = next_ds++;
+        auto [async_map, inserted] = maps.try_emplace(map_id);
+        (void)inserted;
+        async_map->second.set({true, "id"}, Value{std::int32_t{request_id}}, false);
+        async_map->second.set({true, "status"}, Value{status}, false);
+
+        const Value previous_async_load = engine.at("async_load");
+        engine["async_load"] = std::int32_t{map_id};
+        const auto event_targets = instances;
+        try {
+            for (const auto &target : event_targets)
+                if (target->alive &&
+                    find_event_owner(objects[static_cast<std::size_t>(target->object)], {7, 72}) >= 0)
+                    event(target, 7, 72);
+        } catch (...) {
+            engine["async_load"] = previous_async_load;
+            maps.erase(map_id);
+            throw;
+        }
+        engine["async_load"] = previous_async_load;
+        maps.erase(map_id);
+    }
+    void service_async_buffer_events() {
+        auto completions = std::move(pending_async_buffer_completions);
+        pending_async_buffer_completions.clear();
+        for (const auto &completion : completions)
+            dispatch_async_buffer_event(completion.id, completion.status);
     }
     int audio_recorder_count() const {
 #if REGML_WITH_SDL2 && !REGML_WEB
@@ -5131,15 +5370,7 @@ struct GameSession::Impl {
                 self->vars["direction"] = std::fmod(std::atan2(-v, h) * 180 / 3.141592653589793 + 360, 360);
         };
         auto current_canvas = [&]() -> Canvas & {
-            while (surface_target != 0) {
-                const auto found = surfaces.find(surface_target);
-                if (found != surfaces.end())
-                    return found->second;
-                surface_target = surface_target_stack.empty() ? 0 : surface_target_stack.back();
-                if (!surface_target_stack.empty())
-                    surface_target_stack.pop_back();
-            }
-            return this->canvas;
+            return active_draw_canvas();
         };
         configure_shader(current_canvas());
         auto update_particles = [&](ParticleSystemState &system) {
@@ -5603,8 +5834,8 @@ struct GameSession::Impl {
                 position->row_lengths[0] = 4;
                 position->elements[0] = 0;
                 position->elements[1] = 0;
-                position->elements[2] = this->canvas.logical_width();
-                position->elements[3] = this->canvas.logical_height();
+                position->elements[2] = this->display_canvas.logical_width();
+                position->elements[3] = this->display_canvas.logical_height();
                 return position;
             }
             if (name == "date_current_datetime") {
@@ -7397,22 +7628,22 @@ struct GameSession::Impl {
                         throw Error(ErrorKind::unsupported, "screenshots support PNG and BMP filenames");
                 };
                 if (name == "screen_save")
-                    save_image(this->canvas);
+                    save_image(this->display_canvas);
                 else {
                     const int x = number(args[1]), y = number(args[2]), width = number(args[3]),
                               height = number(args[4]);
                     if (width <= 0 || height <= 0 || width > 8192 || height > 8192)
                         return std::monostate{};
                     Canvas cropped(width, height);
-                    const auto source = this->canvas.pixels();
+                    const auto source = this->display_canvas.pixels();
                     auto destination = cropped.pixels();
                     for (int row = 0; row < height; ++row)
                         for (int column = 0; column < width; ++column) {
                             const int source_x = x + column, source_y = y + row;
-                            if (source_x >= 0 && source_y >= 0 && source_x < this->canvas.width() &&
-                                source_y < this->canvas.height())
+                            if (source_x >= 0 && source_y >= 0 && source_x < this->display_canvas.width() &&
+                                source_y < this->display_canvas.height())
                                 destination[static_cast<std::size_t>(row) * width + column] =
-                                    source[static_cast<std::size_t>(source_y) * this->canvas.width() +
+                                    source[static_cast<std::size_t>(source_y) * this->display_canvas.width() +
                                            source_x];
                         }
                     save_image(cropped);
@@ -7515,9 +7746,26 @@ struct GameSession::Impl {
                 }
                 return static_cast<bool>(output);
             }
-            if (name == "buffer_async_group_begin" || name == "buffer_async_group_end" ||
-                name == "buffer_async_group_option")
+            if (name == "buffer_async_group_begin") {
+                AsyncBufferGroup group;
+                group.name = text(0);
+                async_buffer_groups.emplace_back(std::move(group));
                 return std::monostate{};
+            }
+            if (name == "buffer_async_group_option")
+                return std::monostate{};
+            if (name == "buffer_async_group_end") {
+                if (async_buffer_groups.empty())
+                    return std::int32_t{-1};
+                auto group = std::move(async_buffer_groups.back());
+                async_buffer_groups.pop_back();
+                const auto request_id = next_async_request++;
+                const bool succeeded = std::all_of(
+                    group.requests.begin(), group.requests.end(),
+                    [](const AsyncBufferResult &request) { return request.status; });
+                pending_async_buffer_completions.push_back({request_id, succeeded});
+                return std::int32_t{request_id};
+            }
             if (name == "buffer_load_async" || name == "buffer_save_async") {
                 if (args.size() < 4)
                     throw Error(ErrorKind::vm,
@@ -7530,10 +7778,24 @@ struct GameSession::Impl {
                         ? 64U * 1024U * 1024U
                         : static_cast<std::size_t>(std::clamp(requested_size, 0.0, 64.0 * 1024 * 1024));
                 const auto filename = text(1);
-                const auto path = save_path(filename);
+                const auto filename_path = save_path(filename);
+                const auto &active_group = async_buffer_groups.empty()
+                                               ? std::optional<std::string>{}
+                                               : std::optional<std::string>{async_buffer_groups.back().name};
+                std::filesystem::path path = filename_path;
+                if (active_group && !active_group->empty()) {
+                    const std::filesystem::path group_path(*active_group);
+                    if (group_path.is_absolute() || group_path.has_parent_path() ||
+                        active_group->find('\\') != std::string::npos ||
+                        active_group->find('/') != std::string::npos)
+                        throw Error(ErrorKind::unsupported, "async save group must be a directory name");
+                    path = save_dir / group_path / filename_path.filename();
+                }
                 bool succeeded = false;
                 if (name == "buffer_load_async") {
                     std::ifstream input(path, std::ios::binary);
+                    if (!input && active_group)
+                        input.open(filename_path, std::ios::binary);
                     if (!input)
                         input.open(game_dir / filename, std::ios::binary);
                     if (input) {
@@ -7548,31 +7810,26 @@ struct GameSession::Impl {
                         succeeded = static_cast<bool>(input) || input.eof();
                     }
                 } else {
-                    if (!prepare_save_directory())
-                        return std::int32_t{-1};
-                    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-                    if (output && offset < buffer.bytes.size()) {
-                        const auto count = std::min(size, buffer.bytes.size() - offset);
-                        output.write(reinterpret_cast<const char *>(buffer.bytes.data() + offset),
-                                     static_cast<std::streamsize>(count));
+                    std::error_code error;
+                    if (prepare_save_directory()) {
+                        if (!path.parent_path().empty())
+                            std::filesystem::create_directories(path.parent_path(), error);
+                        if (!error) {
+                            std::ofstream output(path, std::ios::binary | std::ios::trunc);
+                            if (output && offset < buffer.bytes.size()) {
+                                const auto count = std::min(size, buffer.bytes.size() - offset);
+                                output.write(reinterpret_cast<const char *>(buffer.bytes.data() + offset),
+                                             static_cast<std::streamsize>(count));
+                            }
+                            succeeded = static_cast<bool>(output);
+                        }
                     }
-                    succeeded = static_cast<bool>(output);
                 }
                 const auto request_id = next_async_request++;
-                const int map_id = next_ds++;
-                auto [async_map, inserted] = maps.try_emplace(map_id);
-                (void)inserted;
-                async_map->second.set({true, "id"}, Value{std::int32_t{request_id}}, false);
-                async_map->second.set({true, "status"}, Value{succeeded}, false);
-                const auto previous_async_load = engine.at("async_load");
-                engine["async_load"] = std::int32_t{map_id};
-                const auto event_targets = instances;
-                for (const auto &target : event_targets)
-                    if (target->alive &&
-                        find_event_owner(objects[static_cast<std::size_t>(target->object)], {7, 72}) >= 0)
-                        event(target, 7, 72);
-                engine["async_load"] = previous_async_load;
-                maps.erase(map_id);
+                if (async_buffer_groups.empty())
+                    pending_async_buffer_completions.push_back({request_id, succeeded});
+                else
+                    async_buffer_groups.back().requests.push_back({succeeded});
                 return std::int32_t{request_id};
             }
             if (name == "file_text_open_write" || name == "file_text_open_read" ||
@@ -8241,17 +8498,20 @@ struct GameSession::Impl {
                         loaded_texture_groups.insert(group);
                     return std::monostate{};
                 }
-                const auto found = sprite_textures.find(static_cast<int>(n(0)));
-                if (found != sprite_textures.end())
+                const int texture_id = number(args[0]);
+                if (texture_id >= 0 && assets.prefetch_texture_page(static_cast<std::uint32_t>(texture_id)))
+                    loaded_texture_pages.insert(static_cast<std::uint32_t>(texture_id));
+                else if (const auto found = sprite_textures.find(texture_id); found != sprite_textures.end())
                     assets.prefetch(found->second.first);
                 return std::monostate{};
             }
             if (name == "texture_is_ready") {
                 if (!args.empty() && value_is_string(args[0]))
                     return loaded_texture_groups.contains(text(0));
-                return sprite_textures.contains(static_cast<int>(n(0))) ||
-                       (texture_surfaces.contains(static_cast<int>(n(0))) &&
-                        surface_exists(texture_surfaces.at(static_cast<int>(n(0)))));
+                const int texture_id = number(args[0]);
+                return (texture_id >= 0 && loaded_texture_pages.contains(static_cast<std::uint32_t>(texture_id))) ||
+                       sprite_textures.contains(texture_id) ||
+                       (texture_surfaces.contains(texture_id) && surface_exists(texture_surfaces.at(texture_id)));
             }
             if (name == "texture_flush") {
                 if (!args.empty() && value_is_string(args[0])) {
@@ -8261,8 +8521,23 @@ struct GameSession::Impl {
                 }
                 return std::monostate{};
             }
-            if (name == "texturegroup_get_textures")
-                return ArrayPtr(new ArrayValue);
+            if (name == "texturegroup_get_textures") {
+                const auto page_ids = package.texture_group_pages(text(0));
+                if (page_ids.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
+                    throw Error(ErrorKind::unsupported, "texture group contains too many pages");
+                ArrayPtr result(new ArrayValue);
+                result->row_lengths[0] = static_cast<std::int32_t>(page_ids.size());
+                result->elements.reserve_dense(page_ids.size());
+                for (std::size_t index = 0; index < page_ids.size(); ++index) {
+                    const auto page_id = page_ids[index];
+                    if (!assets.texture_page_exists(page_id))
+                        throw Error(ErrorKind::malformed, "texture group references an invalid page");
+                    if (page_id > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
+                        throw Error(ErrorKind::unsupported, "texture page ID exceeds the VM integer range");
+                    result->elements[static_cast<std::int32_t>(index)] = static_cast<std::int32_t>(page_id);
+                }
+                return result;
+            }
             if (name == "sprite_get_texture")
                 return std::int32_t{sprite_texture_handle(static_cast<int>(n(0)), n(1))};
             if (name == "sprite_get_uvs" || name == "texture_get_uvs") {
@@ -9622,10 +9897,8 @@ struct GameSession::Impl {
                 video_player.close();
                 video_start_event_sent = false;
                 video_end_event_sent = false;
-                if (video_surface >= 0) {
-                    forget_surface_texture(video_surface);
-                    surfaces.erase(video_surface);
-                }
+                if (video_surface >= 0)
+                    erase_surface(video_surface);
                 video_surface = -1;
                 const auto requested = std::filesystem::path(text(0));
                 std::filesystem::path path = requested;
@@ -9643,7 +9916,12 @@ struct GameSession::Impl {
                     surfaces.emplace(std::piecewise_construct, std::forward_as_tuple(video_surface),
                                      std::forward_as_tuple(video_player.width(), video_player.height()));
                     surfaces.at(video_surface).clear_transparent();
+#if REGML_WIIU
+                    create_renderer_surface(video_surface, surfaces.at(video_surface));
+#endif
                 } catch (...) {
+                    if (video_surface >= 0)
+                        erase_surface(video_surface);
                     video_player.close();
                     video_surface = -1;
                     return std::monostate{};
@@ -9656,10 +9934,8 @@ struct GameSession::Impl {
                 video_player.close();
                 video_start_event_sent = false;
                 video_end_event_sent = false;
-                if (video_surface >= 0) {
-                    forget_surface_texture(video_surface);
-                    surfaces.erase(video_surface);
-                }
+                if (video_surface >= 0)
+                    erase_surface(video_surface);
                 video_surface = -1;
                 return std::monostate{};
             }
@@ -9723,11 +9999,27 @@ struct GameSession::Impl {
                 }
                 if (video_player.has_frame()) {
                     auto &surface = surfaces.at(video_surface);
-                    if (surface.width() != video_player.width() || surface.height() != video_player.height())
+                    const bool resized = surface.width() != video_player.width() ||
+                                         surface.height() != video_player.height();
+                    if (resized) {
+#if REGML_WIIU
+                        destroy_renderer_surface(video_surface);
+#endif
                         surface = Canvas(video_player.width(), video_player.height());
+                    }
                     const auto frame_pixels = video_player.pixels();
-                    if (frame_pixels.size() == surface.pixels().size())
+#if REGML_WIIU
+                    if (resized)
+                        create_renderer_surface(video_surface, surface);
+                    if (renderer)
+                        upload_renderer_video_frame(video_surface, surface, frame_pixels);
+                    else if (frame_pixels.size() ==
+                             static_cast<std::size_t>(surface.width()) * surface.height())
                         std::copy(frame_pixels.begin(), frame_pixels.end(), surface.pixels().begin());
+#else
+                    if (frame_pixels.size() == static_cast<std::size_t>(surface.width()) * surface.height())
+                        std::copy(frame_pixels.begin(), frame_pixels.end(), surface.pixels().begin());
+#endif
                 }
 #if REGML_WIIU
                 wiiu_load_trace("video-draw.complete surface=" + std::to_string(video_surface));
@@ -9754,8 +10046,11 @@ struct GameSession::Impl {
                     return std::int32_t{-1};
                 const int id = next_surface++;
                 surfaces.emplace(std::piecewise_construct, std::forward_as_tuple(id),
-                                 std::forward_as_tuple(width, height));
+                                 std::forward_as_tuple(create_surface_canvas(width, height)));
                 surfaces.at(id).clear_transparent();
+#if REGML_WIIU
+                create_renderer_surface(id, surfaces.at(id));
+#endif
                 configure_blend(surfaces.at(id));
                 surfaces.at(id).color_write_enable(color_write_enable[0], color_write_enable[1],
                                                    color_write_enable[2], color_write_enable[3]);
@@ -9771,6 +10066,12 @@ struct GameSession::Impl {
                 if (static_cast<std::uint64_t>(width) * height > 64ULL * 1024 * 1024)
                     return std::monostate{};
                 if (id == 0) {
+#if REGML_WIIU
+                    if (renderer && application_surface_renderer_created) {
+                        renderer->destroy_surface(application_surface_handle);
+                        application_surface_renderer_created = false;
+                    }
+#endif
                     this->canvas = Canvas(width, height, true);
                     configure_blend(this->canvas);
                     this->canvas.color_write_enable(color_write_enable[0], color_write_enable[1],
@@ -9778,8 +10079,17 @@ struct GameSession::Impl {
                     this->canvas.blend_enable(blend_enabled);
                     this->canvas.alpha_test_enable(alpha_test_enabled);
                     this->canvas.alpha_test_ref(alpha_test_reference);
+#if REGML_WIIU
+                    if (renderer_frame_active && renderer) {
+                        create_application_renderer_surface();
+                        this->canvas.set_renderer(renderer, application_surface_handle);
+                    }
+#endif
                 } else if (surfaces.contains(id)) {
-                    surfaces.at(id) = Canvas(width, height);
+#if REGML_WIIU
+                    destroy_renderer_surface(id);
+#endif
+                    surfaces.at(id) = create_surface_canvas(width, height);
                     surfaces.at(id).clear_transparent();
                     configure_blend(surfaces.at(id));
                     surfaces.at(id).color_write_enable(color_write_enable[0], color_write_enable[1],
@@ -9787,6 +10097,9 @@ struct GameSession::Impl {
                     surfaces.at(id).blend_enable(blend_enabled);
                     surfaces.at(id).alpha_test_enable(alpha_test_enabled);
                     surfaces.at(id).alpha_test_ref(alpha_test_reference);
+#if REGML_WIIU
+                    create_renderer_surface(id, surfaces.at(id));
+#endif
                 }
                 return std::monostate{};
             }
@@ -9804,7 +10117,8 @@ struct GameSession::Impl {
                 if (!surfaces.contains(id))
                     return std::int32_t{-1};
                 const auto &surface = surfaces.at(id);
-                return std::int32_t{name == "surface_get_width" ? surface.width() : surface.height()};
+                return std::int32_t{name == "surface_get_width" ? surface.logical_width()
+                                                                  : surface.logical_height()};
             }
             if (name == "surface_set_target") {
                 const int id = static_cast<int>(n(0));
@@ -9830,8 +10144,7 @@ struct GameSession::Impl {
                         surface_target_stack.pop_back();
                 }
                 std::erase(surface_target_stack, id);
-                forget_surface_texture(id);
-                surfaces.erase(id);
+                erase_surface(id);
                 configure_shader(current_canvas());
                 return std::monostate{};
             }
@@ -10074,6 +10387,7 @@ struct GameSession::Impl {
                 }
                 color_write_enable = enabled;
                 this->canvas.color_write_enable(enabled[0], enabled[1], enabled[2], enabled[3]);
+                this->display_canvas.color_write_enable(enabled[0], enabled[1], enabled[2], enabled[3]);
                 for (auto &[id, surface] : surfaces) {
                     (void)id;
                     surface.color_write_enable(enabled[0], enabled[1], enabled[2], enabled[3]);
@@ -10090,6 +10404,7 @@ struct GameSession::Impl {
             if (name == "gpu_set_blendenable" || name == "draw_enable_alphablend") {
                 blend_enabled = !args.empty() && value_number(args[0]) != 0;
                 this->canvas.blend_enable(blend_enabled);
+                this->display_canvas.blend_enable(blend_enabled);
                 for (auto &[id, surface] : surfaces) {
                     (void)id;
                     surface.blend_enable(blend_enabled);
@@ -10101,6 +10416,7 @@ struct GameSession::Impl {
             if (name == "gpu_set_alphatestenable") {
                 alpha_test_enabled = !args.empty() && value_number(args[0]) != 0;
                 this->canvas.alpha_test_enable(alpha_test_enabled);
+                this->display_canvas.alpha_test_enable(alpha_test_enabled);
                 for (auto &[id, surface] : surfaces) {
                     (void)id;
                     surface.alpha_test_enable(alpha_test_enabled);
@@ -10113,6 +10429,7 @@ struct GameSession::Impl {
                 const double reference = args.empty() ? 0 : value_number(args[0]);
                 alpha_test_reference = static_cast<unsigned>(std::clamp(reference, 0.0, 255.0));
                 this->canvas.alpha_test_ref(alpha_test_reference);
+                this->display_canvas.alpha_test_ref(alpha_test_reference);
                 for (auto &[id, surface] : surfaces) {
                     (void)id;
                     surface.alpha_test_ref(alpha_test_reference);
@@ -10511,8 +10828,7 @@ struct GameSession::Impl {
             }
             if (name == "keyboard_clear") {
                 const auto key = static_cast<int>(n(0));
-                if (key >= 0 && key < 256) {
-                    const auto k = static_cast<std::size_t>(key);
+                const auto clear_key = [&](std::size_t k) {
                     // GameMaker keeps a cleared held key ignored until the real key is
                     // released. Clearing only the per-frame state lets SDL's held state
                     // restore the key on the next tick, so menus can inherit movement
@@ -10521,6 +10837,12 @@ struct GameSession::Impl {
                         cleared_until_release[k] = true;
                     held[k] = pressed[k] = released[k] = false;
                     previous_held[k] = false;
+                };
+                if (key == 1) { // keyboard_clear(vk_anykey)
+                    for (std::size_t k = 0; k < held.size(); ++k)
+                        clear_key(k);
+                } else if (key >= 0 && key < 256) {
+                    clear_key(static_cast<std::size_t>(key));
                 }
                 return 0.0;
             }
@@ -11677,6 +11999,12 @@ struct GameSession::Impl {
             if (name == "keyboard_check" || name == "keyboard_check_direct" ||
                 name == "keyboard_check_pressed" || name == "keyboard_check_released") {
                 const auto key = static_cast<int>(n(0));
+                if (key == 1) { // vk_anykey
+                    const auto &state = name == "keyboard_check_pressed"    ? pressed
+                                        : name == "keyboard_check_released" ? released
+                                                                            : held;
+                    return std::any_of(state.begin() + 2, state.end(), [](bool down) { return down; });
+                }
                 if (key < 0 || key >= 256)
                     return false;
                 return name == "keyboard_check_pressed"    ? pressed[static_cast<std::size_t>(key)]
@@ -11711,7 +12039,7 @@ struct GameSession::Impl {
             if (name == "gamepad_get_axis_deadzone")
                 return n(0) == 0 ? gamepad_axis_deadzone : 0.0;
             if (name == "gamepad_get_description")
-                return std::string(gamepad.connected && n(0) == 0 ? "PlayStation 4 controller" : "");
+                return std::string(gamepad.connected && n(0) == 0 ? "Controller" : "");
             if (name == "gamepad_get_guid")
                 return std::string{"none"};
             if (name == "gamepad_test_mapping")
@@ -12004,7 +12332,9 @@ struct GameSession::Impl {
             if (name == "switch_controller_support_get_selected_id")
                 return std::int32_t{-1};
             if (name == "switch_language_get_desired_language")
-                return std::int32_t{0};
+                // GameMaker callers treat this as an ISO language tag (for
+                // example, they pass it to substr()), not as an enum value.
+                return std::string("en");
             if (name == "switch_save_data_mount")
                 return true;
             if (name == "switch_accounts_open_user" || name == "switch_accounts_select_account" ||
@@ -12118,8 +12448,13 @@ struct GameSession::Impl {
                 return std::monostate{};
             }
             if (name == "window_set_size") {
+#if !REGML_WIIU
                 engine["window_width"] = std::max(1.0, n(0));
                 engine["window_height"] = std::max(1.0, n(1));
+#endif
+                // A Wii U title has no resizable host window. Keep the reported
+                // dimensions tied to the GX2 presentation surface so console
+                // scripts (including border layout) use the actual TV size.
                 return std::monostate{};
             }
             if (name == "window_set_cursor")
@@ -12132,8 +12467,8 @@ struct GameSession::Impl {
             if (name == "display_set_gui_size") {
                 const double width = n(0), height = n(1);
                 if (width == -1 && height == -1) {
-                    engine["gui_width"] = static_cast<double>(render_width);
-                    engine["gui_height"] = static_cast<double>(render_height);
+                    engine["gui_width"] = static_cast<double>(display_canvas.logical_width());
+                    engine["gui_height"] = static_cast<double>(display_canvas.logical_height());
                 } else {
                     engine["gui_width"] = width;
                     engine["gui_height"] = height;
@@ -12143,21 +12478,21 @@ struct GameSession::Impl {
                 return std::monostate{};
             }
             if (name == "display_get_width")
-                return static_cast<double>(render_width);
+                return static_cast<double>(display_canvas.logical_width());
             if (name == "display_get_height")
-                return static_cast<double>(render_height);
+                return static_cast<double>(display_canvas.logical_height());
             if (name == "display_get_gui_width")
                 return engine.contains("gui_width") ? engine.at("gui_width")
-                                                    : Value{static_cast<double>(render_width)};
+                                                    : Value{static_cast<double>(display_canvas.logical_width())};
             if (name == "display_get_gui_height")
                 return engine.contains("gui_height") ? engine.at("gui_height")
-                                                     : Value{static_cast<double>(render_height)};
+                                                     : Value{static_cast<double>(display_canvas.logical_height())};
             if (name == "window_get_width")
                 return engine.contains("window_width") ? engine.at("window_width")
-                                                       : Value{static_cast<double>(render_width)};
+                                                       : Value{static_cast<double>(display_canvas.logical_width())};
             if (name == "window_get_height")
                 return engine.contains("window_height") ? engine.at("window_height")
-                                                        : Value{static_cast<double>(render_height)};
+                                                        : Value{static_cast<double>(display_canvas.logical_height())};
             if (name == "window_get_x")
                 return engine.contains("window_x") ? engine.at("window_x") : Value{0.0};
             if (name == "window_get_y")
@@ -12203,7 +12538,7 @@ struct GameSession::Impl {
             if (name == "extension_stubfunc_real")
                 return 0.0;
             if (name == "shader_replace_simple_init_raw")
-                return shoujo_shader >= 0 && !this->canvas.gpu_target();
+                return shader_is_supported(shoujo_shader);
             if (name == "shader_replace_simple_raw")
                 return args.empty() ? Value{std::int32_t{-1}} : args[0];
             if (name == "shader_replace_simple_sync") {
@@ -12212,7 +12547,7 @@ struct GameSession::Impl {
                 return std::monostate{};
             }
             if (name == "shaders_are_supported")
-                return shoujo_shader >= 0 && !this->canvas.gpu_target();
+                return shader_is_supported(shoujo_shader);
             if (name == "shader_is_compiled")
                 return shader_is_supported(static_cast<int>(n(0)));
             if (name == "shader_get_uniform" || name == "shader_get_sampler_index")
@@ -12248,8 +12583,15 @@ struct GameSession::Impl {
                 }
                 return std::monostate{};
             }
-            if (name == "texture_set_interpolation" || name == "application_surface_enable" ||
-                name == "application_surface_draw_enable")
+            if (name == "application_surface_enable") {
+                application_surface_enabled = !args.empty() && n(0) != 0;
+                return std::monostate{};
+            }
+            if (name == "application_surface_draw_enable") {
+                application_surface_draw_enabled = !args.empty() && n(0) != 0;
+                return std::monostate{};
+            }
+            if (name == "texture_set_interpolation")
                 return std::monostate{};
             if (name == "show_debug_message") {
                 std::cout << "Guest: " << text(0) << '\n';
@@ -12313,6 +12655,21 @@ struct GameSession::Impl {
                     released[k] = !held[k] && previous_held[k];
                 }
             }
+            std::int32_t current_key = 0;
+            for (std::size_t k = 1; k < pressed.size(); ++k)
+                if (pressed[k]) {
+                    current_key = static_cast<std::int32_t>(k);
+                    break;
+                }
+            if (current_key != 0)
+                engine["keyboard_lastkey"] = current_key;
+            else
+                for (std::size_t k = 1; k < held.size(); ++k)
+                    if (held[k]) {
+                        current_key = static_cast<std::int32_t>(k);
+                        break;
+                    }
+            engine["keyboard_key"] = current_key;
             previous_held = held;
             for (std::size_t k = 0; k < gamepad.buttons.size(); ++k) {
                 gamepad.pressed[k] = gamepad.pressed[k] || (gamepad.buttons[k] && !gamepad_previous[k]);
@@ -12320,6 +12677,8 @@ struct GameSession::Impl {
             }
             gamepad_previous = gamepad.buttons;
             event_budget = 0;
+            allocation_stage = "async buffer events";
+            service_async_buffer_events();
             allocation_stage = "audio recording events";
             service_audio_recorders();
             allocation_stage = "room entry";
@@ -12717,6 +13076,10 @@ struct GameSession::Impl {
                 draw_start = ProfileClock::now();
                 last_logic_ms = std::chrono::duration<double, std::milli>(draw_start - profile_start).count();
             }
+            drawing_to_display = false;
+            display_canvas.clear(application_surface_enabled
+                                      ? 0
+                                      : rooms.at(static_cast<std::size_t>(current_room)).color);
             canvas.clear(rooms.at(static_cast<std::size_t>(current_room)).color);
             if (number(engine.at("view_enabled")) != 0 && number(engine.at("view_visible[0]")) != 0) {
                 const auto w = value_number(engine.at("view_wview[0]")),
@@ -12774,7 +13137,7 @@ struct GameSession::Impl {
             allocation_stage = "background and tile drawing";
             for (const auto &b : room.backgrounds)
                 if (!b.foreground)
-                    assets.draw_background(canvas, b.id, b.x, b.y);
+                    assets.draw_background(active_draw_canvas(), b.id, b.x, b.y);
             auto draw_tile = [&](const Tile &t) {
                 if (!t.visible)
                     return;
@@ -12804,11 +13167,11 @@ struct GameSession::Impl {
                     source_y = source->y;
                 }
                 if (t.sprite_tile) {
-                    assets.draw_sprite_part(canvas, t.id, 0, source_x, source_y, t.width, t.height,
+                    assets.draw_sprite_part(active_draw_canvas(), t.id, 0, source_x, source_y, t.width, t.height,
                                             t.x + ox + layer_x, t.y + oy + layer_y, t.sx, t.sy,
                                             t.color & 0xffffffU, static_cast<double>(t.color >> 24) / 255.0);
                 } else {
-                    assets.draw_tile(canvas, t.id, source_x, source_y, t.width, t.height, t.x + ox + layer_x,
+                    assets.draw_tile(active_draw_canvas(), t.id, source_x, source_y, t.width, t.height, t.x + ox + layer_x,
                                      t.y + oy + layer_y, t.sx, t.sy, t.color, t.transform);
                 }
             };
@@ -12912,7 +13275,7 @@ struct GameSession::Impl {
                     const double alpha = static_cast<double>(background->color >> 24) / 255.0;
                     for (int row = 0; row < rows && row * columns < 4096; ++row)
                         for (int column = 0; column < columns && row * columns + column < 4096; ++column)
-                            assets.draw_sprite(canvas, background->sprite, background->frame,
+                            assets.draw_sprite(active_draw_canvas(), background->sprite, background->frame,
                                                x + column * stride_x, y + row * stride_y, sx, sy, 0, tint,
                                                alpha);
                     const double frame_count = static_cast<double>(sprite.frames.size());
@@ -12939,7 +13302,7 @@ struct GameSession::Impl {
                 if (!sprite_entry || !assets.sprite_exists(sprite_entry->sprite))
                     return;
                 auto &sprite = *sprite_entry;
-                assets.draw_sprite(canvas, sprite.sprite, sprite.frame, sprite.x + ox, sprite.y + oy,
+                assets.draw_sprite(active_draw_canvas(), sprite.sprite, sprite.frame, sprite.x + ox, sprite.y + oy,
                                    sprite.sx, sprite.sy, sprite.rotation, sprite.color & 0xffffffU,
                                    static_cast<double>(sprite.color >> 24) / 255.0);
                 const double frame_count = static_cast<double>(assets.sprite(sprite.sprite).frames.size());
@@ -13096,7 +13459,7 @@ struct GameSession::Impl {
                     const bool apply_layer_shader = draw_layer && draw_layer->shader >= 0;
                     if (apply_layer_shader) {
                         active_shader = draw_layer->shader;
-                        configure_shader(canvas);
+                        configure_shader(active_draw_canvas());
                     }
                     if (draw_layer)
                         run_layer_script(draw_layer->begin_script, i);
@@ -13108,7 +13471,7 @@ struct GameSession::Impl {
                     else {
                         const auto sprite = number(i->vars.at("sprite_index"));
                         if (sprite >= 0)
-                            assets.draw_sprite(canvas, sprite, value_number(i->vars.at("image_index")),
+                            assets.draw_sprite(active_draw_canvas(), sprite, value_number(i->vars.at("image_index")),
                                                value_number(i->vars.at("x")) +
                                                    (draw_layer ? draw_layer->x - draw_layer->origin_x : 0),
                                                value_number(i->vars.at("y")) +
@@ -13145,7 +13508,7 @@ struct GameSession::Impl {
                         run_layer_script(draw_layer->end_script, i);
                     if (apply_layer_shader) {
                         active_shader = previous_shader;
-                        configure_shader(canvas);
+                        configure_shader(active_draw_canvas());
                     }
                     if (profile_tick_timing) {
                         const double elapsed =
@@ -13163,7 +13526,7 @@ struct GameSession::Impl {
                 profile_layer_visual(layer_visuals[layer_visual++]);
             for (const auto &b : room.backgrounds)
                 if (b.foreground)
-                    assets.draw_background(canvas, b.id, b.x, b.y);
+                    assets.draw_background(active_draw_canvas(), b.id, b.x, b.y);
             if (profile_tick_timing)
                 last_draw_depth_visual_ms +=
                     std::chrono::duration<double, std::milli>(ProfileClock::now() - trailing_visual_start)
@@ -13246,6 +13609,32 @@ struct GameSession::Impl {
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
                     event(i, event_draw, event_draw_end);
             assets.view(0, 0, 1, 1, 0, 0);
+            drawing_to_display = true;
+            if (application_surface_enabled && application_surface_draw_enabled) {
+                // The application surface is an offscreen render target. Always
+                // composite it with the engine's default blend/write state, then
+                // restore script-controlled GPU state for Draw Post and GUI.
+                display_canvas.blend_enable(true);
+                display_canvas.blend_mode(5, 6, 5, 6);
+                display_canvas.alpha_test_enable(false);
+                display_canvas.color_write_enable(true, true, true, true);
+                display_canvas.pixel_shader(nullptr);
+                const double surface_width = canvas.logical_width();
+                const double surface_height = canvas.logical_height();
+                const double output_width = display_canvas.logical_width();
+                const double output_height = display_canvas.logical_height();
+                const double scale = std::min(output_width / surface_width, output_height / surface_height);
+                const double x = (output_width - surface_width * scale) * 0.5;
+                const double y = (output_height - surface_height * scale) * 0.5;
+                display_canvas.draw_surface(canvas, x, y, scale, scale);
+                configure_blend(display_canvas);
+                display_canvas.blend_enable(blend_enabled);
+                display_canvas.alpha_test_enable(alpha_test_enabled);
+                display_canvas.alpha_test_ref(alpha_test_reference);
+                display_canvas.color_write_enable(color_write_enable[0], color_write_enable[1],
+                                                  color_write_enable[2], color_write_enable[3]);
+                configure_shader(display_canvas);
+            }
             allocation_stage = "post-draw events";
             for (const auto &i : snapshot)
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
@@ -13267,6 +13656,7 @@ struct GameSession::Impl {
             }
             gui_draw_active = false;
             assets.view(0, 0, 1, 1, 0, 0);
+            drawing_to_display = false;
             if (profile_tick_timing) {
                 const auto now = ProfileClock::now();
                 last_draw_phases_ms[5] =
@@ -13321,9 +13711,20 @@ GameSession::GameSession(const std::filesystem::path &path,
                          std::optional<std::uint32_t> seed,
                          const std::filesystem::path &save_directory,
                          const GamepadState &gamepad,
-                         std::string_view start_room)
-    : impl_(std::make_unique<Impl>(path, seed, save_directory, gamepad, start_room)) {}
+                         std::string_view start_room,
+                         render::IRenderer *renderer)
+    : impl_(std::make_unique<Impl>(path, seed, save_directory, gamepad, start_room, renderer)) {}
 GameSession::~GameSession() = default;
+void GameSession::begin_render_frame() {
+#if REGML_WIIU
+    impl_->bind_renderer_canvases();
+#endif
+}
+void GameSession::finish_render_frame() {
+#if REGML_WIIU
+    impl_->finish_renderer_canvases();
+#endif
+}
 void GameSession::set_gamepad_state(const GamepadState &state) {
     impl_->gamepad = state;
 }
@@ -13334,9 +13735,21 @@ void GameSession::tick(const KeyboardState &h, const KeyboardState &p) {
         const auto seed = impl_->fixed_seed;
         const auto save_directory = impl_->save_dir;
         const auto profile = impl_->profile_tick_timing;
-        auto next = std::make_unique<Impl>(path, seed, save_directory, impl_->gamepad);
+        auto next = std::make_unique<Impl>(path, seed, save_directory, impl_->gamepad,
+                                           std::string_view{},
+#if REGML_WIIU
+                                           impl_->renderer
+#else
+                                           nullptr
+#endif
+        );
+#if REGML_WIIU
+        if (impl_->renderer_frame_active)
+            next->bind_renderer_canvases();
+#endif
         next->profile_tick_timing = profile;
         next->canvas.profile_text(profile);
+        next->display_canvas.profile_text(profile);
 #if !REGML_PS2
         std::lock_guard lock(audio_mutex_);
 #endif
@@ -13346,6 +13759,7 @@ void GameSession::tick(const KeyboardState &h, const KeyboardState &p) {
 void GameSession::profile_tick(bool enabled) noexcept {
     impl_->profile_tick_timing = enabled;
     impl_->canvas.profile_text(enabled);
+    impl_->display_canvas.profile_text(enabled);
 #if REGML_PS2
     ps2_gpu_profile(enabled);
 #endif
@@ -13377,7 +13791,7 @@ GameSession::TickProfile GameSession::take_tick_profile() noexcept {
     profile.max_draw_builtin_call_ms = impl_->max_draw_builtin_call_ms;
     profile.slowest_draw_builtin = impl_->slowest_draw_builtin;
     profile.slowest_draw_builtin_details = impl_->slowest_draw_builtin_details;
-    profile.text_ms = impl_->canvas.take_text_profile_ms();
+    profile.text_ms = impl_->canvas.take_text_profile_ms() + impl_->display_canvas.take_text_profile_ms();
 #if REGML_PS2
     const auto gpu_profile = ps2_gpu_take_profile();
     profile.image_ms = gpu_profile.image_ms;
@@ -13408,10 +13822,10 @@ void GameSession::text_input(std::string_view text) {
     }
 }
 const Canvas &GameSession::canvas() const {
-    return impl_->canvas;
+    return impl_->display_canvas;
 }
 Canvas &GameSession::canvas() {
-    return impl_->canvas;
+    return impl_->display_canvas;
 }
 std::size_t GameSession::frames() const {
     return impl_->frame;

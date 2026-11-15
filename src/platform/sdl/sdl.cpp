@@ -1,4 +1,11 @@
 #include "play.hpp"
+#include "backends/sdl/canvas_presenter.hpp"
+#if REGML_WIIU
+#include "backends/wiiu_gx2/renderer.hpp"
+#if REGML_WIIU
+#include <whb/proc.h>
+#endif
+#endif
 #if REGML_WII
 #include "audio/wii/output.hpp"
 #elif REGML_MINIAUDIO
@@ -11,11 +18,11 @@
 #endif
 #if REGML_WII
 #include "platform/wii/host.hpp"
-#include "platform/wii/renderer.hpp"
+#include "backends/wii_gx/presenter.hpp"
 #endif
 #if REGML_PS2
 #include "platform/ps2/frontend.hpp"
-#include "platform/ps2/gpu.hpp"
+#include "backends/ps2_gskit/gpu.hpp"
 #endif
 #if REGML_PS4
 #include <orbis/Pad.h>
@@ -28,6 +35,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <fstream>
 #include <iomanip>
 #include <map>
@@ -202,6 +210,11 @@ struct SdlLifetime {
         SDL_SetMainReady();
 #if REGML_WII
         sdl_ok(SDL_Init(SDL_INIT_TIMER), "SDL timer initialization");
+#elif REGML_WIIU
+        // The GX2 renderer owns the Wii U display. Initializing SDL's video
+        // subsystem here would also claim the GX2 screen buffers before
+        // WHBGfxInit runs, so keep SDL for events/input only.
+        sdl_ok(SDL_Init(SDL_INIT_EVENTS | SDL_INIT_TIMER), "SDL initialization");
 #else
         sdl_ok(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_TIMER), "SDL initialization");
 #endif
@@ -214,16 +227,35 @@ struct SdlLifetime {
 struct WindowDelete {
     void operator()(SDL_Window *p) const { SDL_DestroyWindow(p); }
 };
-struct RendererDelete {
-    void operator()(SDL_Renderer *p) const { SDL_DestroyRenderer(p); }
-};
-struct TextureDelete {
-    void operator()(SDL_Texture *p) const { SDL_DestroyTexture(p); }
-};
 int gml_key(SDL_Keycode key) {
-    if (key >= SDLK_F1 && key <= SDLK_F12)
+    if (key >= SDLK_F1 && key <= SDLK_F15)
         return 112 + static_cast<int>(key - SDLK_F1);
     switch (key) {
+    case SDLK_BACKSPACE:
+        return 8;
+    case SDLK_TAB:
+        return 9;
+    case SDLK_CLEAR:
+        return 12;
+    case SDLK_RETURN:
+    case SDLK_KP_ENTER:
+        return 13;
+    case SDLK_PAUSE:
+        return 19;
+    case SDLK_CAPSLOCK:
+        return 20;
+    case SDLK_ESCAPE:
+        return 27;
+    case SDLK_SPACE:
+        return 32;
+    case SDLK_PAGEUP:
+        return 33;
+    case SDLK_PAGEDOWN:
+        return 34;
+    case SDLK_END:
+        return 35;
+    case SDLK_HOME:
+        return 36;
     case SDLK_LEFT:
         return 37;
     case SDLK_UP:
@@ -232,6 +264,55 @@ int gml_key(SDL_Keycode key) {
         return 39;
     case SDLK_DOWN:
         return 40;
+    case SDLK_PRINTSCREEN:
+        return 44;
+    case SDLK_INSERT:
+        return 45;
+    case SDLK_DELETE:
+        return 46;
+    case SDLK_LSHIFT:
+    case SDLK_RSHIFT:
+        return 16;
+    case SDLK_LCTRL:
+    case SDLK_RCTRL:
+        return 17;
+    case SDLK_LALT:
+    case SDLK_RALT:
+        return 18;
+    case SDLK_KP_0:
+        return 96;
+    case SDLK_KP_1:
+        return 97;
+    case SDLK_KP_2:
+        return 98;
+    case SDLK_KP_3:
+        return 99;
+    case SDLK_KP_4:
+        return 100;
+    case SDLK_KP_5:
+        return 101;
+    case SDLK_KP_6:
+        return 102;
+    case SDLK_KP_7:
+        return 103;
+    case SDLK_KP_8:
+        return 104;
+    case SDLK_KP_9:
+        return 105;
+    case SDLK_KP_MULTIPLY:
+        return 106;
+    case SDLK_KP_PLUS:
+        return 107;
+    case SDLK_KP_MINUS:
+        return 109;
+    case SDLK_KP_PERIOD:
+        return 110;
+    case SDLK_KP_DIVIDE:
+        return 111;
+    case SDLK_NUMLOCKCLEAR:
+        return 144;
+    case SDLK_SCROLLLOCK:
+        return 145;
     default:
         if (key >= SDLK_a && key <= SDLK_z)
             return static_cast<int>(key - SDLK_a + 'A');
@@ -242,8 +323,11 @@ class VideoWindow {
   public:
     explicit VideoWindow(bool hidden, bool escape_quits = true, bool speed_controls = false)
         : escape_quits_(escape_quits), speed_controls_(speed_controls) {
-        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
-#if REGML_WII
+#if REGML_WIIU
+        // Video output is presented by WiiUGX2Renderer through WHBGfx. Do not
+        // create an SDL window, which would initialize a second display path.
+        (void)hidden;
+#elif REGML_WII
         const auto flags =
             static_cast<Uint32>(SDL_WINDOW_FULLSCREEN | (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN));
         constexpr int window_width = 640, window_height = 480;
@@ -252,30 +336,23 @@ class VideoWindow {
                                                (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN));
         constexpr int window_width = 640, window_height = 480;
 #endif
+#if !REGML_WIIU
         window_.reset(SDL_CreateWindow(escape_quits ? "reGML - VM Arcade" : "reGML - Game (experimental)",
                                        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, window_width,
                                        window_height, flags));
         if (!window_)
             throw Error(ErrorKind::io, std::string("window creation: ") + SDL_GetError());
-        // Sync the software-composited game frame to the display. Without this, the window
-        // can present while the monitor is scanning out, making moving scenes visibly tear.
-        renderer_.reset(
-            SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC));
-        if (!renderer_)
-            renderer_.reset(SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_ACCELERATED));
-        if (!renderer_)
-            renderer_.reset(
-                SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC));
-        if (!renderer_)
-            renderer_.reset(SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_SOFTWARE));
-        if (!renderer_)
-            throw Error(ErrorKind::io, std::string("renderer creation: ") + SDL_GetError());
-        sdl_ok(SDL_RenderSetLogicalSize(renderer_.get(), 640, 480), "logical resolution");
-        texture_.reset(SDL_CreateTexture(renderer_.get(), SDL_PIXELFORMAT_ARGB8888,
-                                         SDL_TEXTUREACCESS_STREAMING, render_width, render_height));
-        if (!texture_)
-            throw Error(ErrorKind::io, std::string("framebuffer texture: ") + SDL_GetError());
-        sdl_ok(SDL_SetTextureBlendMode(texture_.get(), SDL_BLENDMODE_NONE), "texture blend mode");
+#endif
+        // SDL owns the desktop renderer, while Wii U submits the same draw
+        // commands directly to GX2. SDL remains responsible for platform input
+        // and events in either configuration.
+#if REGML_WIIU
+        gx2_renderer_ = std::make_unique<render::WiiUGX2Renderer>();
+        if (!gx2_renderer_->ready())
+            throw Error(ErrorKind::io, "Wii U GX2 renderer initialization failed");
+#else
+        presenter_ = std::make_unique<SdlCanvasPresenter>(window_.get());
+#endif
 #if REGML_PS4
         OrbisUserServiceInitializeParams params{};
         params.priority = ORBIS_KERNEL_PRIO_FIFO_LOWEST;
@@ -296,6 +373,7 @@ class VideoWindow {
                     break;
             }
         }
+        poll_sdl_gamepad();
 #endif
     }
     ~VideoWindow() {
@@ -309,6 +387,13 @@ class VideoWindow {
             SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
     }
     bool poll(double *speed_multiplier = nullptr) {
+#if REGML_WIIU
+        // WHBGfx registers ProcUI callbacks during renderer initialization. Keep
+        // the Wii U application lifecycle pumped so those callbacks are valid
+        // and the title can return cleanly when ProcUI stops it.
+        if (!WHBProcIsRunning())
+            return false;
+#endif
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT)
@@ -373,36 +458,26 @@ class VideoWindow {
         }
 #if REGML_PS4
         poll_ps4_pad();
+#else
+        poll_sdl_gamepad();
 #endif
         rebuild_input_state();
         return true;
     }
+#if !REGML_WIIU
     void present(const Canvas &canvas) {
-        const auto *pixels = canvas.pixels().data();
-        int pitch = canvas.width() * static_cast<int>(sizeof(std::uint32_t));
-        if (canvas.width() != render_width || canvas.height() != render_height) {
-            present_pixels_.resize(static_cast<std::size_t>(render_width) * render_height);
-            for (int y = 0; y < render_height; ++y) {
-                const int source_y =
-                    static_cast<int>(static_cast<std::int64_t>(y) * canvas.height() / render_height);
-                const auto *source_row =
-                    canvas.pixels().data() + static_cast<std::size_t>(source_y) * canvas.width();
-                auto *target_row = present_pixels_.data() + static_cast<std::size_t>(y) * render_width;
-                for (int x = 0; x < render_width; ++x) {
-                    const int source_x =
-                        static_cast<int>(static_cast<std::int64_t>(x) * canvas.width() / render_width);
-                    target_row[x] = source_row[source_x];
-                }
-            }
-            pixels = present_pixels_.data();
-            pitch = render_width * static_cast<int>(sizeof(std::uint32_t));
-        }
-        sdl_ok(SDL_UpdateTexture(texture_.get(), nullptr, pixels, pitch), "texture upload");
-        sdl_ok(SDL_SetRenderDrawColor(renderer_.get(), 0, 0, 0, 255), "clear color");
-        sdl_ok(SDL_RenderClear(renderer_.get()), "renderer clear");
-        sdl_ok(SDL_RenderCopy(renderer_.get(), texture_.get(), nullptr, nullptr), "frame presentation");
-        SDL_RenderPresent(renderer_.get());
+        presenter_->present(canvas);
     }
+#endif
+#if REGML_WIIU
+    render::IRenderer *renderer() noexcept { return gx2_renderer_.get(); }
+    void present(GameSession &session) {
+        if (!gx2_renderer_ || !gx2_renderer_->end_frame())
+            throw Error(ErrorKind::io, "Wii U renderer failed to finish the frame");
+        session.finish_render_frame();
+        gx2_renderer_->present();
+    }
+#endif
     void show_error_reporter(std::string_view title, std::string_view report) noexcept {
         try {
 #if !REGML_PS4 && !REGML_WIIU
@@ -464,6 +539,13 @@ class VideoWindow {
             int scroll = 0;
             bool open = true;
             auto redraw = [&] {
+#if REGML_WIIU
+                const render::FrameInfo frame{{static_cast<std::uint32_t>(canvas.width()),
+                                               static_cast<std::uint32_t>(canvas.height())}, 0};
+                if (!gx2_renderer_ || !gx2_renderer_->begin_frame(frame))
+                    throw Error(ErrorKind::io, "Wii U GX2 could not begin the error-report frame");
+                canvas.set_renderer(gx2_renderer_.get(), {});
+#endif
                 canvas.clear(0x000000);
                 canvas.color(0xffffff);
                 canvas.text(16, 12, title == "Runner Error" ? "reGML RUNTIME ERROR" : "reGML ERROR", 2, 2, 0,
@@ -476,7 +558,13 @@ class VideoWindow {
                     canvas.text(16, 62 + row * line_height, lines[index], 2, 2, 0, 0, 0);
                 }
                 canvas.text(16, 458, "UP/DOWN scroll  |  any button closes", 1, 1, 0, 0, 0);
+#if REGML_WIIU
+                if (!gx2_renderer_->end_frame())
+                    throw Error(ErrorKind::io, "Wii U GX2 could not finish the error-report frame");
+                gx2_renderer_->present();
+#else
                 present(canvas);
+#endif
             };
             redraw();
             while (open) {
@@ -500,17 +588,34 @@ class VideoWindow {
     void tick_game(GameSession &session,
                    const KeyboardState *replay,
                    const KeyboardState *replay_pressed = nullptr) {
-#if REGML_PS4
+#if REGML_WIIU
+        const auto &canvas = session.canvas();
+        const render::FrameInfo frame{{static_cast<std::uint32_t>(canvas.width()),
+                                       static_cast<std::uint32_t>(canvas.height())},
+                                      session.frames()};
+        if (!gx2_renderer_ || !gx2_renderer_->begin_frame(frame))
+            throw Error(ErrorKind::io, "Wii U renderer failed to begin the frame");
+        session.begin_render_frame();
+#endif
         session.set_gamepad_state(gamepad_);
         gamepad_.pressed.fill(false);
+        try {
+            session.tick(replay ? *replay : held_,
+                         replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed_);
+        } catch (...) {
+#if REGML_WIIU
+            (void)gx2_renderer_->end_frame();
+            try {
+                session.finish_render_frame();
+            } catch (...) {
+            }
+            gx2_renderer_->present();
 #endif
-        session.tick(replay ? *replay : held_,
-                     replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed_);
+            throw;
+        }
         pressed_.fill(false);
     }
-#if REGML_PS4
     const GamepadState &gamepad_state() const { return gamepad_; }
-#endif
 
   private:
     void update_source_key(KeyboardState &source_held,
@@ -579,6 +684,52 @@ class VideoWindow {
         update_source_key(joystick_axes_held_, joystick_axes_pressed_, 38, gamepad_.axes[1] < -0.35);
         update_source_key(joystick_axes_held_, joystick_axes_pressed_, 40, gamepad_.axes[1] > 0.35);
     }
+#else
+    void poll_sdl_gamepad() {
+        gamepad_.pressed.fill(false);
+        gamepad_.connected = controller_ && SDL_GameControllerGetAttached(controller_) == SDL_TRUE;
+        if (!gamepad_.connected) {
+            gamepad_.buttons.fill(false);
+            gamepad_.axes.fill(0.0);
+            return;
+        }
+
+        // Keep these indices aligned with GameMaker's gp_* constants:
+        // face buttons, shoulders/triggers, select/start/stick clicks, then d-pad.
+        static constexpr std::array<SDL_GameControllerButton, 16> button_map = {
+            SDL_CONTROLLER_BUTTON_A,
+            SDL_CONTROLLER_BUTTON_B,
+            SDL_CONTROLLER_BUTTON_X,
+            SDL_CONTROLLER_BUTTON_Y,
+            SDL_CONTROLLER_BUTTON_LEFTSHOULDER,
+            SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
+            SDL_CONTROLLER_BUTTON_INVALID,
+            SDL_CONTROLLER_BUTTON_INVALID,
+            SDL_CONTROLLER_BUTTON_BACK,
+            SDL_CONTROLLER_BUTTON_START,
+            SDL_CONTROLLER_BUTTON_LEFTSTICK,
+            SDL_CONTROLLER_BUTTON_RIGHTSTICK,
+            SDL_CONTROLLER_BUTTON_DPAD_UP,
+            SDL_CONTROLLER_BUTTON_DPAD_DOWN,
+            SDL_CONTROLLER_BUTTON_DPAD_LEFT,
+            SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
+        };
+        for (std::size_t i = 0; i < button_map.size(); ++i)
+            gamepad_.buttons[i] = button_map[i] != SDL_CONTROLLER_BUTTON_INVALID &&
+                                  SDL_GameControllerGetButton(controller_, button_map[i]) != 0;
+
+        gamepad_.buttons[6] = SDL_GameControllerGetAxis(controller_, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
+        gamepad_.buttons[7] = SDL_GameControllerGetAxis(controller_, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
+        const auto normalize_axis = [](Sint16 value) {
+            return value < 0 ? static_cast<double>(value) / 32768.0 : static_cast<double>(value) / 32767.0;
+        };
+        gamepad_.axes = {
+            normalize_axis(SDL_GameControllerGetAxis(controller_, SDL_CONTROLLER_AXIS_LEFTX)),
+            normalize_axis(SDL_GameControllerGetAxis(controller_, SDL_CONTROLLER_AXIS_LEFTY)),
+            normalize_axis(SDL_GameControllerGetAxis(controller_, SDL_CONTROLLER_AXIS_RIGHTX)),
+            normalize_axis(SDL_GameControllerGetAxis(controller_, SDL_CONTROLLER_AXIS_RIGHTY)),
+        };
+    }
 #endif
     void rebuild_input_state() {
         for (std::size_t i = 0; i < held_.size(); ++i) {
@@ -619,17 +770,18 @@ class VideoWindow {
             return -1;
         }
     }
-    // SDL needs to outlive the window and renderer
+    // SDL needs to outlive the window and presenter.
     SdlLifetime lifetime_;
     std::unique_ptr<SDL_Window, WindowDelete> window_;
-    std::unique_ptr<SDL_Renderer, RendererDelete> renderer_;
-    std::unique_ptr<SDL_Texture, TextureDelete> texture_;
-    std::vector<std::uint32_t> present_pixels_;
+    std::unique_ptr<SdlCanvasPresenter> presenter_;
+#if REGML_WIIU
+    std::unique_ptr<render::WiiUGX2Renderer> gx2_renderer_;
+#endif
     SDL_GameController *controller_ = nullptr;
 #if REGML_PS4
     int pad_ = -1;
-    GamepadState gamepad_{};
 #endif
+    GamepadState gamepad_{};
     bool controller_subsystem_ = false;
     KeyboardState held_{}, pressed_{};
     KeyboardState keyboard_held_{}, keyboard_pressed_{};
@@ -879,7 +1031,16 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
     std::unique_ptr<GameSession> game;
     trace_stage("session.begin");
     try {
-#if REGML_PS4
+#if REGML_WIIU
+        game = std::make_unique<GameSession>(package, options.seed, options.save_directory,
+                                             video_window ? video_window->gamepad_state() : GamepadState{},
+                                             options.start_room,
+                                             video_window ? video_window->renderer() : nullptr);
+#elif REGML_PS4
+        game = std::make_unique<GameSession>(package, options.seed, options.save_directory,
+                                             video_window ? video_window->gamepad_state() : GamepadState{},
+                                             options.start_room);
+#elif REGML_WITH_SDL2
         game = std::make_unique<GameSession>(package, options.seed, options.save_directory,
                                              video_window ? video_window->gamepad_state() : GamepadState{},
                                              options.start_room);
@@ -1011,7 +1172,11 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
                 if (options.debug_overlay)
                     draw_debug_overlay(session, debug_frame_ms);
                 trace_stage("present", &session);
+#if REGML_WIIU
+                window.present(session);
+#else
                 window.present(session.canvas());
+#endif
                 present_end = profile.enabled() ? Clock::now() : Clock::time_point{};
 #if REGML_WII
                 if (!options.trace_log.empty()) {
