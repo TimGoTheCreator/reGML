@@ -452,6 +452,7 @@ int command(int argc, char **argv) {
     }
     throw regml::Error(regml::ErrorKind::usage, "unknown command: " + std::string(name));
 }
+
 } // namespace
 int main(int argc, char **argv) {
     try {
