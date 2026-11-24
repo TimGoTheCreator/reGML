@@ -4119,9 +4119,7 @@ struct GameSession::Impl {
                         push(a * b);
                         break;
                     case Opcode::div:
-                        if (b == 0)
-                            throw Error(ErrorKind::vm, "division by zero");
-                        push(a / b);
+                        push(b == 0 ? 0.0 : a / b);
                         break;
                     case Opcode::rem:
                         if (b == 0)

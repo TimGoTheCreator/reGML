@@ -76,6 +76,7 @@ class GameAssets {
                            std::optional<std::size_t> animation_frame = std::nullopt) const;
     void prefetch(int id);
     void prefetch(int id, double frame);
+    void gpu_preload_sprite(int id, double frame);
     bool prefetch_texture_group(std::string_view name);
     void flush_texture_group(std::string_view name);
     void draw_background(Canvas &canvas, int id, double x, double y);
@@ -262,8 +263,8 @@ class GameAssets {
     // Wii U has enough memory to retain large decoded texture pages. A tiny
     // low-memory cache repeatedly inflates the same font atlas once per glyph
     // during transformed text draws, stalling transitions for seconds.
-    static constexpr std::size_t page_cache_limit_ = 32ULL * 1024 * 1024;
-    static constexpr std::size_t region_cache_limit_ = 8ULL * 1024 * 1024;
+    static constexpr std::size_t page_cache_limit_ = 96ULL * 1024 * 1024;
+    static constexpr std::size_t region_cache_limit_ = 16ULL * 1024 * 1024;
 #elif REGML_LOW_MEMORY
     static constexpr std::size_t page_cache_limit_ = 2ULL * 1024 * 1024;
     static constexpr std::size_t region_cache_limit_ = 512ULL * 1024;

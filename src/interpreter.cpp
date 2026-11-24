@@ -47,12 +47,41 @@ VmResult execute_numeric(const Program &program, VmOptions options) {
     ExecutionContext context;
     return execute(program, context, std::move(options));
 }
+namespace {
+struct PooledValueVector {
+    std::vector<Value> vec;
+    explicit PooledValueVector(std::size_t min_capacity = 0) {
+        auto &pool = pool_storage();
+        if (!pool.empty()) {
+            vec = std::move(pool.back());
+            pool.pop_back();
+        }
+        if (vec.capacity() < min_capacity)
+            vec.reserve(min_capacity);
+    }
+    ~PooledValueVector() {
+        vec.clear();
+        auto &pool = pool_storage();
+        if (pool.size() < 64)
+            pool.push_back(std::move(vec));
+    }
+    PooledValueVector(const PooledValueVector &) = delete;
+    PooledValueVector &operator=(const PooledValueVector &) = delete;
+
+private:
+    static std::vector<std::vector<Value>> &pool_storage() {
+        thread_local std::vector<std::vector<Value>> pool;
+        return pool;
+    }
+};
+} // namespace
+
 VmResult execute(const Program &program, ExecutionContext &context, VmOptions options) {
     if (program.bytecode_version != 15 && program.bytecode_version != 16 && program.bytecode_version != 17)
         throw Error(ErrorKind::unsupported, "numeric VM requires bytecode 15, 16, or 17", program.origin);
     VmResult result;
-    std::vector<Value> stack;
-    stack.reserve(std::min(options.max_stack_values, std::size_t{64}));
+    PooledValueVector stack_guard(std::min(options.max_stack_values, std::size_t{64}));
+    auto &stack = stack_guard.vec;
     std::size_t pc = 0;
     std::size_t instruction_index = 0;
     if (pc != program.byte_length) {
@@ -172,8 +201,8 @@ VmResult execute(const Program &program, ExecutionContext &context, VmOptions op
             const auto count = static_cast<std::size_t>(ins.word & 0xffff);
             if (count > stack.size())
                 throw Error(ErrorKind::vm, "not enough call arguments on the stack", absolute);
-            std::vector<Value> arguments;
-            arguments.reserve(count);
+            PooledValueVector arguments_guard(count);
+            auto &arguments = arguments_guard.vec;
             // argument zero sits at the top of the stack
             for (std::size_t i = 0; i < count; ++i)
                 arguments.push_back(pop());

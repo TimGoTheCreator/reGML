@@ -56,7 +56,7 @@ void help() {
            "Run options: --frames N, --headless, --hidden, --screenshot FILE,\n"
            "             --input-script FILE, --seed N, --save-dir DIR, --speed Nx,\n"
            "             --start-room NAME, --speed-control, --debug-overlay,\n"
-           "             --profile-log FILE\n";
+           "             --gl | --opengl, --software, --profile-log FILE\n";
 }
 void print_instruction(const regml::Instruction &ins, std::size_t origin, bool resolved = false) {
     std::cout << "  0x" << std::hex << std::setw(8) << std::setfill('0') << origin + ins.offset << "  "
@@ -406,6 +406,10 @@ int command(int argc, char **argv) {
                 options.speed_controls = true;
             else if (flag == "--debug-overlay")
                 options.debug_overlay = true;
+            else if (flag == "--gl" || flag == "--opengl")
+                options.opengl = true;
+            else if (flag == "--software")
+                options.opengl = false;
             else if (flag == "--frames" || flag == "--screenshot" || flag == "--input-script" ||
                      flag == "--seed" || flag == "--save-dir" || flag == "--speed" ||
                      flag == "--start-room" || flag == "--profile-log") {

@@ -312,7 +312,7 @@ struct VideoPlayer::Impl {
                 fallback_frame_position = frame_position + frame_interval;
                 scaler = sws_getCachedContext(scaler, frame->width, frame->height,
                                               static_cast<AVPixelFormat>(frame->format), width, height,
-                                              video_pixel_format, SWS_BILINEAR, nullptr, nullptr, nullptr);
+                                              video_pixel_format, SWS_POINT, nullptr, nullptr, nullptr);
                 if (!scaler) {
                     av_frame_unref(frame);
                     error = true;
@@ -440,6 +440,7 @@ bool VideoPlayer::open(const std::filesystem::path &path) {
     // the game thread's entire frame budget.
     state.decoder->thread_count = 3;
     state.decoder->thread_type = FF_THREAD_FRAME;
+    state.decoder->skip_loop_filter = AVDISCARD_ALL;
 #endif
     if (avcodec_open2(state.decoder, codec, nullptr) < 0) {
         close();
@@ -447,6 +448,12 @@ bool VideoPlayer::open(const std::filesystem::path &path) {
     }
     state.width = state.decoder->width;
     state.height = state.decoder->height;
+#if REGML_WIIU
+    if (state.width > 320 || state.height > 240) {
+        state.width = std::max(1, state.width / 2);
+        state.height = std::max(1, state.height / 2);
+    }
+#endif
     if (state.width < 1 || state.height < 1 || state.width > 4096 || state.height > 4096 ||
         static_cast<std::uint64_t>(state.width) * static_cast<std::uint64_t>(state.height) >
             16ULL * 1024 * 1024) {
@@ -612,7 +619,7 @@ bool VideoPlayer::update_frame() noexcept {
         }
     }
     bool updated = false;
-    for (int decoded = 0; decoded < 8; ++decoded) {
+    for (int decoded = 0; decoded < 2; ++decoded) {
         if (state.frame_ready && state.frame_position + state.frame_interval > position)
             break;
         if (!state.decode_next()) {

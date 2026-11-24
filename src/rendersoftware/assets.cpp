@@ -1,8 +1,11 @@
-﻿#include "assets.hpp"
+#include "assets.hpp"
 #include "../gmrt_project.hpp"
 #include "bit_cast.hpp"
 #include "platform/ps2/gpu.hpp"
 #include "platform/wii/gpu.hpp"
+#if REGML_GLMODERN
+#include "glmodern/gl_gpu.hpp"
+#endif
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -545,8 +548,36 @@ int GameAssets::add_sprite_font(int sprite_id,
     Font font;
     font.size = std::max(source.height, 1);
     font.page_per_glyph = true;
-    for (std::size_t i = 0; i < source.frames.size() && i < string_map.size(); ++i) {
-        const auto region_index = source.frames[i];
+    std::size_t frame_index = 0;
+    std::size_t str_pos = 0;
+    while (str_pos < string_map.size() && frame_index < source.frames.size()) {
+        std::uint32_t codepoint = 0;
+        const auto b0 = static_cast<unsigned char>(string_map[str_pos]);
+        std::size_t char_len = 1;
+        if (b0 < 0x80) {
+            codepoint = b0;
+            char_len = 1;
+        } else if ((b0 & 0xe0) == 0xc0 && str_pos + 1 < string_map.size()) {
+            codepoint = ((b0 & 0x1f) << 6) | (static_cast<unsigned char>(string_map[str_pos + 1]) & 0x3f);
+            char_len = 2;
+        } else if ((b0 & 0xf0) == 0xe0 && str_pos + 2 < string_map.size()) {
+            codepoint = ((b0 & 0x0f) << 12) |
+                        ((static_cast<unsigned char>(string_map[str_pos + 1]) & 0x3f) << 6) |
+                        (static_cast<unsigned char>(string_map[str_pos + 2]) & 0x3f);
+            char_len = 3;
+        } else if ((b0 & 0xf8) == 0xf0 && str_pos + 3 < string_map.size()) {
+            codepoint = ((b0 & 0x07) << 18) |
+                        ((static_cast<unsigned char>(string_map[str_pos + 1]) & 0x3f) << 12) |
+                        ((static_cast<unsigned char>(string_map[str_pos + 2]) & 0x3f) << 6) |
+                        (static_cast<unsigned char>(string_map[str_pos + 3]) & 0x3f);
+            char_len = 4;
+        } else {
+            codepoint = b0;
+            char_len = 1;
+        }
+        str_pos += char_len;
+
+        const auto region_index = source.frames[frame_index++];
         if (region_index >= regions_.size())
             continue;
         const auto &region = regions_[region_index].region;
@@ -558,13 +589,23 @@ int GameAssets::add_sprite_font(int sprite_id,
         if (advance < std::numeric_limits<std::int16_t>::min() ||
             advance > std::numeric_limits<std::int16_t>::max())
             throw Error(ErrorKind::unsupported, "sprite font advance exceeds supported bounds");
-        const auto character = static_cast<unsigned char>(string_map[i]);
-        font.glyphs[character] = {
-            static_cast<std::uint16_t>(region.x),   static_cast<std::uint16_t>(region.y),
-            static_cast<std::uint16_t>(region.w),   static_cast<std::uint16_t>(region.h),
-            static_cast<std::int16_t>(advance),     0,
-            static_cast<std::uint16_t>(region.page)};
-        font.has_glyph[character] = true;
+        if (codepoint < 256) {
+            const auto character = static_cast<unsigned char>(codepoint);
+            font.glyphs[character] = {
+                static_cast<std::uint16_t>(region.x),   static_cast<std::uint16_t>(region.y),
+                static_cast<std::uint16_t>(region.w),   static_cast<std::uint16_t>(region.h),
+                static_cast<std::int16_t>(advance),     0,
+                static_cast<std::uint16_t>(region.page)};
+            font.has_glyph[character] = true;
+        } else if (codepoint == 0x2026) {
+            // Windows-1252 ellipsis mapping (0x85)
+            font.glyphs[0x85] = {
+                static_cast<std::uint16_t>(region.x),   static_cast<std::uint16_t>(region.y),
+                static_cast<std::uint16_t>(region.w),   static_cast<std::uint16_t>(region.h),
+                static_cast<std::int16_t>(advance),     0,
+                static_cast<std::uint16_t>(region.page)};
+            font.has_glyph[0x85] = true;
+        }
     }
     auto atlas = std::make_unique<Region>();
     font.atlas = atlas.get();
@@ -795,7 +836,13 @@ int GameAssets::create_sprite_from_surface(const Canvas &surface,
         return -1;
 
     std::vector<std::uint32_t> pixels(static_cast<std::size_t>(pixel_count));
-    const auto source = surface.pixels();
+    std::vector<std::uint32_t> scratch;
+    std::span<const std::uint32_t> source = surface.pixels();
+    if (surface.gpu_target()) {
+        scratch.resize(static_cast<std::size_t>(surface.width()) * surface.height());
+        if (surface.gpu_readback(scratch))
+            source = scratch;
+    }
     if (x == 0 && y == 0 && width == surface.width() && height == surface.height() &&
         source.size() == pixels.size()) {
         std::copy(source.begin(), source.end(), pixels.begin());
@@ -1227,6 +1274,31 @@ void GameAssets::prefetch(int id, double frame) {
     (void)source_y;
 #endif
 }
+void GameAssets::gpu_preload_sprite(int id, double frame) {
+#if REGML_GLMODERN
+    if (!sprite_exists(id))
+        return;
+    const auto &spr = sprite(id);
+    if (spr.frames.empty() || !std::isfinite(frame))
+        return;
+    const auto region_index = spr.frames[frame_index(frame, spr.frames.size())];
+    if (region_index == std::numeric_limits<std::uint32_t>::max())
+        return;
+    const auto &region = regions_[region_index].region;
+    if (region.page < 0 || static_cast<std::size_t>(region.page) >= pages_.size())
+        return;
+    const auto key = image_cache_key(region);
+    if (glmodern::gl_gpu_cached_image(region.w, region.h, 0, 0, 0, 0, 0, 0xffffff, 1.0, key))
+        return;
+    int source_x = 0, source_y = 0;
+    const auto &page = region_pixels(region, source_x, source_y);
+    glmodern::gl_gpu_image(page.pixels, page.width, source_x, source_y,
+                           region.w, region.h, 0, 0, 0, 0, 0, 0xffffff, 1.0, key);
+#else
+    (void)id;
+    (void)frame;
+#endif
+}
 bool GameAssets::prefetch_texture_group(std::string_view name) {
     if (!package_.texture_group_exists(name))
         return false;
@@ -1367,6 +1439,16 @@ void GameAssets::draw_tile(Canvas &canvas,
     const auto transform = tile_data & (mirror_mask | flip_mask | rotate_mask);
     if (!transform) {
         blit(canvas, cut, draw_x, draw_y, sx, sy, 0, color & 0xffffff,
+             static_cast<double>(color >> 24) / 255);
+        return;
+    }
+    if (canvas.gpu_target() && !(transform & rotate_mask)) {
+        const bool mirror_x = (transform & mirror_mask) != 0;
+        const bool flip_y = (transform & flip_mask) != 0;
+        const double tile_w = (right - left) * sx;
+        const double tile_h = (bottom - top) * sy;
+        blit(canvas, cut, mirror_x ? draw_x + tile_w : draw_x, flip_y ? draw_y + tile_h : draw_y,
+             mirror_x ? -sx : sx, flip_y ? -sy : sy, 0, color & 0xffffff,
              static_cast<double>(color >> 24) / 255);
         return;
     }
@@ -1604,9 +1686,9 @@ void GameAssets::blit(Canvas &canvas,
         return;
     int source_x = 0, source_y = 0;
     const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
-#if REGML_WII || REGML_PS2
+#if REGML_WII || REGML_PS2 || REGML_GLMODERN
     if (canvas.gpu_target()) {
-#if REGML_WII
+#if REGML_WII || REGML_GLMODERN
         const double w = r.tw * sx, h = r.th * sy;
         if (angle == 0) {
             const double right = x + w, bottom = y + h;
@@ -1639,6 +1721,12 @@ void GameAssets::blit(Canvas &canvas,
                       angle, tint, alpha, key);
         if (&page == &scratch_page_)
             release_scratch_page();
+#elif REGML_GLMODERN
+        if (glmodern::gl_gpu_cached_image(r.w, r.h, x, y, r.tw * sx, r.th * sy, angle, tint, alpha, key))
+            return;
+        const auto &page = region_pixels(r, source_x, source_y);
+        glmodern::gl_gpu_image(page.pixels, page.width, source_x, source_y, r.w, r.h, x, y, r.tw * sx, r.th * sy,
+                              angle, tint, alpha, key);
 #endif
         return;
     }
@@ -2153,6 +2241,31 @@ void GameAssets::draw_sprite_part(Canvas &canvas,
         return;
     const int ix = static_cast<int>(std::floor(l)), iy = static_cast<int>(std::floor(t)),
               ir = static_cast<int>(std::ceil(rr)), ib = static_cast<int>(std::ceil(bb));
+
+    const double dest_x = ((x + (ix - left) * sx - view_x_) * view_sx_ + port_x_) * canvas.render_scale();
+    const double dest_y = ((y + (iy - top) * sy - view_y_) * view_sy_ + port_y_) * canvas.render_scale();
+    const double dest_w = (ir - ix) * sx * view_sx_ * canvas.render_scale();
+    const double dest_h = (ib - iy) * sy * view_sy_ * canvas.render_scale();
+    const double min_dx = dest_w >= 0 ? dest_x : dest_x + dest_w;
+    const double max_dx = dest_w >= 0 ? dest_x + dest_w : dest_x;
+    const double min_dy = dest_h >= 0 ? dest_y : dest_y + dest_h;
+    const double max_dy = dest_h >= 0 ? dest_y + dest_h : dest_y;
+    if (max_dx <= 0.0 || min_dx >= canvas.width() || max_dy <= 0.0 || min_dy >= canvas.height())
+        return;
+
+#if REGML_GLMODERN
+    if (canvas.gpu_target() && r.tw > 0 && r.th > 0) {
+        const auto base_key = image_cache_key(r);
+        const float u0 = static_cast<float>(ix - r.tx) / static_cast<float>(r.tw);
+        const float v0 = static_cast<float>(iy - r.ty) / static_cast<float>(r.th);
+        const float u1 = static_cast<float>(ir - r.tx) / static_cast<float>(r.tw);
+        const float v1 = static_cast<float>(ib - r.ty) / static_cast<float>(r.th);
+        const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
+        if (glmodern::gl_gpu_cached_sub_image(dest_x, dest_y, dest_w, dest_h, u0, v0, u1, v1, tint, alpha, base_key))
+            return;
+    }
+#endif
+
     Region crop{r.x + static_cast<int>((ix - r.tx) * r.w / r.tw),
                 r.y + static_cast<int>((iy - r.ty) * r.h / r.th),
                 static_cast<int>((ir - ix) * r.w / r.tw),
@@ -2340,7 +2453,7 @@ void GameAssets::draw_text(Canvas &canvas,
     }
     const auto &f = fonts_[static_cast<std::size_t>(font)];
     const auto &atlas = *f.atlas;
-    const double start = -text_width(font, text) * halign / 2.0;
+    const double start = halign != 0 ? -text_width(font, text) * halign / 2.0 : 0.0;
     double lx = start, ly = -text_height(font) * valign / 2.0;
 #if REGML_PS2 && REGML_LOW_MEMORY
     if (canvas.gpu_target() && !f.page_per_glyph && angle == 0 && sx > 0 && sy > 0 && view_sx_ > 0 &&
@@ -2452,29 +2565,32 @@ void GameAssets::draw_text(Canvas &canvas,
 #endif
     const auto rad = angle * 3.141592653589793 / 180;
     const auto c = angle == 0 ? 1.0 : std::cos(rad), s = angle == 0 ? 0.0 : std::sin(rad);
+    const double line_advance = text_height(font) + 2;
     for (char raw : text) {
         const auto ch = static_cast<unsigned char>(raw);
         if (ch == '\n' || ch == '#') {
             lx = start;
-            ly += text_height(font) + 2;
+            ly += line_advance;
             continue;
         }
         if (!f.has_glyph[ch])
             continue;
         const auto &g = f.glyphs[ch];
-        Region r{atlas.x + g.x,
-                 atlas.y + g.y,
-                 g.w,
-                 g.h,
-                 0,
-                 0,
-                 g.w,
-                 g.h,
-                 f.page_per_glyph ? static_cast<int>(g.page) : atlas.page};
-        r.alpha_mode = g.alpha_mode;
-        const auto ox = (lx + g.offset) * sx, oy = ly * sy;
-        blit(canvas, r, x + ox * c + oy * s, y - ox * s + oy * c, sx, sy, angle, color, alpha);
-        g.alpha_mode = r.alpha_mode;
+        if (g.w > 0 && g.h > 0) {
+            Region r{atlas.x + g.x,
+                     atlas.y + g.y,
+                     g.w,
+                     g.h,
+                     0,
+                     0,
+                     g.w,
+                     g.h,
+                     f.page_per_glyph ? static_cast<int>(g.page) : atlas.page};
+            r.alpha_mode = g.alpha_mode;
+            const auto ox = (lx + g.offset) * sx, oy = ly * sy;
+            blit(canvas, r, x + ox * c + oy * s, y - ox * s + oy * c, sx, sy, angle, color, alpha);
+            g.alpha_mode = r.alpha_mode;
+        }
         lx += g.shift;
     }
 }
