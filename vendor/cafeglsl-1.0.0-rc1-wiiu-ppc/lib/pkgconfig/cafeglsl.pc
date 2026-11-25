@@ -1,0 +1,11 @@
+prefix=/opt/devkitpro/portlibs/wiiu
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+Name: cafeglsl
+Description: GLSL to GX2 shader compiler for the Wii U (Latte) GPU, built from Mesa
+URL: https://github.com/devkitPro/wut-packages
+Version: 0.3.0
+Libs: -L${libdir} -lcafeglsl
+Libs.private: -lwut -lm -lstdc++
+Cflags: -I${includedir}

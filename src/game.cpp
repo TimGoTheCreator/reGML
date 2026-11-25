@@ -17,6 +17,9 @@
 #if REGML_WIIU
 #include "platform/wiiu/paths.hpp"
 #endif
+#if REGML_GX2
+#include "gx2/gx2_gpu.hpp"
+#endif
 #if REGML_WII
 #include "platform/wii/host.hpp"
 #endif
@@ -892,6 +895,8 @@ struct GameSession::Impl {
     std::vector<DelayedCall> delayed_calls;
     std::unordered_map<int, Canvas> surfaces;
     int next_surface = 1, surface_target = 0;
+    int app_surface_id = 0;
+    bool application_surface_draw_enabled = true;
     std::vector<int> surface_target_stack;
     VideoPlayer video_player;
     int video_surface = -1;
@@ -997,6 +1002,22 @@ struct GameSession::Impl {
         const double scale_x = std::isfinite(width) && width > 0 ? canvas.logical_width() / width : 1.0;
         const double scale_y = std::isfinite(height) && height > 0 ? canvas.logical_height() / height : 1.0;
         assets.view(0, 0, scale_x, scale_y, 0, 0);
+    }
+    void bind_gx2_target(Canvas &target) {
+#if REGML_GX2
+        if (!canvas.gpu_target())
+            return;
+        if (&target == &canvas) {
+            gx2::gx2_gpu_surface_bind(0, canvas.logical_width(), canvas.logical_height());
+            return;
+        }
+        if (target.gpu_surface_id() == 0)
+            target.enable_gpu_surface();
+        if (target.gpu_surface_id() != 0)
+            gx2::gx2_gpu_surface_bind(target.gpu_surface_id(), target.width(), target.height());
+#else
+        (void)target;
+#endif
     }
     explicit Impl(const std::filesystem::path &path,
                   std::optional<std::uint32_t> seed,
@@ -9763,7 +9784,8 @@ struct GameSession::Impl {
                 return std::int32_t{id};
             }
             if (name == "surface_resize") {
-                const int id = static_cast<int>(n(0));
+                const int raw_id = static_cast<int>(n(0));
+                const int id = (raw_id == 0 && app_surface_id != 0) ? app_surface_id : raw_id;
                 const int width = static_cast<int>(std::clamp(n(1), 1.0, 8192.0));
                 const int height = static_cast<int>(std::clamp(n(2), 1.0, 8192.0));
                 if (static_cast<std::uint64_t>(width) * height > 64ULL * 1024 * 1024)
@@ -9795,7 +9817,8 @@ struct GameSession::Impl {
             if (name == "surface_get_texture")
                 return std::int32_t{surface_texture_handle(static_cast<int>(n(0)))};
             if (name == "surface_get_width" || name == "surface_get_height") {
-                const int id = static_cast<int>(n(0));
+                const int raw_id = static_cast<int>(n(0));
+                const int id = (raw_id == 0 && app_surface_id != 0) ? app_surface_id : raw_id;
                 if (id == 0)
                     return std::int32_t{name == "surface_get_width" ? this->canvas.logical_width()
                                                                     : this->canvas.logical_height()};
@@ -9805,11 +9828,13 @@ struct GameSession::Impl {
                 return std::int32_t{name == "surface_get_width" ? surface.width() : surface.height()};
             }
             if (name == "surface_set_target") {
-                const int id = static_cast<int>(n(0));
+                const int raw_id = static_cast<int>(n(0));
+                const int id = (raw_id == 0 && app_surface_id != 0) ? app_surface_id : raw_id;
                 if (id != 0 && !surfaces.contains(id))
                     return false;
                 surface_target_stack.push_back(surface_target);
                 surface_target = id;
+                bind_gx2_target(current_canvas());
                 configure_shader(current_canvas());
                 return true;
             }
@@ -9817,6 +9842,7 @@ struct GameSession::Impl {
                 surface_target = surface_target_stack.empty() ? 0 : surface_target_stack.back();
                 if (!surface_target_stack.empty())
                     surface_target_stack.pop_back();
+                bind_gx2_target(current_canvas());
                 configure_shader(current_canvas());
                 return std::monostate{};
             }
@@ -9830,11 +9856,13 @@ struct GameSession::Impl {
                 std::erase(surface_target_stack, id);
                 forget_surface_texture(id);
                 surfaces.erase(id);
+                bind_gx2_target(current_canvas());
                 configure_shader(current_canvas());
                 return std::monostate{};
             }
             if (name == "draw_surface_part_ext") {
-                const int id = static_cast<int>(n(0));
+                const int raw_id = static_cast<int>(n(0));
+                const int id = (raw_id == 0 && app_surface_id != 0) ? app_surface_id : raw_id;
                 const Canvas *source = nullptr;
                 if (id == 0)
                     source = &this->canvas;
@@ -9857,7 +9885,8 @@ struct GameSession::Impl {
                 return std::monostate{};
             }
             if (name == "draw_surface" || name == "draw_surface_ext") {
-                const int id = static_cast<int>(n(0));
+                const int raw_id = static_cast<int>(n(0));
+                const int id = (raw_id == 0 && app_surface_id != 0) ? app_surface_id : raw_id;
                 const Canvas *source = nullptr;
                 if (id == 0)
                     source = &this->canvas;
@@ -12002,7 +12031,7 @@ struct GameSession::Impl {
             if (name == "switch_controller_support_get_selected_id")
                 return std::int32_t{-1};
             if (name == "switch_language_get_desired_language")
-                return std::int32_t{0};
+                return std::string("en");
             if (name == "switch_save_data_mount")
                 return true;
             if (name == "switch_accounts_open_user" || name == "switch_accounts_select_account" ||
@@ -12246,9 +12275,40 @@ struct GameSession::Impl {
                 }
                 return std::monostate{};
             }
-            if (name == "texture_set_interpolation" || name == "application_surface_enable" ||
-                name == "application_surface_draw_enable")
+            if (name == "texture_set_interpolation" || name == "application_surface_enable")
                 return std::monostate{};
+            if (name == "application_surface_draw_enable") {
+                application_surface_draw_enabled = args.empty() || n(0) != 0;
+                if (!application_surface_draw_enabled && app_surface_id == 0) {
+                    app_surface_id = next_surface++;
+                    auto [it, inserted] = surfaces.emplace(app_surface_id,
+                                                           Canvas(canvas.logical_width(), canvas.logical_height()));
+                    (void)inserted;
+                    it->second.clear_transparent();
+                    configure_blend(it->second);
+                    it->second.color_write_enable(color_write_enable[0], color_write_enable[1],
+                                                  color_write_enable[2], color_write_enable[3]);
+                    it->second.blend_enable(blend_enabled);
+                    it->second.alpha_test_enable(alpha_test_enabled);
+                    it->second.alpha_test_ref(alpha_test_reference);
+#if REGML_GX2
+                    if (canvas.gpu_target() && canvas.logical_width() * 9 < canvas.logical_height() * 16) {
+                        engine["window_width"] = 1280.0;
+                        engine["window_height"] = 720.0;
+                        canvas = Canvas(1280, 720, true);
+                        canvas.gpu_target(true);
+                        configure_blend(canvas);
+                        canvas.color_write_enable(color_write_enable[0], color_write_enable[1],
+                                                  color_write_enable[2], color_write_enable[3]);
+                        canvas.blend_enable(blend_enabled);
+                        canvas.alpha_test_enable(alpha_test_enabled);
+                        canvas.alpha_test_ref(alpha_test_reference);
+                        gx2::gx2_gpu_set_viewport(1280, 720);
+                    }
+#endif
+                }
+                return std::monostate{};
+            }
             if (name == "show_debug_message") {
                 std::cout << "Guest: " << text(0) << '\n';
                 return std::monostate{};
@@ -12715,7 +12775,9 @@ struct GameSession::Impl {
                 draw_start = ProfileClock::now();
                 last_logic_ms = std::chrono::duration<double, std::milli>(draw_start - profile_start).count();
             }
-            canvas.clear(rooms.at(static_cast<std::size_t>(current_room)).color);
+            const auto clear_color = rooms.at(static_cast<std::size_t>(current_room)).color;
+            bind_gx2_target(canvas);
+            canvas.clear(clear_color);
             if (number(engine.at("view_enabled")) != 0 && number(engine.at("view_visible[0]")) != 0) {
                 const auto w = value_number(engine.at("view_wview[0]")),
                            h = value_number(engine.at("view_hview[0]"));
@@ -12755,6 +12817,11 @@ struct GameSession::Impl {
             for (const auto &i : snapshot)
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
                     event(i, event_draw, event_draw_pre);
+            if (app_surface_id != 0 && surfaces.contains(app_surface_id)) {
+                surface_target = app_surface_id;
+                bind_gx2_target(surfaces.at(app_surface_id));
+                surfaces.at(app_surface_id).clear(clear_color);
+            }
             allocation_stage = "draw begin events";
             for (const auto &i : snapshot)
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
@@ -12770,9 +12837,12 @@ struct GameSession::Impl {
                 draw_phase_start = now;
             }
             allocation_stage = "background and tile drawing";
+            auto &bg_canvas = (surface_target != 0 && surfaces.contains(surface_target))
+                                  ? surfaces.at(surface_target)
+                                  : canvas;
             for (const auto &b : room.backgrounds)
                 if (!b.foreground)
-                    assets.draw_background(canvas, b.id, b.x, b.y);
+                    assets.draw_background(bg_canvas, b.id, b.x, b.y);
             auto draw_tile = [&](const Tile &t) {
                 if (!t.visible)
                     return;
@@ -12802,11 +12872,11 @@ struct GameSession::Impl {
                     source_y = source->y;
                 }
                 if (t.sprite_tile) {
-                    assets.draw_sprite_part(canvas, t.id, 0, source_x, source_y, t.width, t.height,
+                    assets.draw_sprite_part(bg_canvas, t.id, 0, source_x, source_y, t.width, t.height,
                                             t.x + ox + layer_x, t.y + oy + layer_y, t.sx, t.sy,
                                             t.color & 0xffffffU, static_cast<double>(t.color >> 24) / 255.0);
                 } else {
-                    assets.draw_tile(canvas, t.id, source_x, source_y, t.width, t.height, t.x + ox + layer_x,
+                    assets.draw_tile(bg_canvas, t.id, source_x, source_y, t.width, t.height, t.x + ox + layer_x,
                                      t.y + oy + layer_y, t.sx, t.sy, t.color, t.transform);
                 }
             };
@@ -12910,7 +12980,7 @@ struct GameSession::Impl {
                     const double alpha = static_cast<double>(background->color >> 24) / 255.0;
                     for (int row = 0; row < rows && row * columns < 4096; ++row)
                         for (int column = 0; column < columns && row * columns + column < 4096; ++column)
-                            assets.draw_sprite(canvas, background->sprite, background->frame,
+                            assets.draw_sprite(bg_canvas, background->sprite, background->frame,
                                                x + column * stride_x, y + row * stride_y, sx, sy, 0, tint,
                                                alpha);
                     const double frame_count = static_cast<double>(sprite.frames.size());
@@ -12937,7 +13007,7 @@ struct GameSession::Impl {
                 if (!sprite_entry || !assets.sprite_exists(sprite_entry->sprite))
                     return;
                 auto &sprite = *sprite_entry;
-                assets.draw_sprite(canvas, sprite.sprite, sprite.frame, sprite.x + ox, sprite.y + oy,
+                assets.draw_sprite(bg_canvas, sprite.sprite, sprite.frame, sprite.x + ox, sprite.y + oy,
                                    sprite.sx, sprite.sy, sprite.rotation, sprite.color & 0xffffffU,
                                    static_cast<double>(sprite.color >> 24) / 255.0);
                 const double frame_count = static_cast<double>(assets.sprite(sprite.sprite).frames.size());
@@ -13094,7 +13164,7 @@ struct GameSession::Impl {
                     const bool apply_layer_shader = draw_layer && draw_layer->shader >= 0;
                     if (apply_layer_shader) {
                         active_shader = draw_layer->shader;
-                        configure_shader(canvas);
+                        configure_shader(bg_canvas);
                     }
                     if (draw_layer)
                         run_layer_script(draw_layer->begin_script, i);
@@ -13106,7 +13176,7 @@ struct GameSession::Impl {
                     else {
                         const auto sprite = number(i->vars.at("sprite_index"));
                         if (sprite >= 0)
-                            assets.draw_sprite(canvas, sprite, value_number(i->vars.at("image_index")),
+                            assets.draw_sprite(bg_canvas, sprite, value_number(i->vars.at("image_index")),
                                                value_number(i->vars.at("x")) +
                                                    (draw_layer ? draw_layer->x - draw_layer->origin_x : 0),
                                                value_number(i->vars.at("y")) +
@@ -13143,7 +13213,7 @@ struct GameSession::Impl {
                         run_layer_script(draw_layer->end_script, i);
                     if (apply_layer_shader) {
                         active_shader = previous_shader;
-                        configure_shader(canvas);
+                        configure_shader(bg_canvas);
                     }
                     if (profile_tick_timing) {
                         const double elapsed =
@@ -13161,7 +13231,7 @@ struct GameSession::Impl {
                 profile_layer_visual(layer_visuals[layer_visual++]);
             for (const auto &b : room.backgrounds)
                 if (b.foreground)
-                    assets.draw_background(canvas, b.id, b.x, b.y);
+                    assets.draw_background(bg_canvas, b.id, b.x, b.y);
             if (profile_tick_timing)
                 last_draw_depth_visual_ms +=
                     std::chrono::duration<double, std::milli>(ProfileClock::now() - trailing_visual_start)
@@ -13243,6 +13313,13 @@ struct GameSession::Impl {
             for (const auto &i : snapshot)
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
                     event(i, event_draw, event_draw_end);
+            if (app_surface_id != 0) {
+                surface_target = 0;
+                surface_target_stack.clear();
+                bind_gx2_target(canvas);
+                if (application_surface_draw_enabled && surfaces.contains(app_surface_id))
+                    canvas.draw_surface(surfaces.at(app_surface_id), 0, 0, 1, 1, 0, 0xffffff, 1.0);
+            }
             assets.view(0, 0, 1, 1, 0, 0);
             allocation_stage = "post-draw events";
             for (const auto &i : snapshot)

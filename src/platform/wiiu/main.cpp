@@ -43,8 +43,6 @@ int main(int argc, char **argv) {
         else if (arg == "--debug-overlay")
             options.debug_overlay = true;
     }
-    if (options.profile_log.empty())
-        options.profile_log = game_directory / "regml-profile.csv";
     try {
         const auto report = regml::play_game(package, options);
         std::cout << "reGML " << regml::version << " Wii U\nFrames: " << report.frames

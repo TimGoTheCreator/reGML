@@ -5,6 +5,8 @@
 #include "platform/wii/gpu.hpp"
 #if REGML_GLMODERN
 #include "glmodern/gl_gpu.hpp"
+#elif REGML_GX2
+#include "gx2/gx2_gpu.hpp"
 #endif
 #include <algorithm>
 #include <bit>
@@ -1275,7 +1277,7 @@ void GameAssets::prefetch(int id, double frame) {
 #endif
 }
 void GameAssets::gpu_preload_sprite(int id, double frame) {
-#if REGML_GLMODERN
+#if REGML_GLMODERN || REGML_GX2
     if (!sprite_exists(id))
         return;
     const auto &spr = sprite(id);
@@ -1288,12 +1290,23 @@ void GameAssets::gpu_preload_sprite(int id, double frame) {
     if (region.page < 0 || static_cast<std::size_t>(region.page) >= pages_.size())
         return;
     const auto key = image_cache_key(region);
+#if REGML_GLMODERN
     if (glmodern::gl_gpu_cached_image(region.w, region.h, 0, 0, 0, 0, 0, 0xffffff, 1.0, key))
         return;
     int source_x = 0, source_y = 0;
     const auto &page = region_pixels(region, source_x, source_y);
     glmodern::gl_gpu_image(page.pixels, page.width, source_x, source_y,
                            region.w, region.h, 0, 0, 0, 0, 0, 0xffffff, 1.0, key);
+#elif REGML_GX2
+    (void)key;
+    const auto page_key = (static_cast<std::uint64_t>(cache_generation_) << 32) |
+                          (static_cast<std::uint32_t>(region.page) + 1U);
+    if (gx2::gx2_gpu_has_cached_image(page_key))
+        return;
+    const auto &page = load_page(region.page);
+    if (page.width > 0 && page.height > 0 && !page.pixels.empty())
+        gx2::gx2_gpu_preload_image(page.pixels, page.width, 0, 0, page.width, page.height, page_key);
+#endif
 #else
     (void)id;
     (void)frame;
@@ -1303,6 +1316,20 @@ bool GameAssets::prefetch_texture_group(std::string_view name) {
     if (!package_.texture_group_exists(name))
         return false;
     const auto page_ids = package_.texture_group_pages(name);
+#if REGML_GX2
+    for (const auto page_id : page_ids) {
+        if (page_id >= pages_.size())
+            throw Error(ErrorKind::malformed, "texture group references an invalid page");
+        const auto page_key = (static_cast<std::uint64_t>(cache_generation_) << 32) |
+                              (static_cast<std::uint32_t>(page_id) + 1U);
+        if (gx2::gx2_gpu_has_cached_image(page_key))
+            continue;
+        const auto &page = load_page(static_cast<int>(page_id));
+        if (page.width > 0 && page.height > 0 && !page.pixels.empty())
+            gx2::gx2_gpu_preload_image(page.pixels, page.width, 0, 0, page.width, page.height, page_key);
+    }
+    return true;
+#else
     if constexpr (page_cache_limit_ != 0)
         return true;
     for (const auto page_id : page_ids) {
@@ -1311,6 +1338,7 @@ bool GameAssets::prefetch_texture_group(std::string_view name) {
         (void)load_page(static_cast<int>(page_id));
     }
     return true;
+#endif
 }
 void GameAssets::flush_texture_group(std::string_view name) {
     for (const auto page_id : package_.texture_group_pages(name)) {
@@ -1437,6 +1465,52 @@ void GameAssets::draw_tile(Canvas &canvas,
     constexpr std::uint32_t flip_mask = 1U << 29;
     constexpr std::uint32_t rotate_mask = 1U << 30;
     const auto transform = tile_data & (mirror_mask | flip_mask | rotate_mask);
+#if REGML_GX2
+    if (canvas.gpu_target() && !(transform & rotate_mask) && r.page >= 0 &&
+        static_cast<std::size_t>(r.page) < pages_.size()) {
+        if ((color >> 24) == 0 || sx == 0 || sy == 0)
+            return;
+        const double dest_x = (draw_x - view_x_) * view_sx_ + port_x_;
+        const double dest_y = (draw_y - view_y_) * view_sy_ + port_y_;
+        const double dest_w = static_cast<double>(cut.w) * sx * view_sx_;
+        const double dest_h = static_cast<double>(cut.h) * sy * view_sy_;
+        if (dest_w == 0 || dest_h == 0)
+            return;
+        const double right_x = dest_x + dest_w, bottom_y = dest_y + dest_h;
+        if (std::max(dest_x, right_x) <= 0 || std::max(dest_y, bottom_y) <= 0 ||
+            std::min(dest_x, right_x) >= canvas.width() || std::min(dest_y, bottom_y) >= canvas.height())
+            return;
+        const auto page_key = (static_cast<std::uint64_t>(cache_generation_) << 32) |
+                              (static_cast<std::uint32_t>(r.page) + 1U);
+        int page_w = pages_[static_cast<std::size_t>(r.page)].width;
+        int page_h = pages_[static_cast<std::size_t>(r.page)].height;
+        if (!gx2::gx2_gpu_has_cached_image(page_key) || page_w <= 0 || page_h <= 0) {
+            const auto &page = load_page(r.page);
+            page_w = page.width;
+            page_h = page.height;
+            if (page_w > 0 && page_h > 0 && !page.pixels.empty()) {
+                gx2::gx2_gpu_preload_image(page.pixels, page.width, 0, 0, page_w, page_h, page_key);
+            }
+        }
+        if (page_w > 0 && page_h > 0 && gx2::gx2_gpu_has_cached_image(page_key)) {
+            const float inv_w = 1.0f / static_cast<float>(page_w);
+            const float inv_h = 1.0f / static_cast<float>(page_h);
+            float u0 = static_cast<float>(cut.x) * inv_w;
+            float v0 = static_cast<float>(cut.y) * inv_h;
+            float u1 = static_cast<float>(cut.x + cut.w) * inv_w;
+            float v1 = static_cast<float>(cut.y + cut.h) * inv_h;
+            if (transform & mirror_mask) std::swap(u0, u1);
+            if (transform & flip_mask) std::swap(v0, v1);
+            const unsigned rgb = color & 0xffffffU;
+            const unsigned tint = ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
+            const double alpha = static_cast<double>(color >> 24) / 255.0;
+            if (gx2::gx2_gpu_cached_sub_image(dest_x, dest_y, dest_w, dest_h,
+                                              u0, v0, u1, v1, tint, alpha, page_key)) {
+                return;
+            }
+        }
+    }
+#endif
     if (!transform) {
         blit(canvas, cut, draw_x, draw_y, sx, sy, 0, color & 0xffffff,
              static_cast<double>(color >> 24) / 255);
@@ -1686,9 +1760,9 @@ void GameAssets::blit(Canvas &canvas,
         return;
     int source_x = 0, source_y = 0;
     const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
-#if REGML_WII || REGML_PS2 || REGML_GLMODERN
+#if REGML_WII || REGML_PS2 || REGML_GLMODERN || REGML_GX2
     if (canvas.gpu_target()) {
-#if REGML_WII || REGML_GLMODERN
+#if REGML_WII || REGML_GLMODERN || REGML_GX2
         const double w = r.tw * sx, h = r.th * sy;
         if (angle == 0) {
             const double right = x + w, bottom = y + h;
@@ -1727,6 +1801,38 @@ void GameAssets::blit(Canvas &canvas,
         const auto &page = region_pixels(r, source_x, source_y);
         glmodern::gl_gpu_image(page.pixels, page.width, source_x, source_y, r.w, r.h, x, y, r.tw * sx, r.th * sy,
                               angle, tint, alpha, key);
+#elif REGML_GX2
+        if (r.page >= 0 && static_cast<std::size_t>(r.page) < pages_.size()) {
+            const auto page_key = (static_cast<std::uint64_t>(cache_generation_) << 32) |
+                                  (static_cast<std::uint32_t>(r.page) + 1U);
+            int page_w = pages_[static_cast<std::size_t>(r.page)].width;
+            int page_h = pages_[static_cast<std::size_t>(r.page)].height;
+            if (!gx2::gx2_gpu_has_cached_image(page_key) || page_w <= 0 || page_h <= 0) {
+                const auto &page = load_page(r.page);
+                page_w = page.width;
+                page_h = page.height;
+                if (page_w > 0 && page_h > 0 && !page.pixels.empty()) {
+                    gx2::gx2_gpu_preload_image(page.pixels, page.width, 0, 0, page_w, page_h, page_key);
+                }
+            }
+            if (page_w > 0 && page_h > 0 && gx2::gx2_gpu_has_cached_image(page_key)) {
+                const float inv_w = 1.0f / static_cast<float>(page_w);
+                const float inv_h = 1.0f / static_cast<float>(page_h);
+                const float u0 = static_cast<float>(r.x) * inv_w;
+                const float v0 = static_cast<float>(r.y) * inv_h;
+                const float u1 = static_cast<float>(r.x + r.w) * inv_w;
+                const float v1 = static_cast<float>(r.y + r.h) * inv_h;
+                if (gx2::gx2_gpu_cached_sub_image(x, y, r.tw * sx, r.th * sy,
+                                                  u0, v0, u1, v1, tint, alpha, page_key, angle)) {
+                    return;
+                }
+            }
+        }
+        if (gx2::gx2_gpu_cached_image(r.w, r.h, x, y, r.tw * sx, r.th * sy, angle, tint, alpha, key))
+            return;
+        const auto &page = region_pixels(r, source_x, source_y);
+        gx2::gx2_gpu_image(page.pixels, page.width, source_x, source_y, r.w, r.h, x, y, r.tw * sx, r.th * sy,
+                           angle, tint, alpha, key);
 #endif
         return;
     }
@@ -2253,7 +2359,7 @@ void GameAssets::draw_sprite_part(Canvas &canvas,
     if (max_dx <= 0.0 || min_dx >= canvas.width() || max_dy <= 0.0 || min_dy >= canvas.height())
         return;
 
-#if REGML_GLMODERN
+#if REGML_GLMODERN || REGML_GX2
     if (canvas.gpu_target() && r.tw > 0 && r.th > 0) {
         const auto base_key = image_cache_key(r);
         const float u0 = static_cast<float>(ix - r.tx) / static_cast<float>(r.tw);
@@ -2261,8 +2367,20 @@ void GameAssets::draw_sprite_part(Canvas &canvas,
         const float u1 = static_cast<float>(ir - r.tx) / static_cast<float>(r.tw);
         const float v1 = static_cast<float>(ib - r.ty) / static_cast<float>(r.th);
         const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
+#if REGML_GLMODERN
         if (glmodern::gl_gpu_cached_sub_image(dest_x, dest_y, dest_w, dest_h, u0, v0, u1, v1, tint, alpha, base_key))
             return;
+#elif REGML_GX2
+        if (!gx2::gx2_gpu_has_cached_image(base_key)) {
+            int src_x = 0, src_y = 0;
+            const auto &page = region_pixels(r, src_x, src_y);
+            if (!page.pixels.empty()) {
+                gx2::gx2_gpu_preload_image(page.pixels, page.width, src_x, src_y, r.w, r.h, base_key);
+            }
+        }
+        if (gx2::gx2_gpu_cached_sub_image(dest_x, dest_y, dest_w, dest_h, u0, v0, u1, v1, tint, alpha, base_key))
+            return;
+#endif
     }
 #endif
 
@@ -2451,6 +2569,8 @@ void GameAssets::draw_text(Canvas &canvas,
                     sx * view_sx_, sy * view_sy_, angle, halign, valign);
         return;
     }
+    if (text.empty() || alpha <= 0 || sx == 0 || sy == 0)
+        return;
     const auto &f = fonts_[static_cast<std::size_t>(font)];
     const auto &atlas = *f.atlas;
     const double start = halign != 0 ? -text_width(font, text) * halign / 2.0 : 0.0;
@@ -2559,6 +2679,57 @@ void GameAssets::draw_text(Canvas &canvas,
                 lx += g.shift;
             }
             flush();
+            return;
+        }
+    }
+#endif
+#if REGML_GX2
+    if (canvas.gpu_target() && !f.page_per_glyph && angle == 0 && sx > 0 && sy > 0 && view_sx_ > 0 &&
+        view_sy_ > 0 && alpha > 0 && !text.empty() && atlas.page >= 0 &&
+        static_cast<std::size_t>(atlas.page) < pages_.size()) {
+        const auto page_key = (static_cast<std::uint64_t>(cache_generation_) << 32) |
+                              (static_cast<std::uint32_t>(atlas.page) + 1U);
+        int page_w = pages_[static_cast<std::size_t>(atlas.page)].width;
+        int page_h = pages_[static_cast<std::size_t>(atlas.page)].height;
+        if (!gx2::gx2_gpu_has_cached_image(page_key) || page_w <= 0 || page_h <= 0) {
+            const auto &page = load_page(atlas.page);
+            page_w = page.width;
+            page_h = page.height;
+            if (page_w > 0 && page_h > 0 && !page.pixels.empty()) {
+                gx2::gx2_gpu_preload_image(page.pixels, page.width, 0, 0, page_w, page_h, page_key);
+            }
+        }
+        if (page_w > 0 && page_h > 0 && gx2::gx2_gpu_has_cached_image(page_key)) {
+            const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
+            const float inv_w = 1.0f / static_cast<float>(page_w);
+            const float inv_h = 1.0f / static_cast<float>(page_h);
+            const double line_advance = text_height(font) + 2;
+            for (char raw : text) {
+                const auto ch = static_cast<unsigned char>(raw);
+                if (ch == '\n' || ch == '#') {
+                    lx = start;
+                    ly += line_advance;
+                    continue;
+                }
+                if (!f.has_glyph[ch])
+                    continue;
+                const auto &g = f.glyphs[ch];
+                if (g.w > 0 && g.h > 0) {
+                    const double ox = (lx + g.offset) * sx;
+                    const double oy = ly * sy;
+                    const double draw_x = (x + ox - view_x_) * view_sx_ + port_x_;
+                    const double draw_y = (y + oy - view_y_) * view_sy_ + port_y_;
+                    const double draw_w = g.w * sx * view_sx_;
+                    const double draw_h = g.h * sy * view_sy_;
+                    const float u0 = static_cast<float>(atlas.x + g.x) * inv_w;
+                    const float v0 = static_cast<float>(atlas.y + g.y) * inv_h;
+                    const float u1 = static_cast<float>(atlas.x + g.x + g.w) * inv_w;
+                    const float v1 = static_cast<float>(atlas.y + g.y + g.h) * inv_h;
+                    gx2::gx2_gpu_cached_sub_image(draw_x, draw_y, draw_w, draw_h,
+                                                  u0, v0, u1, v1, tint, alpha, page_key);
+                }
+                lx += g.shift;
+            }
             return;
         }
     }

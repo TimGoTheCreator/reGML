@@ -4,7 +4,9 @@
 #include <SDL2/SDL.h>
 #endif
 #if REGML_WIIU
+#if defined(REGML_WIIU) && REGML_WIIU && defined(REGML_GLMODERN) && REGML_GLMODERN
 #include <gx2gl/proc.h>
+#endif
 #endif
 
 namespace regml::glmodern {
@@ -149,9 +151,11 @@ static void* resolve_gl_proc(const char* name, void* (*custom_loader)(const char
     }
 
 #if REGML_WIIU
+#if defined(REGML_WIIU) && REGML_WIIU && defined(REGML_GLMODERN) && REGML_GLMODERN
     if (void* p = GX2GL_GetProcAddress(name)) {
         return p;
     }
+#endif
 #endif
 
 #if REGML_WITH_SDL2

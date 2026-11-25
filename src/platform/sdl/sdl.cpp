@@ -25,9 +25,10 @@
 #include "glmodern/gl_gpu.hpp"
 #include "glmodern/gl_core.hpp"
 #endif
+#if REGML_GX2
+#include "gx2/gx2_gpu.hpp"
+#endif
 #if REGML_WIIU
-#include <gx2gl/present.h>
-#include <gx2gl/proc.h>
 #include <whb/proc.h>
 #include <whb/gfx.h>
 #endif
@@ -316,35 +317,12 @@ class VideoWindow {
 #endif
 #else // REGML_WIIU
         if (opengl) {
-            gl_context_ = reinterpret_cast<SDL_GLContext>(GX2GL_CreateContext());
-            if (gl_context_) {
-                GX2GL_MakeCurrent(reinterpret_cast<GX2GL_Context>(gl_context_));
-                bool loaded = regml::glmodern::load_gl_core_3_3(reinterpret_cast<void*(*)(const char*)>(GX2GL_GetProcAddress));
-                if (loaded) {
-                    if (regml::glmodern::glBindFramebuffer) {
-                        regml::glmodern::glBindFramebuffer(GL_FRAMEBUFFER, 0);
-                    }
-                    if (regml::glmodern::glDrawBuffer) {
-                        regml::glmodern::glDrawBuffer(GL_BACK);
-                    }
-#if REGML_WIIU
-                    GX2ColorBuffer *tv_cb = WHBGfxGetTVColourBuffer();
-                    int vw = tv_cb ? static_cast<int>(tv_cb->surface.width) : 1280;
-                    int vh = tv_cb ? static_cast<int>(tv_cb->surface.height) : 720;
-                    glViewport(0, 0, vw, vh);
-                    regml::glmodern::gl_gpu_set_viewport(640, 480);
-#else
-                    glViewport(0, 0, 1280, 720);
-                    regml::glmodern::gl_gpu_set_viewport(640, 480);
+#if REGML_GX2
+            WHBProcInit();
+            regml::gx2::gx2_gpu_set_viewport(640, 480);
+            use_opengl_ = true;
+            std::cout << "Wii U GX2 Renderer initialized successfully." << std::endl;
 #endif
-                    regml::glmodern::gl_gpu_begin();
-                    use_opengl_ = true;
-                    std::cout << "Wii U GX2GL Renderer initialized successfully." << std::endl;
-                } else {
-                    GX2GL_DeleteContext(reinterpret_cast<GX2GL_Context>(gl_context_));
-                    gl_context_ = nullptr;
-                }
-            }
         }
         if (!use_opengl_) {
             SDL_InitSubSystem(SDL_INIT_VIDEO);
@@ -408,10 +386,7 @@ class VideoWindow {
 #endif
         if (controller_subsystem_)
             SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
-#if REGML_WIIU
-        if (gl_context_)
-            GX2GL_DeleteContext(reinterpret_cast<GX2GL_Context>(gl_context_));
-#else
+#if !REGML_WIIU
         if (gl_context_)
             SDL_GL_DeleteContext(gl_context_);
 #endif
@@ -494,8 +469,9 @@ class VideoWindow {
         return true;
     }
     void present(const Canvas &canvas) {
-#if REGML_GLMODERN
+#if REGML_GLMODERN || REGML_GX2
         if (use_opengl_) {
+#if REGML_GLMODERN
             if (regml::glmodern::glBindFramebuffer) {
                 regml::glmodern::glBindFramebuffer(GL_FRAMEBUFFER, 0);
             }
@@ -515,10 +491,21 @@ class VideoWindow {
                     regml::glmodern::gl_gpu_presented();
                 }
             }
-#if REGML_WIIU
-            GX2GL_Present();
-#else
             SDL_GL_SwapWindow(window_.get());
+#elif REGML_GX2
+            if (canvas.gpu_target()) {
+                regml::gx2::gx2_gpu_flush();
+                regml::gx2::gx2_gpu_presented();
+            } else {
+                std::span<const std::uint32_t> px = canvas.pixels();
+                if (!px.empty()) {
+                    regml::gx2::gx2_gpu_begin();
+                    regml::gx2::gx2_gpu_image(px, canvas.width(), 0, 0, canvas.width(), canvas.height(),
+                                              0, 0, canvas.width(), canvas.height(), 0, 0xffffff, 1.0, 0);
+                    regml::gx2::gx2_gpu_flush();
+                    regml::gx2::gx2_gpu_presented();
+                }
+            }
 #endif
             return;
         }
@@ -649,52 +636,20 @@ class VideoWindow {
         session.set_gamepad_state(gamepad_);
         gamepad_.pressed.fill(false);
 #endif
-#if REGML_GLMODERN
+#if REGML_GLMODERN || REGML_GX2
         if (use_opengl_) {
             session.canvas().gpu_target(true);
-#if REGML_WIIU
-            if (regml::glmodern::glBindFramebuffer) {
-                regml::glmodern::glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            }
-            if (regml::glmodern::glDrawBuffer) {
-                regml::glmodern::glDrawBuffer(GL_BACK);
-            }
-            GX2ColorBuffer *tv_cb = WHBGfxGetTVColourBuffer();
-            int vw = tv_cb ? static_cast<int>(tv_cb->surface.width) : 1280;
-            int vh = tv_cb ? static_cast<int>(tv_cb->surface.height) : 720;
-            int cw = session.canvas().width();
-            int ch = session.canvas().height();
-            int view_w = vw, view_h = vh, view_x = 0, view_y = 0;
-            if (cw > 0 && ch > 0) {
-                if (cw <= vw && ch <= vh) {
-                    const int int_scale = std::min(vw / cw, vh / ch);
-                    view_w = cw * int_scale;
-                    view_h = ch * int_scale;
-                    view_x = (vw - view_w) / 2;
-                    view_y = (vh - view_h) / 2;
-                } else if (cw * vh > ch * vw) {
-                    view_w = vw;
-                    view_h = (vw * ch) / cw;
-                    view_y = (vh - view_h) / 2;
-                } else {
-                    view_h = vh;
-                    view_w = (vh * cw) / ch;
-                    view_x = (vw - view_w) / 2;
-                }
-            }
-            glViewport(0, 0, vw, vh);
-            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT);
-            glViewport(view_x, view_y, view_w, view_h);
-            regml::glmodern::gl_gpu_set_viewport(cw, ch);
-#else
+#if REGML_GLMODERN
             int drawable_w = 640, drawable_h = 480;
             if (window_)
                 SDL_GL_GetDrawableSize(window_.get(), &drawable_w, &drawable_h);
             glViewport(0, 0, drawable_w, drawable_h);
             regml::glmodern::gl_gpu_set_viewport(session.canvas().width(), session.canvas().height());
-#endif
             regml::glmodern::gl_gpu_begin();
+#elif REGML_GX2
+            regml::gx2::gx2_gpu_set_viewport(session.canvas().width(), session.canvas().height());
+            regml::gx2::gx2_gpu_begin();
+#endif
         }
 #endif
         session.tick(replay ? *replay : held_,
@@ -1216,6 +1171,8 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
                 trace_stage("present", &session);
 #if REGML_GLMODERN
                 regml::glmodern::gl_gpu_set_frame_number(session.frames());
+#elif REGML_GX2
+                regml::gx2::gx2_gpu_set_frame_number(session.frames());
 #endif
                 window.present(session.canvas());
                 present_end = profile.enabled() ? Clock::now() : Clock::time_point{};
