@@ -54,7 +54,7 @@ v17 is supported, but not every GameMaker feature is implemented yet. DELTARUNE 
 
 <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/wonderfulplace.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/thiscafe.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/fahahaha.png" width="240">
 
-<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/seamblabbing.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/fahahaha.png" width="240">
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/seamblabbing.png" width="240"> 
 
 
 ### DELTARUNE Chapter 3 (Wii U / Cemu + GX2)
