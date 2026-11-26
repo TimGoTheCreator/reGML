@@ -17,6 +17,23 @@ Package inspection reads v14-v17 layouts.
 Decoding & disasm cover v15-v17.
 v17 is supported, but not every GameMaker feature is implemented yet. DELTARUNE has been tried.
 
+## Table of Contents
+
+- [Screenshots](#screenshots)
+- [Platform Status](#platform-status)
+- [Build](#build)
+  - [CMake](#cmake)
+  - [Web / GX.games](#web--gxgames)
+- [PlayStation 4](#playstation-4)
+- [Run](#run)
+- [Wii U](#wii-u)
+  - [SD card](#sd-card)
+  - [Cemu](#cemu)
+- [Wii](#wii)
+- [Tools](#tools)
+- [Tests](#tests)
+- [Contributing](#contributing)
+
 ## Screenshots
 
 ### Undertale (Desktop / SDL2 + Software Renderer)
