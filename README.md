@@ -17,18 +17,6 @@ Package inspection reads v14-v17 layouts.
 Decoding & disasm cover v15-v17.
 v17 is supported, but not every GameMaker feature is implemented yet. DELTARUNE has been tried.
 
-## Platform Status
-
-| Platform | Status | Details |
-| :--- | :--- | :--- |
-| **Desktop (SDL)** | Fully Working | Windows, Linux, and macOS / Requires C++20, CMake 3.22+, libpng, zlib, libvorbisfile, and SDL2 |
-| **Nintendo Wii U** | Fully Working | Uses devkitPro and MSYS2 terminal / Outputs `.rpx` and `.wuhb` |
-| **Web / GX.games** | Fully Working | Build with the Emscripten SDK installed and activated (Saves are in the browser!!!) |
-| **Android** | Semi-Working | Requires building the Android JNI library / Still unstable |
-| **PlayStation 4** | Partial | Uses OpenOrbis / Requires manual `.pkg` creation, only builds the payload |
-| **Nintendo Wii** | Glooby | Uses libogc and direct GX render / Sometimes doesn't even boot up |
-| **PlayStation 2** | Glooby | Sometimes doesn't even boot up / Compiles, but currently runs out of memory |
-
 ## Screenshots
 
 ### Undertale (Desktop / SDL2 + Software Renderer)
@@ -46,6 +34,18 @@ v17 is supported, but not every GameMaker feature is implemented yet. DELTARUNE 
 ### DELTARUNE Chapter 3 (Wii U / Cemu + GX2)
 
 <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/ralseinotreal.png" alt="Ralsei not real" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/ch3things.png" alt="DELTARUNE Chapter 3" width="240">
+
+## Platform Status
+
+| Platform | Status | Details |
+| :--- | :--- | :--- |
+| **Desktop (SDL)** | Fully Working | Windows, Linux, and macOS / Requires C++20, CMake 3.22+, libpng, zlib, libvorbisfile, and SDL2 |
+| **Nintendo Wii U** | Fully Working | Uses devkitPro and MSYS2 terminal / Outputs `.rpx` and `.wuhb` |
+| **Web / GX.games** | Fully Working | Build with the Emscripten SDK installed and activated (Saves are in the browser!!!) |
+| **Android** | Semi-Working | Requires building the Android JNI library / Still unstable |
+| **PlayStation 4** | Partial | Uses OpenOrbis / Requires manual `.pkg` creation, only builds the payload |
+| **Nintendo Wii** | Glooby | Uses libogc and direct GX render / Sometimes doesn't even boot up |
+| **PlayStation 2** | Glooby | Sometimes doesn't even boot up / Compiles, but currently runs out of memory |
 
 ## Build
 
