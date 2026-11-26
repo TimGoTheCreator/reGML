@@ -33,7 +33,7 @@ v17 is supported, but not every GameMaker feature is implemented yet. DELTARUNE 
 
 ### DELTARUNE Chapter 3 (Wii U / Cemu + GX2)
 
-<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/ralseinotreal.png" alt="Ralsei not real" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/ch3things.png" alt="DELTARUNE Chapter 3" width="240">
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/ralseinotreal.png" alt="Ralsei not real" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/ch3things.png" alt="DELTARUNE Chapter 3" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/tvtime.png" alt="IT'S TV TIME!" width="240">
 
 ## Platform Status
 
