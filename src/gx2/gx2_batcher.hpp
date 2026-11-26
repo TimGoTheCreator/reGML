@@ -73,6 +73,11 @@ public:
     [[nodiscard]] float alpha_test_ref() const noexcept { return alpha_test_ref_; }
     [[nodiscard]] std::size_t draw_call_count() const noexcept { return draw_call_count_; }
     void reset_draw_call_count() noexcept { draw_call_count_ = 0; }
+    void forget_texture(const GX2Texture *tex) noexcept {
+        if (last_bound_texture_ == tex) {
+            last_bound_texture_ = nullptr;
+        }
+    }
 
 private:
     struct BlendState {
@@ -119,7 +124,24 @@ private:
     std::uint8_t *ubo_ring_ = nullptr;
     std::size_t ubo_offset_ = 0;
     std::size_t batch_count_ = 0;
-    std::array<Gx2Vertex, MAX_BATCH_VERTICES> staging_{};
+
+    std::uint32_t vs_proj_offset_ = 0;
+    std::uint32_t vs_ubo_block_offset_ = 0;
+    std::uint32_t vs_ubo_block_size_ = 0;
+    bool vs_has_ubo_ = false;
+    bool vs_proj_found_ = false;
+
+    std::uint32_t ps_tex_loc_ = 0;
+    std::uint32_t ps_ubo_block_offset_ = 0;
+    std::uint32_t ps_ubo_block_size_ = 0;
+    std::uint32_t ps_use_tex_offset_ = 0;
+    std::uint32_t ps_alpha_test_offset_ = 0;
+    std::uint32_t ps_alpha_ref_offset_ = 0;
+    bool ps_has_ubo_ = false;
+    bool ps_use_tex_found_ = false;
+    bool ps_alpha_test_found_ = false;
+    bool ps_alpha_ref_found_ = false;
+    bool use_ubo_ = false;
 
     const GX2Texture *current_texture_ = nullptr;
     const GX2Texture *last_bound_texture_ = nullptr;

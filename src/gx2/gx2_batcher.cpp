@@ -91,6 +91,72 @@ bool Gx2Batcher::init() {
     }
     shader_loaded_ = true;
 
+    vs_proj_offset_ = 0;
+    vs_ubo_block_offset_ = 0;
+    vs_ubo_block_size_ = 0;
+    vs_has_ubo_ = false;
+    vs_proj_found_ = false;
+    if (const auto *vs = shader_group_.vertexShader) {
+        if (vs->uniformBlocks && vs->uniformBlockCount > 0) {
+            vs_has_ubo_ = true;
+            vs_ubo_block_offset_ = vs->uniformBlocks[0].offset;
+            vs_ubo_block_size_ = vs->uniformBlocks[0].size;
+        }
+        if (vs->uniformVars && vs->uniformVarCount > 0) {
+            for (std::uint32_t i = 0; i < vs->uniformVarCount; ++i) {
+                const auto &var = vs->uniformVars[i];
+                if (var.name && std::strcmp(var.name, "u_projection") == 0) {
+                    vs_proj_offset_ = var.offset;
+                    vs_proj_found_ = true;
+                    break;
+                }
+            }
+            if (!vs_proj_found_ && !vs_has_ubo_) {
+                vs_proj_offset_ = vs->uniformVars[0].offset;
+                vs_proj_found_ = true;
+            }
+        }
+    }
+
+    ps_tex_loc_ = 0;
+    ps_ubo_block_offset_ = 0;
+    ps_ubo_block_size_ = 0;
+    ps_use_tex_offset_ = 0;
+    ps_alpha_test_offset_ = 0;
+    ps_alpha_ref_offset_ = 0;
+    ps_has_ubo_ = false;
+    ps_use_tex_found_ = false;
+    ps_alpha_test_found_ = false;
+    ps_alpha_ref_found_ = false;
+    if (const auto *ps = shader_group_.pixelShader) {
+        if (ps->samplerVars && ps->samplerVarCount > 0) {
+            ps_tex_loc_ = ps->samplerVars[0].location;
+        }
+        if (ps->uniformBlocks && ps->uniformBlockCount > 0) {
+            ps_has_ubo_ = true;
+            ps_ubo_block_offset_ = ps->uniformBlocks[0].offset;
+            ps_ubo_block_size_ = ps->uniformBlocks[0].size;
+        }
+        if (ps->uniformVars) {
+            for (std::uint32_t i = 0; i < ps->uniformVarCount; ++i) {
+                const auto &var = ps->uniformVars[i];
+                if (!var.name) continue;
+                if (ps_has_ubo_ && var.block != static_cast<std::int32_t>(ps_ubo_block_offset_)) continue;
+                if (std::strcmp(var.name, "u_use_texture") == 0) {
+                    ps_use_tex_offset_ = var.offset;
+                    ps_use_tex_found_ = true;
+                } else if (std::strcmp(var.name, "u_alpha_test") == 0) {
+                    ps_alpha_test_offset_ = var.offset;
+                    ps_alpha_test_found_ = true;
+                } else if (std::strcmp(var.name, "u_alpha_ref") == 0) {
+                    ps_alpha_ref_offset_ = var.offset;
+                    ps_alpha_ref_found_ = true;
+                }
+            }
+        }
+    }
+    use_ubo_ = vs_has_ubo_ || ps_has_ubo_;
+
     ring_buffer_ = static_cast<Gx2Vertex *>(
         memalign(GX2_VERTEX_BUFFER_ALIGNMENT, RING_CAPACITY_VERTICES * sizeof(Gx2Vertex)));
     if (!ring_buffer_) {
@@ -170,34 +236,22 @@ std::uint8_t *Gx2Batcher::alloc_ubo_slot(std::size_t size) noexcept {
 }
 
 void Gx2Batcher::upload_vertex_projection() {
-    const auto *vs = shader_group_.vertexShader;
-    if (!vs) return;
+    if (!shader_loaded_) return;
 
-    if (vs->uniformBlocks && vs->uniformBlockCount > 0) {
-        const auto &blk = vs->uniformBlocks[0];
-        if (std::uint8_t *slot = alloc_ubo_slot(blk.size)) {
-            std::uint32_t word_offset = 0;
-            if (vs->uniformVars && vs->uniformVarCount > 0) {
-                for (std::uint32_t i = 0; i < vs->uniformVarCount; ++i) {
-                    const auto &var = vs->uniformVars[i];
-                    if (var.name && std::strcmp(var.name, "u_projection") == 0) {
-                        word_offset = var.offset;
-                        break;
-                    }
-                }
-            }
-            if ((word_offset + 16u) * sizeof(std::uint32_t) <= blk.size) {
-                write_ubo_words(slot, word_offset, projection_.m.data(), 16);
-                DCFlushRange(slot, blk.size);
-                GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, slot, blk.size);
-                GX2SetVertexUniformBlock(blk.offset, blk.size, slot);
+    if (vs_has_ubo_) {
+        if (std::uint8_t *slot = alloc_ubo_slot(vs_ubo_block_size_)) {
+            if ((vs_proj_offset_ + 16u) * sizeof(std::uint32_t) <= vs_ubo_block_size_) {
+                write_ubo_words(slot, vs_proj_offset_, projection_.m.data(), 16);
+                DCFlushRange(slot, vs_ubo_block_size_);
+                GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, slot, vs_ubo_block_size_);
+                GX2SetVertexUniformBlock(vs_ubo_block_offset_, vs_ubo_block_size_, slot);
             }
         }
         return;
     }
 
-    if (vs->uniformVars && vs->uniformVarCount > 0) {
-        GX2SetVertexUniformReg(vs->uniformVars[0].offset, 16, projection_.m.data());
+    if (vs_proj_found_) {
+        GX2SetVertexUniformReg(vs_proj_offset_, 16, projection_.m.data());
     }
 }
 
@@ -217,19 +271,11 @@ void Gx2Batcher::begin(const Gx2Mat4 &projection) {
     alpha_test_dirty_ = true;
     in_begin_ = true;
 
-    const bool use_ubo =
-        (shader_group_.vertexShader && shader_group_.vertexShader->uniformBlockCount > 0) ||
-        (shader_group_.pixelShader && shader_group_.pixelShader->uniformBlockCount > 0);
-    GX2SetShaderMode(use_ubo ? GX2_SHADER_MODE_UNIFORM_BLOCK : GX2_SHADER_MODE_UNIFORM_REGISTER);
+    GX2SetShaderMode(use_ubo_ ? GX2_SHADER_MODE_UNIFORM_BLOCK : GX2_SHADER_MODE_UNIFORM_REGISTER);
     GX2SetFetchShader(&shader_group_.fetchShader);
     GX2SetVertexShader(shader_group_.vertexShader);
     GX2SetPixelShader(shader_group_.pixelShader);
-    const std::uint32_t tex_loc =
-        (shader_group_.pixelShader && shader_group_.pixelShader->samplerVars &&
-         shader_group_.pixelShader->samplerVarCount > 0)
-            ? shader_group_.pixelShader->samplerVars[0].location
-            : 0u;
-    GX2SetPixelSampler(&sampler_, tex_loc);
+    GX2SetPixelSampler(&sampler_, ps_tex_loc_);
     upload_vertex_projection();
 
     GX2SetDepthOnlyControl(GX2_DISABLE, GX2_DISABLE, GX2_COMPARE_FUNC_ALWAYS);
@@ -248,8 +294,14 @@ void Gx2Batcher::set_projection(const Gx2Mat4 &projection) {
 }
 
 void Gx2Batcher::ensure_space(std::size_t vertices_needed, const GX2Texture *texture) {
-    if (batch_count_ > 0 && (current_texture_ != texture || batch_count_ + vertices_needed > MAX_BATCH_VERTICES)) {
+    if (batch_count_ > 0 &&
+        (current_texture_ != texture ||
+         batch_count_ + vertices_needed > MAX_BATCH_VERTICES ||
+         ring_offset_ + batch_count_ + vertices_needed > RING_CAPACITY_VERTICES)) {
         flush();
+    }
+    if (ring_offset_ + batch_count_ + vertices_needed > RING_CAPACITY_VERTICES) {
+        ring_offset_ = 0;
     }
     current_texture_ = texture;
 }
@@ -265,7 +317,7 @@ void Gx2Batcher::draw_quad(const GX2Texture *texture,
                            float v1,
                            std::uint32_t rgba,
                            float angle_degrees) {
-    if (!in_begin_ || !shader_loaded_) return;
+    if (!in_begin_ || !shader_loaded_ || !ring_buffer_) return;
     ensure_space(6, texture);
 
     float x0 = x, y0 = y;
@@ -291,13 +343,14 @@ void Gx2Batcher::draw_quad(const GX2Texture *texture,
         rot(x3, y3);
     }
 
-    staging_[batch_count_++] = {x0, y0, u0, v0, rgba};
-    staging_[batch_count_++] = {x1, y1, u1, v0, rgba};
-    staging_[batch_count_++] = {x2, y2, u1, v1, rgba};
-
-    staging_[batch_count_++] = {x0, y0, u0, v0, rgba};
-    staging_[batch_count_++] = {x2, y2, u1, v1, rgba};
-    staging_[batch_count_++] = {x3, y3, u0, v1, rgba};
+    Gx2Vertex *v = ring_buffer_ + ring_offset_ + batch_count_;
+    v[0] = {x0, y0, u0, v0, rgba};
+    v[1] = {x1, y1, u1, v0, rgba};
+    v[2] = {x2, y2, u1, v1, rgba};
+    v[3] = {x0, y0, u0, v0, rgba};
+    v[4] = {x2, y2, u1, v1, rgba};
+    v[5] = {x3, y3, u0, v1, rgba};
+    batch_count_ += 6;
 }
 
 void Gx2Batcher::draw_triangle(float x1,
@@ -307,12 +360,14 @@ void Gx2Batcher::draw_triangle(float x1,
                                float x3,
                                float y3,
                                std::uint32_t rgba) {
-    if (!in_begin_ || !shader_loaded_) return;
+    if (!in_begin_ || !shader_loaded_ || !ring_buffer_) return;
     ensure_space(3, nullptr);
 
-    staging_[batch_count_++] = {x1, y1, 0.0f, 0.0f, rgba};
-    staging_[batch_count_++] = {x2, y2, 0.0f, 0.0f, rgba};
-    staging_[batch_count_++] = {x3, y3, 0.0f, 0.0f, rgba};
+    Gx2Vertex *v = ring_buffer_ + ring_offset_ + batch_count_;
+    v[0] = {x1, y1, 0.0f, 0.0f, rgba};
+    v[1] = {x2, y2, 0.0f, 0.0f, rgba};
+    v[2] = {x3, y3, 0.0f, 0.0f, rgba};
+    batch_count_ += 3;
 }
 
 void Gx2Batcher::apply_blend_state() {
@@ -377,68 +432,50 @@ void Gx2Batcher::flush() {
     const GX2Texture *tex = current_texture_ ? current_texture_ : &dummy_white_tex_;
     if (last_bound_texture_ != tex) {
         last_bound_texture_ = tex;
-        const std::uint32_t tex_loc =
-            (shader_group_.pixelShader && shader_group_.pixelShader->samplerVars &&
-             shader_group_.pixelShader->samplerVarCount > 0)
-                ? shader_group_.pixelShader->samplerVars[0].location
-                : 0u;
-        GX2SetPixelTexture(const_cast<GX2Texture *>(tex), tex_loc);
+        GX2SetPixelTexture(const_cast<GX2Texture *>(tex), ps_tex_loc_);
     }
 
-    if (shader_group_.pixelShader && shader_group_.pixelShader->uniformVars &&
-        (last_ps_use_tex_ != use_tex || last_ps_alpha_test_ != alpha_test_enabled_ ||
-         last_ps_alpha_ref_ != alpha_test_ref_)) {
+    if (last_ps_use_tex_ != use_tex || last_ps_alpha_test_ != alpha_test_enabled_ ||
+        last_ps_alpha_ref_ != alpha_test_ref_) {
         last_ps_use_tex_ = use_tex;
         last_ps_alpha_test_ = alpha_test_enabled_;
         last_ps_alpha_ref_ = alpha_test_ref_;
-        const auto *ps = shader_group_.pixelShader;
-        if (ps->uniformBlocks && ps->uniformBlockCount > 0) {
-            const auto &blk = ps->uniformBlocks[0];
-            if (std::uint8_t *slot = alloc_ubo_slot(blk.size)) {
-                for (std::uint32_t i = 0; i < ps->uniformVarCount; ++i) {
-                    const auto &var = ps->uniformVars[i];
-                    if (!var.name || var.block != static_cast<std::int32_t>(blk.offset)) continue;
-                    if ((var.offset + 1u) * sizeof(std::uint32_t) > blk.size) continue;
-                    if (std::strcmp(var.name, "u_use_texture") == 0) {
-                        const std::int32_t v = use_tex;
-                        write_ubo_words(slot, var.offset, &v, 1);
-                    } else if (std::strcmp(var.name, "u_alpha_test") == 0) {
-                        const std::int32_t v = alpha_test_enabled_ ? 1 : 0;
-                        write_ubo_words(slot, var.offset, &v, 1);
-                    } else if (std::strcmp(var.name, "u_alpha_ref") == 0) {
-                        const float v = alpha_test_ref_;
-                        write_ubo_words(slot, var.offset, &v, 1);
-                    }
+        if (ps_has_ubo_) {
+            if (std::uint8_t *slot = alloc_ubo_slot(ps_ubo_block_size_)) {
+                if (ps_use_tex_found_ && (ps_use_tex_offset_ + 1u) * sizeof(std::uint32_t) <= ps_ubo_block_size_) {
+                    const std::int32_t v = use_tex;
+                    write_ubo_words(slot, ps_use_tex_offset_, &v, 1);
                 }
-                DCFlushRange(slot, blk.size);
-                GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, slot, blk.size);
-                GX2SetPixelUniformBlock(blk.offset, blk.size, slot);
+                if (ps_alpha_test_found_ && (ps_alpha_test_offset_ + 1u) * sizeof(std::uint32_t) <= ps_ubo_block_size_) {
+                    const std::int32_t v = alpha_test_enabled_ ? 1 : 0;
+                    write_ubo_words(slot, ps_alpha_test_offset_, &v, 1);
+                }
+                if (ps_alpha_ref_found_ && (ps_alpha_ref_offset_ + 1u) * sizeof(std::uint32_t) <= ps_ubo_block_size_) {
+                    const float v = alpha_test_ref_;
+                    write_ubo_words(slot, ps_alpha_ref_offset_, &v, 1);
+                }
+                DCFlushRange(slot, ps_ubo_block_size_);
+                GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, slot, ps_ubo_block_size_);
+                GX2SetPixelUniformBlock(ps_ubo_block_offset_, ps_ubo_block_size_, slot);
             }
         } else {
-            for (std::uint32_t i = 0; i < ps->uniformVarCount; ++i) {
-                const auto &var = ps->uniformVars[i];
-                if (!var.name) continue;
-                if (std::strcmp(var.name, "u_use_texture") == 0) {
-                    const std::int32_t v[4] = {use_tex, 0, 0, 0};
-                    GX2SetPixelUniformReg(var.offset, 4, v);
-                } else if (std::strcmp(var.name, "u_alpha_test") == 0) {
-                    const std::int32_t v[4] = {alpha_test_enabled_ ? 1 : 0, 0, 0, 0};
-                    GX2SetPixelUniformReg(var.offset, 4, v);
-                } else if (std::strcmp(var.name, "u_alpha_ref") == 0) {
-                    const float v[4] = {alpha_test_ref_, 0.0f, 0.0f, 0.0f};
-                    GX2SetPixelUniformReg(var.offset, 4, v);
-                }
+            if (ps_use_tex_found_) {
+                const std::int32_t v[4] = {use_tex, 0, 0, 0};
+                GX2SetPixelUniformReg(ps_use_tex_offset_, 4, v);
+            }
+            if (ps_alpha_test_found_) {
+                const std::int32_t v[4] = {alpha_test_enabled_ ? 1 : 0, 0, 0, 0};
+                GX2SetPixelUniformReg(ps_alpha_test_offset_, 4, v);
+            }
+            if (ps_alpha_ref_found_) {
+                const float v[4] = {alpha_test_ref_, 0.0f, 0.0f, 0.0f};
+                GX2SetPixelUniformReg(ps_alpha_ref_offset_, 4, v);
             }
         }
     }
 
-    if (ring_offset_ + batch_count_ > RING_CAPACITY_VERTICES) {
-        ring_offset_ = 0;
-    }
-
     Gx2Vertex *dst = ring_buffer_ + ring_offset_;
     const std::size_t byte_size = batch_count_ * sizeof(Gx2Vertex);
-    std::memcpy(dst, staging_.data(), byte_size);
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, byte_size);
 
     GX2SetAttribBuffer(0, static_cast<std::uint32_t>(byte_size), sizeof(Gx2Vertex), dst);

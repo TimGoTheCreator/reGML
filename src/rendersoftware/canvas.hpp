@@ -35,7 +35,7 @@ class Canvas {
     [[nodiscard]] std::span<std::uint32_t> pixels() noexcept { return pixels_; }
     [[nodiscard]] std::span<const std::uint32_t> pixels() const noexcept { return pixels_; }
     [[nodiscard]] std::uint32_t pixel(int x, int y) const;
-    void clear(std::uint32_t gml_bgr);
+    void clear(std::uint32_t gml_bgr, double alpha = 1.0);
     void clear_transparent() noexcept;
     void color(std::uint32_t gml_bgr) noexcept;
     void alpha(double alpha);

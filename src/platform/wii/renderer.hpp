@@ -19,8 +19,12 @@ class WiiInput {
     bool poll();
     const KeyboardState &held() const noexcept { return held_; }
     KeyboardState take_pressed() noexcept;
+    const GamepadState &gamepad() const noexcept { return gamepad_; }
+    GamepadState take_gamepad() noexcept;
 
   private:
     KeyboardState held_{}, pressed_{}, previous_{};
+    GamepadState gamepad_{};
+    std::array<bool, 16> gamepad_previous_{};
 };
 } // namespace regml

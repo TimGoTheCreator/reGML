@@ -49,6 +49,7 @@ public:
     void draw_quad_corners(std::uint32_t texture_id, const std::array<Vertex, 4> &vertices);
     void flush();
     void end();
+    void set_projection(const Mat4 &projection);
 
     void set_blend_enable(bool enabled);
     void set_blend_mode(int src_rgb, int dst_rgb, int src_a, int dst_a, int eq_rgb = 0, int eq_a = 0);
@@ -60,6 +61,9 @@ public:
 
     [[nodiscard]] std::size_t quad_count() const noexcept { return quad_count_; }
     [[nodiscard]] bool is_active() const noexcept { return in_begin_; }
+    [[nodiscard]] bool blend_enabled() const noexcept { return blend_state_.enabled; }
+    [[nodiscard]] bool alpha_test_enabled() const noexcept { return alpha_test_enabled_; }
+    [[nodiscard]] float alpha_test_ref() const noexcept { return alpha_test_ref_; }
     [[nodiscard]] std::size_t draw_call_count() const noexcept { return draw_call_count_; }
     void reset_draw_call_count() noexcept { draw_call_count_ = 0; }
     [[nodiscard]] std::uint32_t current_texture() const noexcept { return current_texture_; }

@@ -254,6 +254,15 @@ void SpriteBatcher::begin(const Mat4 &projection) {
     apply_color_mask();
 }
 
+void SpriteBatcher::set_projection(const Mat4 &projection) {
+    projection_ = projection;
+    if (in_begin_) {
+        Shader &sh = active_shader();
+        sh.bind();
+        sh.set_mat4("u_projection", projection_);
+    }
+}
+
 void SpriteBatcher::draw_quad(std::uint32_t texture_id,
                               float x,
                               float y,

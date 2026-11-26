@@ -4,6 +4,7 @@
 
 #if REGML_WII
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -608,6 +609,20 @@ void ensure_controllers_initialized() noexcept {
     g_hw.input_initialized = true;
 }
 
+double normalize_wii_axis(int pos, int center, int min_val, int max_val, double fallback_span) noexcept {
+    const int delta = pos - center;
+    if (delta == 0)
+        return 0.0;
+    const int span = delta > 0 ? (max_val - center) : (center - min_val);
+    const double denom = span > 4 ? static_cast<double>(span) : fallback_span;
+    return std::clamp(static_cast<double>(delta) / denom, -1.0, 1.0);
+}
+
+void pick_stronger_axis(double &dst, double candidate) noexcept {
+    if (std::abs(candidate) > std::abs(dst))
+        dst = candidate;
+}
+
 } // namespace
 
 WiiRenderer::WiiRenderer() {
@@ -819,7 +834,7 @@ REGML_HOT void WiiRenderer::present(const Canvas &canvas) {
 REGML_HOT bool WiiInput::poll() {
     ensure_controllers_initialized();
 
-    PAD_ScanPads();
+    const u32 pad_connected_mask = PAD_ScanPads();
     WPAD_ScanPads();
 
     u32 wii_held_all = 0;
@@ -830,6 +845,8 @@ REGML_HOT bool WiiInput::poll() {
     bool stick_right = false;
     bool stick_up = false;
     bool stick_down = false;
+    bool any_connected = pad_connected_mask != 0u;
+    std::array<double, 4> next_axes{};
 
     for (int chan = 0; chan < 4; ++chan) {
         wii_held_all |= WPAD_ButtonsHeld(chan);
@@ -844,27 +861,49 @@ REGML_HOT bool WiiInput::poll() {
         stick_up = stick_up || (gc_y > 36);
         stick_down = stick_down || (gc_y < -36);
 
+        if ((pad_connected_mask & (1u << chan)) != 0u) {
+            pick_stronger_axis(next_axes[0], std::clamp(static_cast<double>(gc_x) / 127.0, -1.0, 1.0));
+            pick_stronger_axis(next_axes[1], std::clamp(-static_cast<double>(gc_y) / 127.0, -1.0, 1.0));
+            pick_stronger_axis(
+                next_axes[2], std::clamp(static_cast<double>(PAD_SubStickX(chan)) / 127.0, -1.0, 1.0));
+            pick_stronger_axis(
+                next_axes[3], std::clamp(-static_cast<double>(PAD_SubStickY(chan)) / 127.0, -1.0, 1.0));
+        }
+
         // read analog input from the attached extensions
         const WPADData *wdata = WPAD_Data(chan);
         if (wdata) {
+            if (wdata->err == WPAD_ERR_NONE)
+                any_connected = true;
             if (wdata->exp.type == WPAD_EXP_NUNCHUK) {
-                const int nx = static_cast<int>(wdata->exp.nunchuk.js.pos.x) -
-                               static_cast<int>(wdata->exp.nunchuk.js.center.x);
-                const int ny = static_cast<int>(wdata->exp.nunchuk.js.pos.y) -
-                               static_cast<int>(wdata->exp.nunchuk.js.center.y);
+                const auto &js = wdata->exp.nunchuk.js;
+                const int nx = static_cast<int>(js.pos.x) - static_cast<int>(js.center.x);
+                const int ny = static_cast<int>(js.pos.y) - static_cast<int>(js.center.y);
                 stick_left = stick_left || (nx < -36);
                 stick_right = stick_right || (nx > 36);
                 stick_up = stick_up || (ny > 36);
                 stick_down = stick_down || (ny < -36);
+                pick_stronger_axis(next_axes[0],
+                                   normalize_wii_axis(js.pos.x, js.center.x, js.min.x, js.max.x, 96.0));
+                pick_stronger_axis(next_axes[1],
+                                   -normalize_wii_axis(js.pos.y, js.center.y, js.min.y, js.max.y, 96.0));
             } else if (wdata->exp.type == WPAD_EXP_CLASSIC) {
-                const int cx = static_cast<int>(wdata->exp.classic.ljs.pos.x) -
-                               static_cast<int>(wdata->exp.classic.ljs.center.x);
-                const int cy = static_cast<int>(wdata->exp.classic.ljs.pos.y) -
-                               static_cast<int>(wdata->exp.classic.ljs.center.y);
+                const auto &ljs = wdata->exp.classic.ljs;
+                const auto &rjs = wdata->exp.classic.rjs;
+                const int cx = static_cast<int>(ljs.pos.x) - static_cast<int>(ljs.center.x);
+                const int cy = static_cast<int>(ljs.pos.y) - static_cast<int>(ljs.center.y);
                 stick_left = stick_left || (cx < -12);
                 stick_right = stick_right || (cx > 12);
                 stick_up = stick_up || (cy > 12);
                 stick_down = stick_down || (cy < -12);
+                pick_stronger_axis(next_axes[0],
+                                   normalize_wii_axis(ljs.pos.x, ljs.center.x, ljs.min.x, ljs.max.x, 30.0));
+                pick_stronger_axis(next_axes[1],
+                                   -normalize_wii_axis(ljs.pos.y, ljs.center.y, ljs.min.y, ljs.max.y, 30.0));
+                pick_stronger_axis(next_axes[2],
+                                   normalize_wii_axis(rjs.pos.x, rjs.center.x, rjs.min.x, rjs.max.x, 15.0));
+                pick_stronger_axis(next_axes[3],
+                                   -normalize_wii_axis(rjs.pos.y, rjs.center.y, rjs.min.y, rjs.max.y, 15.0));
             }
         }
     }
@@ -912,6 +951,39 @@ REGML_HOT bool WiiInput::poll() {
         previous_[key] = is_held;
     }
 
+    const std::array<bool, 16> next_gamepad_buttons = {
+        next_confirm,
+        next_cancel,
+        ((wii_held_all & (WPAD_BUTTON_1 | WPAD_CLASSIC_BUTTON_X)) != 0u) ||
+            ((pad_held_all & PAD_BUTTON_X) != 0u),
+        ((wii_held_all & (WPAD_BUTTON_2 | WPAD_CLASSIC_BUTTON_Y)) != 0u) ||
+            ((pad_held_all & PAD_BUTTON_Y) != 0u),
+        ((wii_held_all & WPAD_CLASSIC_BUTTON_FULL_L) != 0u) || ((pad_held_all & PAD_TRIGGER_L) != 0u),
+        ((wii_held_all & WPAD_CLASSIC_BUTTON_FULL_R) != 0u) || ((pad_held_all & PAD_TRIGGER_R) != 0u),
+        (wii_held_all & WPAD_CLASSIC_BUTTON_ZL) != 0u,
+        ((wii_held_all & WPAD_CLASSIC_BUTTON_ZR) != 0u) || ((pad_held_all & PAD_TRIGGER_Z) != 0u),
+        (wii_held_all & (WPAD_BUTTON_MINUS | WPAD_CLASSIC_BUTTON_MINUS)) != 0u,
+        next_start,
+        false,
+        false,
+        ((wii_held_all & (WPAD_BUTTON_UP | WPAD_CLASSIC_BUTTON_UP)) != 0u) ||
+            ((pad_held_all & PAD_BUTTON_UP) != 0u),
+        ((wii_held_all & (WPAD_BUTTON_DOWN | WPAD_CLASSIC_BUTTON_DOWN)) != 0u) ||
+            ((pad_held_all & PAD_BUTTON_DOWN) != 0u),
+        ((wii_held_all & (WPAD_BUTTON_LEFT | WPAD_CLASSIC_BUTTON_LEFT)) != 0u) ||
+            ((pad_held_all & PAD_BUTTON_LEFT) != 0u),
+        ((wii_held_all & (WPAD_BUTTON_RIGHT | WPAD_CLASSIC_BUTTON_RIGHT)) != 0u) ||
+            ((pad_held_all & PAD_BUTTON_RIGHT) != 0u),
+    };
+
+    gamepad_.connected = any_connected || (wii_held_all != 0u) || (pad_held_all != 0u);
+    for (std::size_t i = 0; i < gamepad_.buttons.size(); ++i) {
+        gamepad_.buttons[i] = next_gamepad_buttons[i];
+        gamepad_.pressed[i] = gamepad_.pressed[i] || (next_gamepad_buttons[i] && !gamepad_previous_[i]);
+        gamepad_previous_[i] = next_gamepad_buttons[i];
+    }
+    gamepad_.axes = next_axes;
+
     return (wii_down_all & (WPAD_BUTTON_HOME | WPAD_CLASSIC_BUTTON_HOME)) == 0u;
 }
 
@@ -921,6 +993,12 @@ KeyboardState WiiInput::take_pressed() noexcept {
         result[key] = pressed_[key];
         pressed_[key] = false;
     }
+    return result;
+}
+
+GamepadState WiiInput::take_gamepad() noexcept {
+    GamepadState result = gamepad_;
+    gamepad_.pressed.fill(false);
     return result;
 }
 

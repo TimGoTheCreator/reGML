@@ -60,7 +60,17 @@ bool gl_gpu_cached_sub_image(double x,
                              float v1,
                              unsigned tint,
                              double opacity,
-                             std::uint64_t key);
+                             std::uint64_t key,
+                             double angle = 0.0);
+
+bool gl_gpu_has_cached_image(std::uint64_t key);
+void gl_gpu_preload_image(std::span<const std::uint32_t> pixels,
+                          int stride,
+                          int left,
+                          int top,
+                          int width,
+                          int height,
+                          std::uint64_t key);
 
 bool gl_gpu_cached_image(int width,
                         int height,

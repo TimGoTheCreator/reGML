@@ -853,13 +853,15 @@ int GameAssets::create_sprite_from_surface(const Canvas &surface,
         const auto copy_right = std::min<std::int64_t>(static_cast<std::int64_t>(x) + width, surface.width());
         const auto copy_width = static_cast<std::size_t>(std::max<std::int64_t>(0, copy_right - copy_left));
         const auto destination_left = static_cast<std::size_t>(copy_left - x);
-        if (copy_width) {
+        if (copy_width && !source.empty()) {
             for (int row = 0; row < height; ++row) {
                 const auto source_y = static_cast<std::int64_t>(y) + row;
                 if (source_y < 0 || source_y >= surface.height())
                     continue;
                 const auto source_offset = static_cast<std::size_t>(source_y) * surface.width() +
                                            static_cast<std::size_t>(copy_left);
+                if (source_offset + copy_width > source.size())
+                    continue;
                 const auto destination_offset = static_cast<std::size_t>(row) * width + destination_left;
                 std::copy_n(source.begin() + static_cast<std::ptrdiff_t>(source_offset), copy_width,
                             pixels.begin() + static_cast<std::ptrdiff_t>(destination_offset));
@@ -1097,31 +1099,36 @@ GameAssets::Page &GameAssets::load_page(int id) {
             width = image.width;
             height = image.height;
         } else {
-            const auto *chunk = package_.find_chunk("TXTR");
-            const auto png_header = package_.read_bytes(page.png, 8);
-            if (png_header[0] != 0x89 || png_header[1] != 'P' || png_header[2] != 'N' ||
-                png_header[3] != 'G' || png_header[4] != 0x0d || png_header[5] != 0x0a ||
-                png_header[6] != 0x1a || png_header[7] != 0x0a)
-                throw Error(ErrorKind::malformed, "texture PNG header invalid", page.png);
-            std::size_t png_size = 8;
-            bool found_end = false;
-            const auto chunk_end = chunk->data_offset + chunk->size;
-            while (page.png <= chunk_end && png_size <= chunk_end - page.png &&
-                   chunk_end - page.png - png_size >= 12) {
-                const auto record = package_.read_bytes(page.png + png_size, 8);
-                const auto length = (static_cast<std::size_t>(record[0]) << 24) |
-                                    (static_cast<std::size_t>(record[1]) << 16) |
-                                    (static_cast<std::size_t>(record[2]) << 8) | record[3];
-                if (length > chunk_end - page.png - png_size - 12)
-                    throw Error(ErrorKind::malformed, "texture PNG chunk exceeds TXTR", page.png + png_size);
-                found_end = record[4] == 'I' && record[5] == 'E' && record[6] == 'N' && record[7] == 'D';
-                png_size += 12 + length;
-                if (found_end)
-                    break;
+            if (page.data_size > 0) {
+                png_bytes = package_.read_bytes(page.png, page.data_size);
+            } else {
+                const auto *chunk = package_.find_chunk("TXTR");
+                const auto png_header = package_.read_bytes(page.png, 8);
+                if (png_header[0] != 0x89 || png_header[1] != 'P' || png_header[2] != 'N' ||
+                    png_header[3] != 'G' || png_header[4] != 0x0d || png_header[5] != 0x0a ||
+                    png_header[6] != 0x1a || png_header[7] != 0x0a)
+                    throw Error(ErrorKind::malformed, "texture PNG header invalid", page.png);
+                std::size_t png_size = 8;
+                bool found_end = false;
+                const auto chunk_end = chunk->data_offset + chunk->size;
+                while (page.png <= chunk_end && png_size <= chunk_end - page.png &&
+                       chunk_end - page.png - png_size >= 12) {
+                    const auto record = package_.read_bytes(page.png + png_size, 8);
+                    const auto length = (static_cast<std::size_t>(record[0]) << 24) |
+                                        (static_cast<std::size_t>(record[1]) << 16) |
+                                        (static_cast<std::size_t>(record[2]) << 8) | record[3];
+                    if (length > chunk_end - page.png - png_size - 12)
+                        throw Error(ErrorKind::malformed, "texture PNG chunk exceeds TXTR", page.png + png_size);
+                    found_end = record[4] == 'I' && record[5] == 'E' && record[6] == 'N' && record[7] == 'D';
+                    png_size += 12 + length;
+                    if (found_end)
+                        break;
+                }
+                if (!found_end)
+                    throw Error(ErrorKind::malformed, "texture PNG has no IEND chunk", page.png);
+                page.data_size = png_size;
+                png_bytes = package_.read_bytes(page.png, png_size);
             }
-            if (!found_end)
-                throw Error(ErrorKind::malformed, "texture PNG has no IEND chunk", page.png);
-            png_bytes = package_.read_bytes(page.png, png_size);
             image.version = PNG_IMAGE_VERSION;
             if (!png_image_begin_read_from_memory(&image, png_bytes.data(), png_bytes.size()))
                 throw Error(ErrorKind::malformed, "texture PNG header invalid", page.png);
@@ -1484,15 +1491,17 @@ void GameAssets::draw_tile(Canvas &canvas,
                               (static_cast<std::uint32_t>(r.page) + 1U);
         int page_w = pages_[static_cast<std::size_t>(r.page)].width;
         int page_h = pages_[static_cast<std::size_t>(r.page)].height;
-        if (!gx2::gx2_gpu_has_cached_image(page_key) || page_w <= 0 || page_h <= 0) {
+        bool cached = gx2::gx2_gpu_has_cached_image(page_key);
+        if (!cached || page_w <= 0 || page_h <= 0) {
             const auto &page = load_page(r.page);
             page_w = page.width;
             page_h = page.height;
             if (page_w > 0 && page_h > 0 && !page.pixels.empty()) {
                 gx2::gx2_gpu_preload_image(page.pixels, page.width, 0, 0, page_w, page_h, page_key);
+                cached = true;
             }
         }
-        if (page_w > 0 && page_h > 0 && gx2::gx2_gpu_has_cached_image(page_key)) {
+        if (page_w > 0 && page_h > 0 && cached) {
             const float inv_w = 1.0f / static_cast<float>(page_w);
             const float inv_h = 1.0f / static_cast<float>(page_h);
             float u0 = static_cast<float>(cut.x) * inv_w;
@@ -1807,15 +1816,17 @@ void GameAssets::blit(Canvas &canvas,
                                   (static_cast<std::uint32_t>(r.page) + 1U);
             int page_w = pages_[static_cast<std::size_t>(r.page)].width;
             int page_h = pages_[static_cast<std::size_t>(r.page)].height;
-            if (!gx2::gx2_gpu_has_cached_image(page_key) || page_w <= 0 || page_h <= 0) {
+            bool cached = gx2::gx2_gpu_has_cached_image(page_key);
+            if (!cached || page_w <= 0 || page_h <= 0) {
                 const auto &page = load_page(r.page);
                 page_w = page.width;
                 page_h = page.height;
                 if (page_w > 0 && page_h > 0 && !page.pixels.empty()) {
                     gx2::gx2_gpu_preload_image(page.pixels, page.width, 0, 0, page_w, page_h, page_key);
+                    cached = true;
                 }
             }
-            if (page_w > 0 && page_h > 0 && gx2::gx2_gpu_has_cached_image(page_key)) {
+            if (page_w > 0 && page_h > 0 && cached) {
                 const float inv_w = 1.0f / static_cast<float>(page_w);
                 const float inv_h = 1.0f / static_cast<float>(page_h);
                 const float u0 = static_cast<float>(r.x) * inv_w;
@@ -2118,6 +2129,21 @@ void GameAssets::draw_sprite(Canvas &canvas,
     const double rad = angle * 3.141592653589793 / 180;
     blit(canvas, r, x + ox * std::cos(rad) + oy * std::sin(rad), y - ox * std::sin(rad) + oy * std::cos(rad),
          sx, sy, angle, color, alpha);
+}
+void GameAssets::draw_sprite_stretched(Canvas &canvas,
+                                       int id,
+                                       double frame,
+                                       double x,
+                                       double y,
+                                       double width,
+                                       double height,
+                                       unsigned color,
+                                       double alpha) {
+    const auto &s = sprite(id);
+    if (s.width <= 0 || s.height <= 0)
+        return;
+    draw_sprite(canvas, id, frame, x, y, width / static_cast<double>(s.width),
+                height / static_cast<double>(s.height), 0.0, color, alpha);
 }
 void GameAssets::draw_sprite_pos(
     Canvas &canvas, int id, double frame, const std::array<double, 8> &corners, double alpha) {
@@ -2691,15 +2717,17 @@ void GameAssets::draw_text(Canvas &canvas,
                               (static_cast<std::uint32_t>(atlas.page) + 1U);
         int page_w = pages_[static_cast<std::size_t>(atlas.page)].width;
         int page_h = pages_[static_cast<std::size_t>(atlas.page)].height;
-        if (!gx2::gx2_gpu_has_cached_image(page_key) || page_w <= 0 || page_h <= 0) {
+        bool cached = gx2::gx2_gpu_has_cached_image(page_key);
+        if (!cached || page_w <= 0 || page_h <= 0) {
             const auto &page = load_page(atlas.page);
             page_w = page.width;
             page_h = page.height;
             if (page_w > 0 && page_h > 0 && !page.pixels.empty()) {
                 gx2::gx2_gpu_preload_image(page.pixels, page.width, 0, 0, page_w, page_h, page_key);
+                cached = true;
             }
         }
-        if (page_w > 0 && page_h > 0 && gx2::gx2_gpu_has_cached_image(page_key)) {
+        if (page_w > 0 && page_h > 0 && cached) {
             const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
             const float inv_w = 1.0f / static_cast<float>(page_w);
             const float inv_h = 1.0f / static_cast<float>(page_h);

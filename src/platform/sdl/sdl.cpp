@@ -239,7 +239,32 @@ struct TextureDelete {
 int gml_key(SDL_Keycode key) {
     if (key >= SDLK_F1 && key <= SDLK_F12)
         return 112 + static_cast<int>(key - SDLK_F1);
+    if (key >= SDLK_KP_1 && key <= SDLK_KP_9)
+        return 97 + static_cast<int>(key - SDLK_KP_1);
     switch (key) {
+    case SDLK_BACKSPACE:
+        return 8;
+    case SDLK_TAB:
+        return 9;
+    case SDLK_RETURN:
+    case SDLK_KP_ENTER:
+        return 13;
+    case SDLK_PAUSE:
+        return 19;
+    case SDLK_CAPSLOCK:
+        return 20;
+    case SDLK_ESCAPE:
+        return 27;
+    case SDLK_SPACE:
+        return 32;
+    case SDLK_PAGEUP:
+        return 33;
+    case SDLK_PAGEDOWN:
+        return 34;
+    case SDLK_END:
+        return 35;
+    case SDLK_HOME:
+        return 36;
     case SDLK_LEFT:
         return 37;
     case SDLK_UP:
@@ -248,6 +273,58 @@ int gml_key(SDL_Keycode key) {
         return 39;
     case SDLK_DOWN:
         return 40;
+    case SDLK_PRINTSCREEN:
+        return 44;
+    case SDLK_INSERT:
+        return 45;
+    case SDLK_DELETE:
+        return 46;
+    case SDLK_KP_0:
+        return 96;
+    case SDLK_KP_MULTIPLY:
+        return 106;
+    case SDLK_KP_PLUS:
+        return 107;
+    case SDLK_KP_MINUS:
+        return 109;
+    case SDLK_KP_PERIOD:
+        return 110;
+    case SDLK_KP_DIVIDE:
+        return 111;
+    case SDLK_LSHIFT:
+        return 160;
+    case SDLK_RSHIFT:
+        return 161;
+    case SDLK_LCTRL:
+        return 162;
+    case SDLK_RCTRL:
+        return 163;
+    case SDLK_LALT:
+        return 164;
+    case SDLK_RALT:
+        return 165;
+    case SDLK_SEMICOLON:
+        return 186;
+    case SDLK_EQUALS:
+        return 187;
+    case SDLK_COMMA:
+        return 188;
+    case SDLK_MINUS:
+        return 189;
+    case SDLK_PERIOD:
+        return 190;
+    case SDLK_SLASH:
+        return 191;
+    case SDLK_BACKQUOTE:
+        return 192;
+    case SDLK_LEFTBRACKET:
+        return 219;
+    case SDLK_BACKSLASH:
+        return 220;
+    case SDLK_RIGHTBRACKET:
+        return 221;
+    case SDLK_QUOTE:
+        return 222;
     default:
         if (key >= SDLK_a && key <= SDLK_z)
             return static_cast<int>(key - SDLK_a + 'A');
@@ -365,14 +442,25 @@ class VideoWindow {
             poll_ps4_pad();
         }
 #else
-        if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) >= 0) {
+        if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) >= 0) {
             controller_subsystem_ = true;
         }
         for (int i = 0; i < SDL_NumJoysticks(); ++i) {
             if (controller_subsystem_ && SDL_IsGameController(i)) {
                 controller_ = SDL_GameControllerOpen(i);
-                if (controller_)
+                if (controller_) {
+                    gamepad_.connected = true;
                     break;
+                }
+            }
+        }
+        if (!controller_ && controller_subsystem_) {
+            for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+                joystick_ = SDL_JoystickOpen(i);
+                if (joystick_) {
+                    gamepad_.connected = true;
+                    break;
+                }
             }
         }
 #endif
@@ -380,12 +468,14 @@ class VideoWindow {
     ~VideoWindow() {
         if (controller_)
             SDL_GameControllerClose(controller_);
+        if (joystick_)
+            SDL_JoystickClose(joystick_);
 #if REGML_PS4
         if (pad_ >= 0)
             scePadClose(pad_);
 #endif
         if (controller_subsystem_)
-            SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
+            SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK);
 #if !REGML_WIIU
         if (gl_context_)
             SDL_GL_DeleteContext(gl_context_);
@@ -431,15 +521,36 @@ class VideoWindow {
                 joystick_hat_pressed_.fill(false);
                 joystick_axes_held_.fill(false);
                 joystick_axes_pressed_.fill(false);
+                gamepad_.buttons.fill(false);
+                gamepad_.pressed.fill(false);
+                gamepad_.axes.fill(0.0);
             }
             if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
+                const bool down = event.type == SDL_KEYDOWN;
+                const bool detect_press = !event.key.repeat;
                 const auto key = gml_key(event.key.keysym.sym);
-                update_source_key(keyboard_held_, keyboard_pressed_, key, event.type == SDL_KEYDOWN,
-                                  !event.key.repeat);
+                update_source_key(keyboard_held_, keyboard_pressed_, key, down, detect_press);
+                if (key == 160 || key == 161)
+                    update_source_key(keyboard_held_, keyboard_pressed_, 16,
+                                      keyboard_held_[160] || keyboard_held_[161], detect_press);
+                else if (key == 162 || key == 163)
+                    update_source_key(keyboard_held_, keyboard_pressed_, 17,
+                                      keyboard_held_[162] || keyboard_held_[163], detect_press);
+                else if (key == 164 || key == 165)
+                    update_source_key(keyboard_held_, keyboard_pressed_, 18,
+                                      keyboard_held_[164] || keyboard_held_[165], detect_press);
             }
             if (controller_subsystem_ && event.type == SDL_CONTROLLERDEVICEADDED && !controller_ &&
-                SDL_IsGameController(event.cdevice.which))
+                SDL_IsGameController(event.cdevice.which)) {
                 controller_ = SDL_GameControllerOpen(event.cdevice.which);
+                if (controller_) {
+                    if (joystick_) {
+                        SDL_JoystickClose(joystick_);
+                        joystick_ = nullptr;
+                    }
+                    gamepad_.connected = true;
+                }
+            }
             if (event.type == SDL_CONTROLLERDEVICEREMOVED && controller_ &&
                 SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller_)) == event.cdevice.which) {
                 SDL_GameControllerClose(controller_);
@@ -448,18 +559,67 @@ class VideoWindow {
                 controller_buttons_pressed_.fill(false);
                 controller_axes_held_.fill(false);
                 controller_axes_pressed_.fill(false);
+                if (!joystick_)
+                    gamepad_ = GamepadState{};
             }
             if (event.type == SDL_CONTROLLERBUTTONDOWN || event.type == SDL_CONTROLLERBUTTONUP) {
-                const auto key = gml_button(static_cast<SDL_GameControllerButton>(event.cbutton.button));
-                update_source_key(controller_buttons_held_, controller_buttons_pressed_, key,
-                                  event.type == SDL_CONTROLLERBUTTONDOWN);
-                if (event.type == SDL_CONTROLLERBUTTONDOWN &&
-                    event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)
-                    return false;
+                const bool down = event.type == SDL_CONTROLLERBUTTONDOWN;
+                const auto btn = static_cast<SDL_GameControllerButton>(event.cbutton.button);
+                const auto key = gml_button(btn);
+                update_source_key(controller_buttons_held_, controller_buttons_pressed_, key, down);
+                update_gamepad_button(gml_gamepad_button(btn), down);
             }
             if (event.type == SDL_CONTROLLERAXISMOTION) {
-                update_controller_axis(static_cast<SDL_GameControllerAxis>(event.caxis.axis),
-                                       event.caxis.value, controller_axes_held_, controller_axes_pressed_);
+                const auto axis = static_cast<SDL_GameControllerAxis>(event.caxis.axis);
+                update_controller_axis(axis, event.caxis.value, controller_axes_held_, controller_axes_pressed_);
+                update_gamepad_axis(axis, event.caxis.value);
+            }
+            if (controller_subsystem_ && event.type == SDL_JOYDEVICEADDED && !controller_ && !joystick_ &&
+                !SDL_IsGameController(event.jdevice.which)) {
+                joystick_ = SDL_JoystickOpen(event.jdevice.which);
+                if (joystick_)
+                    gamepad_.connected = true;
+            }
+            if (event.type == SDL_JOYDEVICEREMOVED && joystick_ &&
+                SDL_JoystickInstanceID(joystick_) == event.jdevice.which) {
+                SDL_JoystickClose(joystick_);
+                joystick_ = nullptr;
+                joystick_buttons_held_.fill(false);
+                joystick_buttons_pressed_.fill(false);
+                joystick_hat_held_.fill(false);
+                joystick_hat_pressed_.fill(false);
+                joystick_axes_held_.fill(false);
+                joystick_axes_pressed_.fill(false);
+                if (!controller_)
+                    gamepad_ = GamepadState{};
+            }
+            if (!controller_ && (event.type == SDL_JOYBUTTONDOWN || event.type == SDL_JOYBUTTONUP)) {
+                const bool down = event.type == SDL_JOYBUTTONDOWN;
+                static constexpr std::array<int, 4> face_keys = {'Z', 'X', 'C', 'C'};
+                if (event.jbutton.button < face_keys.size())
+                    update_source_key(joystick_buttons_held_, joystick_buttons_pressed_,
+                                      face_keys[event.jbutton.button], down);
+                if (event.jbutton.button < 16)
+                    update_gamepad_button(static_cast<int>(event.jbutton.button), down);
+            }
+            if (!controller_ && event.type == SDL_JOYAXISMOTION) {
+                if (event.jaxis.axis == 0)
+                    update_axis_pair(37, 39, event.jaxis.value, joystick_axes_held_, joystick_axes_pressed_);
+                else if (event.jaxis.axis == 1)
+                    update_axis_pair(38, 40, event.jaxis.value, joystick_axes_held_, joystick_axes_pressed_);
+                if (event.jaxis.axis < 4)
+                    gamepad_.axes[event.jaxis.axis] = std::clamp(event.jaxis.value / 32767.0, -1.0, 1.0);
+            }
+            if (!controller_ && event.type == SDL_JOYHATMOTION) {
+                const Uint8 hat = event.jhat.value;
+                update_source_key(joystick_hat_held_, joystick_hat_pressed_, 37, (hat & SDL_HAT_LEFT) != 0);
+                update_source_key(joystick_hat_held_, joystick_hat_pressed_, 39, (hat & SDL_HAT_RIGHT) != 0);
+                update_source_key(joystick_hat_held_, joystick_hat_pressed_, 38, (hat & SDL_HAT_UP) != 0);
+                update_source_key(joystick_hat_held_, joystick_hat_pressed_, 40, (hat & SDL_HAT_DOWN) != 0);
+                update_gamepad_button(12, (hat & SDL_HAT_UP) != 0);
+                update_gamepad_button(13, (hat & SDL_HAT_DOWN) != 0);
+                update_gamepad_button(14, (hat & SDL_HAT_LEFT) != 0);
+                update_gamepad_button(15, (hat & SDL_HAT_RIGHT) != 0);
             }
         }
 #if REGML_PS4
@@ -632,10 +792,8 @@ class VideoWindow {
     void tick_game(GameSession &session,
                    const KeyboardState *replay,
                    const KeyboardState *replay_pressed = nullptr) {
-#if REGML_PS4
         session.set_gamepad_state(gamepad_);
         gamepad_.pressed.fill(false);
-#endif
 #if REGML_GLMODERN || REGML_GX2
         if (use_opengl_) {
             session.canvas().gpu_target(true);
@@ -656,9 +814,7 @@ class VideoWindow {
                      replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed_);
         pressed_.fill(false);
     }
-#if REGML_PS4
     const GamepadState &gamepad_state() const { return gamepad_; }
-#endif
 
   private:
     void update_source_key(KeyboardState &source_held,
@@ -744,6 +900,73 @@ class VideoWindow {
         joystick_hat_pressed_.fill(false);
         joystick_axes_pressed_.fill(false);
     }
+    void update_gamepad_button(int index, bool down) {
+        if (index < 0 || index >= static_cast<int>(gamepad_.buttons.size()))
+            return;
+        const auto i = static_cast<std::size_t>(index);
+        if (down && !gamepad_.buttons[i])
+            gamepad_.pressed[i] = true;
+        gamepad_.buttons[i] = down;
+    }
+    void update_gamepad_axis(SDL_GameControllerAxis axis, Sint16 value) {
+        const double norm = std::clamp(value / 32767.0, -1.0, 1.0);
+        switch (axis) {
+        case SDL_CONTROLLER_AXIS_LEFTX:
+            gamepad_.axes[0] = norm;
+            break;
+        case SDL_CONTROLLER_AXIS_LEFTY:
+            gamepad_.axes[1] = norm;
+            break;
+        case SDL_CONTROLLER_AXIS_RIGHTX:
+            gamepad_.axes[2] = norm;
+            break;
+        case SDL_CONTROLLER_AXIS_RIGHTY:
+            gamepad_.axes[3] = norm;
+            break;
+        case SDL_CONTROLLER_AXIS_TRIGGERLEFT:
+            update_gamepad_button(6, value > 8000);
+            break;
+        case SDL_CONTROLLER_AXIS_TRIGGERRIGHT:
+            update_gamepad_button(7, value > 8000);
+            break;
+        default:
+            break;
+        }
+    }
+    static int gml_gamepad_button(SDL_GameControllerButton button) {
+        switch (button) {
+        case SDL_CONTROLLER_BUTTON_A:
+            return 0;
+        case SDL_CONTROLLER_BUTTON_B:
+            return 1;
+        case SDL_CONTROLLER_BUTTON_X:
+            return 2;
+        case SDL_CONTROLLER_BUTTON_Y:
+            return 3;
+        case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+            return 4;
+        case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+            return 5;
+        case SDL_CONTROLLER_BUTTON_BACK:
+            return 8;
+        case SDL_CONTROLLER_BUTTON_START:
+            return 9;
+        case SDL_CONTROLLER_BUTTON_LEFTSTICK:
+            return 10;
+        case SDL_CONTROLLER_BUTTON_RIGHTSTICK:
+            return 11;
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+            return 12;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+            return 13;
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+            return 14;
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+            return 15;
+        default:
+            return -1;
+        }
+    }
     static int gml_button(SDL_GameControllerButton button) {
         switch (button) {
         case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
@@ -776,9 +999,10 @@ class VideoWindow {
     bool use_opengl_ = false;
     std::vector<std::uint32_t> present_pixels_;
     SDL_GameController *controller_ = nullptr;
+    SDL_Joystick *joystick_ = nullptr;
+    GamepadState gamepad_{};
 #if REGML_PS4
     int pad_ = -1;
-    GamepadState gamepad_{};
 #endif
     bool controller_subsystem_ = false;
     KeyboardState held_{}, pressed_{};
@@ -820,6 +1044,7 @@ class VideoWindow {
                    const KeyboardState *replay,
                    const KeyboardState *replay_pressed = nullptr) {
         session.canvas().gpu_target(true);
+        session.set_gamepad_state(input_.take_gamepad());
         const auto pressed = input_.take_pressed();
         session.tick(replay ? *replay : input_.held(),
                      replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed);
@@ -1031,14 +1256,9 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
     std::unique_ptr<GameSession> game;
     trace_stage("session.begin");
     try {
-#if REGML_PS4
         game = std::make_unique<GameSession>(package, options.seed, options.save_directory,
                                              video_window ? video_window->gamepad_state() : GamepadState{},
                                              options.start_room);
-#else
-        game = std::make_unique<GameSession>(package, options.seed, options.save_directory, GamepadState{},
-                                             options.start_room);
-#endif
         trace_stage("session.ready", game.get());
     } catch (const Error &error) {
 #if !REGML_PS2

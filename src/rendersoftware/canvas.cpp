@@ -864,47 +864,49 @@ std::uint32_t Canvas::pixel(int x, int y) const {
     return pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) +
                    static_cast<std::size_t>(x)];
 }
-void Canvas::clear(std::uint32_t bgr) {
+void Canvas::clear(std::uint32_t bgr, double alpha) {
+    const auto a = static_cast<std::uint32_t>(
+        std::lround(std::clamp(std::isfinite(alpha) ? alpha : 0.0, 0.0, 1.0) * 255.0));
+    const auto argb = (a << 24) | to_rgb(bgr);
 #if REGML_WII
     if (gpu_) {
         wii_gpu_begin();
-        wii_gpu_box(0, 0, width_, height_, 0xff000000 | to_rgb(bgr));
+        wii_gpu_box(0, 0, width_, height_, argb);
         return;
     }
 #elif REGML_PS2
     if (gpu_) {
-        ps2_gpu_box(0, 0, width_, height_, 0xff000000 | to_rgb(bgr));
+        ps2_gpu_box(0, 0, width_, height_, argb);
         return;
     }
 #elif REGML_GLMODERN
     if (gpu_) {
         if (gpu_surface_id() != 0) {
-            glmodern::gl_gpu_surface_clear(0xff000000U | to_rgb(bgr));
+            glmodern::gl_gpu_surface_clear(argb);
             return;
         }
         glmodern::gl_gpu_begin();
-        glmodern::gl_gpu_box(0, 0, width_, height_, 0xff000000 | to_rgb(bgr));
+        glmodern::gl_gpu_box(0, 0, width_, height_, argb);
         return;
     }
 #elif REGML_GX2
     if (gpu_) {
         if (gpu_surface_id() != 0) {
-            gx2::gx2_gpu_surface_clear(0xff000000U | to_rgb(bgr));
+            gx2::gx2_gpu_surface_clear(argb);
             return;
         }
         gx2::gx2_gpu_begin();
-        gx2::gx2_gpu_box(0, 0, width_, height_, 0xff000000 | to_rgb(bgr));
+        gx2::gx2_gpu_box(0, 0, width_, height_, argb);
         return;
     }
 #endif
-    const auto rgba = 0xff000000 | to_rgb(bgr);
     if (color_write_all()) {
-        std::fill(pixels_.begin(), pixels_.end(), rgba);
+        std::fill(pixels_.begin(), pixels_.end(), argb);
         return;
     }
     for (int y = 0; y < height_; ++y)
         for (int x = 0; x < width_; ++x)
-            store_pixel(x, y, rgba);
+            store_pixel(x, y, argb);
 }
 void Canvas::clear_transparent() noexcept {
 #if REGML_GLMODERN
@@ -918,7 +920,13 @@ void Canvas::clear_transparent() noexcept {
         return;
     }
 #endif
-    std::fill(pixels_.begin(), pixels_.end(), 0);
+    if (color_write_all()) {
+        std::fill(pixels_.begin(), pixels_.end(), 0);
+        return;
+    }
+    for (int y = 0; y < height_; ++y)
+        for (int x = 0; x < width_; ++x)
+            store_pixel(x, y, 0);
 }
 void Canvas::rgba_pixel(int x, int y, std::uint32_t rgba, std::uint32_t bgr, double opacity) {
     finite(opacity);

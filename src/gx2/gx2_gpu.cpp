@@ -4,6 +4,7 @@
 #include <coreinit/cache.h>
 #include <gx2/clear.h>
 #include <gx2/context.h>
+#include <gx2/event.h>
 #include <gx2/mem.h>
 #include <gx2/registers.h>
 #include <gx2/surface.h>
@@ -50,6 +51,7 @@ struct Gx2Surface {
 Gx2Batcher s_batcher;
 std::unordered_map<std::uint64_t, std::unique_ptr<CachedTexture>> s_texture_cache;
 std::vector<std::unique_ptr<CachedTexture>> s_transient_textures;
+std::vector<std::unique_ptr<CachedTexture>> s_retired_transient_textures;
 std::unordered_map<std::uint32_t, std::unique_ptr<Gx2Surface>> s_surfaces;
 
 std::size_t s_current_frame = 0;
@@ -236,7 +238,8 @@ CachedTexture *upload_texture(std::uint64_t key,
 void gx2_gpu_begin() {
     if (!ensure_initialized()) return;
     if (!s_in_render) {
-        s_transient_textures.clear();
+        s_retired_transient_textures.clear();
+        s_retired_transient_textures.swap(s_transient_textures);
         WHBGfxBeginRender();
         WHBGfxBeginRenderTV();
         WHBGfxClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -268,9 +271,13 @@ void gx2_gpu_presented() {
     }
     if (s_in_render) {
         WHBGfxFinishRenderTV();
-        WHBGfxBeginRenderDRC();
-        WHBGfxClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        WHBGfxFinishRenderDRC();
+        static bool s_drc_cleared = false;
+        if (!s_drc_cleared) {
+            WHBGfxBeginRenderDRC();
+            WHBGfxClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            WHBGfxFinishRenderDRC();
+            s_drc_cleared = true;
+        }
         WHBGfxFinishRender();
         s_in_render = false;
     }
@@ -561,10 +568,13 @@ std::uint32_t gx2_gpu_surface_create(int width, int height) {
 void gx2_gpu_surface_destroy(std::uint32_t surface_id) {
     auto it = s_surfaces.find(surface_id);
     if (it == s_surfaces.end()) return;
-    gx2_gpu_flush();
     if (s_bound_surface_id == surface_id) {
-        s_bound_surface_id = 0;
+        gx2_gpu_surface_bind(0, s_viewport_width, s_viewport_height);
+    } else {
+        gx2_gpu_flush();
     }
+    GX2DrawDone();
+    s_batcher.forget_texture(&it->second->texture);
     if (it->second->image) {
         std::free(it->second->image);
     }
@@ -586,9 +596,10 @@ void gx2_gpu_surface_bind(std::uint32_t surface_id, int width, int height) {
                           prev->second->image,
                           prev->second->color_buffer.surface.imageSize);
         }
+        s_dirty = false;
     }
-    s_bound_surface_id = surface_id;
     if (surface_id == 0) {
+        s_bound_surface_id = 0;
         if (GX2ColorBuffer *tv = WHBGfxGetTVColourBuffer()) {
             GX2SetColorBuffer(tv, GX2_RENDER_TARGET_0);
         }
@@ -605,6 +616,7 @@ void gx2_gpu_surface_bind(std::uint32_t surface_id, int width, int height) {
     }
     auto it = s_surfaces.find(surface_id);
     if (it == s_surfaces.end()) return;
+    s_bound_surface_id = surface_id;
     GX2SetColorBuffer(&it->second->color_buffer, GX2_RENDER_TARGET_0);
     s_viewport_width = it->second->width;
     s_viewport_height = it->second->height;

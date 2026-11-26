@@ -2,9 +2,26 @@ Module.onRuntimeInitialized = function () {
   Module.runnerReady = true;
   var status = document.getElementById('status');
   var picker = document.getElementById('pick-game');
+  var canvas = document.getElementById('canvas');
   var gameRoot = '/games';
   var gameStarted = false;
   var saveStorageReady = false;
+  var preventedKeys = new Set([
+    'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+    'PageUp', 'PageDown', 'Home', 'End', 'Tab', 'Backspace'
+  ]);
+
+  window.addEventListener('keydown', function (event) {
+    if (!gameStarted) return;
+    if (preventedKeys.has(event.code))
+      event.preventDefault();
+  });
+
+  if (canvas) {
+    canvas.addEventListener('pointerdown', function () {
+      canvas.focus();
+    });
+  }
 
   try {
     Module.FS.mkdir('/persistent');
@@ -89,6 +106,7 @@ Module.onRuntimeInitialized = function () {
       Module.gameStarted = true;
       Module.reportedError = false;
       picker.disabled = true;
+      if (canvas) canvas.focus();
       var args = ['run', packagePath, '--save-dir', '/persistent/saves'];
       if (Module.FS.analyzePath(inputScriptPath).exists)
         args.push('--input-script', inputScriptPath);
@@ -100,7 +118,7 @@ Module.onRuntimeInitialized = function () {
         if (!Module.reportedError)
           status.textContent = 'Game exited with code ' + exitCode + '.';
       }
-      document.getElementById('canvas').focus();
+      if (canvas) canvas.focus();
     } catch (error) {
       gameStarted = false;
       Module.gameStarted = false;

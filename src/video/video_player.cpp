@@ -448,12 +448,6 @@ bool VideoPlayer::open(const std::filesystem::path &path) {
     }
     state.width = state.decoder->width;
     state.height = state.decoder->height;
-#if REGML_WIIU
-    if (state.width > 320 || state.height > 240) {
-        state.width = std::max(1, state.width / 2);
-        state.height = std::max(1, state.height / 2);
-    }
-#endif
     if (state.width < 1 || state.height < 1 || state.width > 4096 || state.height > 4096 ||
         static_cast<std::uint64_t>(state.width) * static_cast<std::uint64_t>(state.height) >
             16ULL * 1024 * 1024) {

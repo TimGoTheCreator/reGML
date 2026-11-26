@@ -125,9 +125,17 @@ bool is_cached_recursive(int width, int height, std::uint64_t key) {
 } // namespace
 
 void gl_gpu_set_viewport(int width, int height) {
-    if (width > 0 && height > 0) {
-        s_viewport_width = width;
-        s_viewport_height = height;
+    if (width <= 0 || height <= 0) return;
+    if (s_viewport_width == width && s_viewport_height == height) return;
+    gl_gpu_flush();
+    s_viewport_width = width;
+    s_viewport_height = height;
+    if (s_bound_surface_id != 0 && glViewport) {
+        glViewport(0, 0, width, height);
+    }
+    if (s_batcher.is_active()) {
+        s_batcher.set_projection(Mat4::ortho_2d(static_cast<float>(width),
+                                                static_cast<float>(height)));
     }
 }
 
@@ -475,6 +483,22 @@ void gl_gpu_image(std::span<const std::uint32_t> pixels,
     }
 }
 
+bool gl_gpu_has_cached_image(std::uint64_t key) {
+    return key != 0 && s_texture_cache.contains(key);
+}
+
+void gl_gpu_preload_image(std::span<const std::uint32_t> pixels,
+                          int stride,
+                          int left,
+                          int top,
+                          int width,
+                          int height,
+                          std::uint64_t key) {
+    if (key == 0 || width <= 0 || height <= 0 || pixels.empty()) return;
+    ensure_initialized();
+    gl_gpu_image(pixels, stride, left, top, width, height, 0.0, 0.0, 0.0, 0.0, 0.0, 0xffffff, 1.0, key);
+}
+
 bool gl_gpu_cached_sub_image(double x,
                              double y,
                              double dw,
@@ -485,18 +509,21 @@ bool gl_gpu_cached_sub_image(double x,
                              float v1,
                              unsigned tint,
                              double opacity,
-                             std::uint64_t key) {
+                             std::uint64_t key,
+                             double angle) {
     if (!key || opacity <= 0.0 || dw == 0.0 || dh == 0.0) return false;
 
     const GLuint tex_id = s_texture_cache.get(key);
     if (tex_id == 0) return false;
 
-    const double min_x = dw >= 0.0 ? x : x + dw;
-    const double max_x = dw >= 0.0 ? x + dw : x;
-    const double min_y = dh >= 0.0 ? y : y + dh;
-    const double max_y = dh >= 0.0 ? y + dh : y;
-    if (max_x <= 0.0 || min_x >= s_viewport_width || max_y <= 0.0 || min_y >= s_viewport_height) {
-        return true;
+    if (angle == 0.0) {
+        const double min_x = dw >= 0.0 ? x : x + dw;
+        const double max_x = dw >= 0.0 ? x + dw : x;
+        const double min_y = dh >= 0.0 ? y : y + dh;
+        const double max_y = dh >= 0.0 ? y + dh : y;
+        if (max_x <= 0.0 || min_x >= s_viewport_width || max_y <= 0.0 || min_y >= s_viewport_height) {
+            return true;
+        }
     }
 
     const std::uint32_t c = tint_opacity_to_rgba(tint, opacity);
@@ -508,7 +535,7 @@ bool gl_gpu_cached_sub_image(double x,
     }
     s_batcher.draw_quad(tex_id, static_cast<float>(x), static_cast<float>(y),
                         static_cast<float>(dw), static_cast<float>(dh),
-                        u0, v0, u1, v1, c, 0.0f);
+                        u0, v0, u1, v1, c, static_cast<float>(angle));
     s_dirty = true;
     return true;
 }

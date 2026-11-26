@@ -115,6 +115,15 @@ class GameAssets {
                      double angle = 0,
                      unsigned color = 0xffffff,
                      double alpha = 1);
+    void draw_sprite_stretched(Canvas &canvas,
+                               int id,
+                               double frame,
+                               double x,
+                               double y,
+                               double width,
+                               double height,
+                               unsigned color = 0xffffff,
+                               double alpha = 1);
     void
     draw_sprite_pos(Canvas &canvas, int id, double frame, const std::array<double, 8> &corners, double alpha);
     [[nodiscard]] std::uint32_t sample_sprite(int id, double frame, double u, double v, bool repeat = true);
@@ -162,6 +171,9 @@ class GameAssets {
     double text_height(int font) const;
     int add_sprite_font(int sprite, std::string_view string_map, bool proportional, int separation);
     void view(double x, double y, double sx, double sy, double px, double py);
+    [[nodiscard]] std::array<double, 6> view_state() const noexcept {
+        return {view_x_, view_y_, view_sx_, view_sy_, port_x_, port_y_};
+    }
     std::array<double, 2> transform_point(double x, double y) const noexcept;
     [[nodiscard]] double view_scale_x() const noexcept { return view_sx_; }
     [[nodiscard]] double view_scale_y() const noexcept { return view_sy_; }
