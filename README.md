@@ -31,9 +31,14 @@ v17 is supported, but not every GameMaker feature is implemented yet. DELTARUNE 
 
 <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/king.png" alt="Deltarune King fight on Wii U via Cemu" width="240">
 
+### DELTARUNE Chapter 2 (Wii U / Cemu + GX2)
+
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/hothothot.png" alt="DELTARUNE Chapter 2" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/werewires.png" alt="DELTARUNE Chapter 2 Werewires" width="240">
+
 ### DELTARUNE Chapter 3 (Wii U / Cemu + GX2)
 
 <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/ralseinotreal.png" alt="Ralsei not real" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/ch3things.png" alt="DELTARUNE Chapter 3" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/tvtime.png" alt="IT'S TV TIME!" width="240">
+
 
 ## Platform Status
 
