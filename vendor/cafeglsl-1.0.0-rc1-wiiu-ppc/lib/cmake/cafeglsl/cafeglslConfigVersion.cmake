@@ -1,0 +1,17 @@
+# Version check for find_package(cafeglsl <ver>). Written by hand instead of with
+# write_basic_package_version_file() because meson's configure_file() produces it and
+# that does not run CMake.
+
+set(PACKAGE_VERSION "0.3.0")
+
+# Before 1.0, compatibility is limited to the same major/minor API version.
+string(REGEX MATCH "^[0-9]+[.][0-9]+" _cafeglsl_api_version "${PACKAGE_VERSION}")
+if(PACKAGE_VERSION VERSION_LESS PACKAGE_FIND_VERSION OR
+   NOT "${PACKAGE_FIND_VERSION_MAJOR}.${PACKAGE_FIND_VERSION_MINOR}" STREQUAL "${_cafeglsl_api_version}")
+  set(PACKAGE_VERSION_COMPATIBLE FALSE)
+else()
+  set(PACKAGE_VERSION_COMPATIBLE TRUE)
+  if(PACKAGE_VERSION VERSION_EQUAL PACKAGE_FIND_VERSION)
+    set(PACKAGE_VERSION_EXACT TRUE)
+  endif()
+endif()

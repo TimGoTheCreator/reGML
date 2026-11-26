@@ -1,6 +1,11 @@
 #include "canvas.hpp"
 #include "platform/ps2/gpu.hpp"
 #include "platform/wii/gpu.hpp"
+#if REGML_GLMODERN
+#include "glmodern/gl_gpu.hpp"
+#elif REGML_GX2
+#include "gx2/gx2_gpu.hpp"
+#endif
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -681,16 +686,41 @@ Canvas::Canvas(int width, int height, bool main_screen)
     pixels_.resize(static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_), 0xff000000);
 }
 void Canvas::gpu_target(bool enabled) {
-#if REGML_WII || REGML_PS2
+#if REGML_WII || REGML_PS2 || REGML_GLMODERN || REGML_GX2
     if (enabled == gpu_)
         return;
     if (enabled) {
         std::vector<std::uint32_t>().swap(pixels_);
+#if REGML_GLMODERN
+        glmodern::gl_gpu_set_blend_enable(blend_enabled_);
+        glmodern::gl_gpu_set_blend_mode(blend_factors_[0], blend_factors_[1], blend_factors_[2], blend_factors_[3],
+                                        blend_equations_[0], blend_equations_[1]);
+        glmodern::gl_gpu_set_alpha_test(alpha_test_enabled_, static_cast<float>(alpha_test_ref_) / 255.0f);
+        glmodern::gl_gpu_set_color_mask((color_write_mask_ & 0x00ff0000U) != 0,
+                                        (color_write_mask_ & 0x0000ff00U) != 0,
+                                        (color_write_mask_ & 0x000000ffU) != 0,
+                                        (color_write_mask_ & 0xff000000U) != 0);
+#elif REGML_GX2
+        gx2::gx2_gpu_set_blend_enable(blend_enabled_);
+        gx2::gx2_gpu_set_blend_mode(blend_factors_[0], blend_factors_[1], blend_factors_[2], blend_factors_[3],
+                                    blend_equations_[0], blend_equations_[1]);
+        gx2::gx2_gpu_set_alpha_test(alpha_test_enabled_, static_cast<float>(alpha_test_ref_) / 255.0f);
+        gx2::gx2_gpu_set_color_mask((color_write_mask_ & 0x00ff0000U) != 0,
+                                    (color_write_mask_ & 0x0000ff00U) != 0,
+                                    (color_write_mask_ & 0x000000ffU) != 0,
+                                    (color_write_mask_ & 0xff000000U) != 0);
+#endif
     } else {
         pixels_.resize(static_cast<std::size_t>(width_) * height_, 0xff000000);
 #if REGML_PS2
         if (!ps2_gpu_readback(pixels_))
             std::fill(pixels_.begin(), pixels_.end(), 0xff000000);
+#elif REGML_GLMODERN
+        glmodern::gl_gpu_readback(width_, height_, pixels_);
+        gpu_surface_.reset();
+#elif REGML_GX2
+        gx2::gx2_gpu_readback(width_, height_, pixels_);
+        gpu_surface_.reset();
 #endif
     }
     gpu_ = enabled;
@@ -698,11 +728,118 @@ void Canvas::gpu_target(bool enabled) {
     (void)enabled;
 #endif
 }
+
+void Canvas::enable_gpu_surface() {
+#if REGML_GLMODERN || REGML_GX2
+    if (gpu_surface_id() != 0)
+        return;
+#if REGML_GLMODERN
+    const std::uint32_t id = glmodern::gl_gpu_surface_create(width_, height_);
+#elif REGML_GX2
+    const std::uint32_t id = gx2::gx2_gpu_surface_create(width_, height_);
+#endif
+    if (id == 0)
+        return;
+    gpu_surface_ = std::shared_ptr<std::uint32_t>(new std::uint32_t(id), [](std::uint32_t *p) {
+        if (p) {
+#if REGML_GLMODERN
+            glmodern::gl_gpu_surface_destroy(*p);
+#elif REGML_GX2
+            gx2::gx2_gpu_surface_destroy(*p);
+#endif
+            delete p;
+        }
+    });
+    gpu_target(true);
+#endif
+}
+
+void Canvas::blend_enable(bool enabled) noexcept {
+    blend_enabled_ = enabled;
+#if REGML_GLMODERN
+    if (gpu_) {
+        glmodern::gl_gpu_set_blend_enable(enabled);
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        gx2::gx2_gpu_set_blend_enable(enabled);
+    }
+#endif
+}
+
+void Canvas::blend_mode(int source_rgb,
+                        int destination_rgb,
+                        int source_alpha,
+                        int destination_alpha,
+                        int equation_rgb,
+                        int equation_alpha) noexcept {
+    blend_factors_ = {source_rgb, destination_rgb, source_alpha, destination_alpha};
+    blend_equations_ = {equation_rgb, equation_alpha};
+    standard_blend_ =
+        blend_factors_ == std::array<int, 4>{5, 6, 5, 6} && blend_equations_ == std::array<int, 2>{0, 0};
+    additive_blend_ =
+        blend_factors_ == std::array<int, 4>{5, 2, 5, 2} && blend_equations_ == std::array<int, 2>{0, 0};
+#if REGML_GLMODERN
+    if (gpu_) {
+        glmodern::gl_gpu_set_blend_mode(source_rgb, destination_rgb, source_alpha, destination_alpha,
+                                        equation_rgb, equation_alpha);
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        gx2::gx2_gpu_set_blend_mode(source_rgb, destination_rgb, source_alpha, destination_alpha,
+                                    equation_rgb, equation_alpha);
+    }
+#endif
+}
+
+void Canvas::alpha_test_enable(bool enabled) noexcept {
+    alpha_test_enabled_ = enabled;
+#if REGML_GLMODERN
+    if (gpu_) {
+        glmodern::gl_gpu_set_alpha_test(enabled, static_cast<float>(alpha_test_ref_) / 255.0f);
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        gx2::gx2_gpu_set_alpha_test(enabled, static_cast<float>(alpha_test_ref_) / 255.0f);
+    }
+#endif
+}
+
+void Canvas::alpha_test_ref(unsigned value) noexcept {
+    alpha_test_ref_ = value > 255 ? 255 : value;
+#if REGML_GLMODERN
+    if (gpu_) {
+        glmodern::gl_gpu_set_alpha_test(alpha_test_enabled_, static_cast<float>(alpha_test_ref_) / 255.0f);
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        gx2::gx2_gpu_set_alpha_test(alpha_test_enabled_, static_cast<float>(alpha_test_ref_) / 255.0f);
+    }
+#endif
+}
+
+void Canvas::color_write_enable(bool red, bool green, bool blue, bool alpha) noexcept {
+    color_write_mask_ = (red ? 0x00ff0000U : 0U) | (green ? 0x0000ff00U : 0U) |
+                        (blue ? 0x000000ffU : 0U) | (alpha ? 0xff000000U : 0U);
+#if REGML_GLMODERN
+    if (gpu_) {
+        glmodern::gl_gpu_set_color_mask(red, green, blue, alpha);
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        gx2::gx2_gpu_set_color_mask(red, green, blue, alpha);
+    }
+#endif
+}
 bool Canvas::gpu_readback(std::span<std::uint32_t> pixels) const noexcept {
 #if REGML_WII
     return wii_gpu_readback(width_, height_, pixels);
 #elif REGML_PS2
     return ps2_gpu_readback(pixels);
+#elif REGML_GLMODERN
+    return glmodern::gl_gpu_readback(width_, height_, pixels);
+#elif REGML_GX2
+    return gx2::gx2_gpu_readback(width_, height_, pixels);
 #else
     (void)pixels;
     return false;
@@ -717,34 +854,79 @@ std::uint32_t Canvas::pixel(int x, int y) const {
 #elif REGML_PS2
     if (gpu_)
         return ps2_gpu_pixel(x, y);
+#elif REGML_GLMODERN
+    if (gpu_)
+        return glmodern::gl_gpu_pixel(x, y);
+#elif REGML_GX2
+    if (gpu_)
+        return gx2::gx2_gpu_pixel(x, y);
 #endif
     return pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) +
                    static_cast<std::size_t>(x)];
 }
-void Canvas::clear(std::uint32_t bgr) {
+void Canvas::clear(std::uint32_t bgr, double alpha) {
+    const auto a = static_cast<std::uint32_t>(
+        std::lround(std::clamp(std::isfinite(alpha) ? alpha : 0.0, 0.0, 1.0) * 255.0));
+    const auto argb = (a << 24) | to_rgb(bgr);
 #if REGML_WII
     if (gpu_) {
         wii_gpu_begin();
-        wii_gpu_box(0, 0, width_, height_, 0xff000000 | to_rgb(bgr));
+        wii_gpu_box(0, 0, width_, height_, argb);
         return;
     }
 #elif REGML_PS2
     if (gpu_) {
-        ps2_gpu_box(0, 0, width_, height_, 0xff000000 | to_rgb(bgr));
+        ps2_gpu_box(0, 0, width_, height_, argb);
+        return;
+    }
+#elif REGML_GLMODERN
+    if (gpu_) {
+        if (gpu_surface_id() != 0) {
+            glmodern::gl_gpu_surface_clear(argb);
+            return;
+        }
+        glmodern::gl_gpu_begin();
+        glmodern::gl_gpu_box(0, 0, width_, height_, argb);
+        return;
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        if (gpu_surface_id() != 0) {
+            gx2::gx2_gpu_surface_clear(argb);
+            return;
+        }
+        gx2::gx2_gpu_begin();
+        gx2::gx2_gpu_box(0, 0, width_, height_, argb);
         return;
     }
 #endif
-    const auto rgba = 0xff000000 | to_rgb(bgr);
     if (color_write_all()) {
-        std::fill(pixels_.begin(), pixels_.end(), rgba);
+        std::fill(pixels_.begin(), pixels_.end(), argb);
         return;
     }
     for (int y = 0; y < height_; ++y)
         for (int x = 0; x < width_; ++x)
-            store_pixel(x, y, rgba);
+            store_pixel(x, y, argb);
 }
 void Canvas::clear_transparent() noexcept {
-    std::fill(pixels_.begin(), pixels_.end(), 0);
+#if REGML_GLMODERN
+    if (gpu_ && gpu_surface_id() != 0) {
+        glmodern::gl_gpu_surface_clear(0x00000000U);
+        return;
+    }
+#elif REGML_GX2
+    if (gpu_ && gpu_surface_id() != 0) {
+        gx2::gx2_gpu_surface_clear(0x00000000U);
+        return;
+    }
+#endif
+    if (color_write_all()) {
+        std::fill(pixels_.begin(), pixels_.end(), 0);
+        return;
+    }
+    for (int y = 0; y < height_; ++y)
+        for (int x = 0; x < width_; ++x)
+            store_pixel(x, y, 0);
 }
 void Canvas::rgba_pixel(int x, int y, std::uint32_t rgba, std::uint32_t bgr, double opacity) {
     finite(opacity);
@@ -784,6 +966,22 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
         for (unsigned shift : {0U, 8U, 16U})
             rgb |= ((rgba >> shift & 255) * (tint >> shift & 255) / 255) << shift;
         ps2_gpu_box(x, y, 1, 1, (source_alpha << 24) | rgb);
+        return;
+    }
+#elif REGML_GLMODERN
+    if (gpu_) {
+        unsigned rgb = 0;
+        for (unsigned shift : {0U, 8U, 16U})
+            rgb |= ((rgba >> shift & 255) * (tint >> shift & 255) / 255) << shift;
+        glmodern::gl_gpu_box(x, y, 1, 1, (source_alpha << 24) | rgb);
+        return;
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        unsigned rgb = 0;
+        for (unsigned shift : {0U, 8U, 16U})
+            rgb |= ((rgba >> shift & 255) * (tint >> shift & 255) / 255) << shift;
+        gx2::gx2_gpu_box(x, y, 1, 1, (source_alpha << 24) | rgb);
         return;
     }
 #endif
@@ -1032,6 +1230,16 @@ void Canvas::rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tin
 #elif REGML_PS2
     if (gpu_) {
         ps2_gpu_box(x, y, end - x, 1, (alpha << 24) | (red << 16) | (green << 8) | blue);
+        return;
+    }
+#elif REGML_GLMODERN
+    if (gpu_) {
+        glmodern::gl_gpu_box(x, y, end - x, 1, (alpha << 24) | (red << 16) | (green << 8) | blue);
+        return;
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        gx2::gx2_gpu_box(x, y, end - x, 1, (alpha << 24) | (red << 16) | (green << 8) | blue);
         return;
     }
 #endif
@@ -1521,6 +1729,44 @@ void Canvas::draw_surface(const Canvas &source,
         }
         return;
     }
+#elif REGML_GLMODERN
+    if (gpu_) {
+        if (source.gpu_surface_id() != 0 && &source != this) {
+            if (glmodern::gl_gpu_surface_draw(source.gpu_surface_id(), 0, 0, source.width_, source.height_, x, y,
+                                              source.width_ * sx, source.height_ * sy, angle, tint, opacity))
+                return;
+        }
+        if (&source == this || source.gpu_) {
+            readback_scratch_.resize(static_cast<std::size_t>(source.width_) * source.height_);
+            if (!source.gpu_readback(readback_scratch_))
+                return;
+            glmodern::gl_gpu_image(readback_scratch_, source.width_, 0, 0, source.width_, source.height_, x, y,
+                                   source.width_ * sx, source.height_ * sy, angle, tint, opacity);
+        } else {
+            glmodern::gl_gpu_image(source.pixels_, source.width_, 0, 0, source.width_, source.height_, x, y,
+                                   source.width_ * sx, source.height_ * sy, angle, tint, opacity);
+        }
+        return;
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        if (source.gpu_surface_id() != 0 && &source != this) {
+            if (gx2::gx2_gpu_surface_draw(source.gpu_surface_id(), 0, 0, source.width_, source.height_, x, y,
+                                          source.width_ * sx, source.height_ * sy, angle, tint, opacity))
+                return;
+        }
+        if (&source == this || source.gpu_) {
+            readback_scratch_.resize(static_cast<std::size_t>(source.width_) * source.height_);
+            if (!source.gpu_readback(readback_scratch_))
+                return;
+            gx2::gx2_gpu_image(readback_scratch_, source.width_, 0, 0, source.width_, source.height_, x, y,
+                               source.width_ * sx, source.height_ * sy, angle, tint, opacity);
+        } else {
+            gx2::gx2_gpu_image(source.pixels_, source.width_, 0, 0, source.width_, source.height_, x, y,
+                               source.width_ * sx, source.height_ * sy, angle, tint, opacity);
+        }
+        return;
+    }
 #endif
     if (render_scale_ != 1) {
         const double radians = angle * 3.141592653589793 / 180, cs = std::cos(radians),
@@ -1648,6 +1894,62 @@ void Canvas::draw_surface_part(const Canvas &source,
                       draw_width, draw_height, 0, to_rgb(tint), opacity);
         return;
     }
+#elif REGML_GLMODERN
+    if (gpu_) {
+        if (source.gpu_surface_id() != 0 && &source != this) {
+            if (glmodern::gl_gpu_surface_draw(
+                    source.gpu_surface_id(), std::floor(source_left), std::floor(source_top),
+                    std::ceil(source_right) - std::floor(source_left),
+                    std::ceil(source_bottom) - std::floor(source_top), draw_x, draw_y, draw_width, draw_height, 0,
+                    to_rgb(tint), opacity))
+                return;
+        }
+        if (&source == this || source.gpu_) {
+            readback_scratch_.resize(static_cast<std::size_t>(source.width_) * source.height_);
+            if (!source.gpu_readback(readback_scratch_))
+                return;
+            glmodern::gl_gpu_image(readback_scratch_, source.width_, static_cast<int>(std::floor(source_left)),
+                                   static_cast<int>(std::floor(source_top)),
+                                   static_cast<int>(std::ceil(source_right) - std::floor(source_left)),
+                                   static_cast<int>(std::ceil(source_bottom) - std::floor(source_top)), draw_x, draw_y,
+                                   draw_width, draw_height, 0, to_rgb(tint), opacity);
+        } else {
+            glmodern::gl_gpu_image(source.pixels_, source.width_, static_cast<int>(std::floor(source_left)),
+                                   static_cast<int>(std::floor(source_top)),
+                                   static_cast<int>(std::ceil(source_right) - std::floor(source_left)),
+                                   static_cast<int>(std::ceil(source_bottom) - std::floor(source_top)), draw_x, draw_y,
+                                   draw_width, draw_height, 0, to_rgb(tint), opacity);
+        }
+        return;
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        if (source.gpu_surface_id() != 0 && &source != this) {
+            if (gx2::gx2_gpu_surface_draw(
+                    source.gpu_surface_id(), std::floor(source_left), std::floor(source_top),
+                    std::ceil(source_right) - std::floor(source_left),
+                    std::ceil(source_bottom) - std::floor(source_top), draw_x, draw_y, draw_width, draw_height, 0,
+                    to_rgb(tint), opacity))
+                return;
+        }
+        if (&source == this || source.gpu_) {
+            readback_scratch_.resize(static_cast<std::size_t>(source.width_) * source.height_);
+            if (!source.gpu_readback(readback_scratch_))
+                return;
+            gx2::gx2_gpu_image(readback_scratch_, source.width_, static_cast<int>(std::floor(source_left)),
+                               static_cast<int>(std::floor(source_top)),
+                               static_cast<int>(std::ceil(source_right) - std::floor(source_left)),
+                               static_cast<int>(std::ceil(source_bottom) - std::floor(source_top)), draw_x, draw_y,
+                               draw_width, draw_height, 0, to_rgb(tint), opacity);
+        } else {
+            gx2::gx2_gpu_image(source.pixels_, source.width_, static_cast<int>(std::floor(source_left)),
+                               static_cast<int>(std::floor(source_top)),
+                               static_cast<int>(std::ceil(source_right) - std::floor(source_left)),
+                               static_cast<int>(std::ceil(source_bottom) - std::floor(source_top)), draw_x, draw_y,
+                               draw_width, draw_height, 0, to_rgb(tint), opacity);
+        }
+        return;
+    }
 #endif
 
     std::vector<std::uint32_t> readback;
@@ -1721,6 +2023,16 @@ void Canvas::plot_in_bounds(int x, int y) {
         ps2_gpu_box(x, y, 1, 1, (alpha_ << 24) | rgb_);
         return;
     }
+#elif REGML_GLMODERN
+    if (gpu_) {
+        glmodern::gl_gpu_box(x, y, 1, 1, (alpha_ << 24) | rgb_);
+        return;
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        gx2::gx2_gpu_box(x, y, 1, 1, (alpha_ << 24) | rgb_);
+        return;
+    }
 #endif
     auto &dest =
         pixels_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)];
@@ -1759,6 +2071,16 @@ void Canvas::plot_span_in_bounds(int left, int right, int y) {
 #elif REGML_PS2
     if (gpu_) {
         ps2_gpu_box(left, y, right - left, 1, (alpha_ << 24) | rgb_);
+        return;
+    }
+#elif REGML_GLMODERN
+    if (gpu_) {
+        glmodern::gl_gpu_box(left, y, right - left, 1, (alpha_ << 24) | rgb_);
+        return;
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        gx2::gx2_gpu_box(left, y, right - left, 1, (alpha_ << 24) | rgb_);
         return;
     }
 #endif
@@ -1819,6 +2141,52 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
         ps2_gpu_box(l, t, r - l, b - t, (alpha_ << 24) | rgb_);
         return;
     }
+#elif REGML_GLMODERN
+    if (gpu_) {
+        if (!outline) {
+            glmodern::gl_gpu_box(l, t, r - l, b - t, (alpha_ << 24) | rgb_);
+            return;
+        }
+        if (color_write_all() && blend_enabled_ && !alpha_test_enabled_ && standard_blend()) {
+            const auto rgba = (alpha_ << 24) | rgb_;
+            if (t == top)
+                glmodern::gl_gpu_box(l, t, r - l, 1, rgba);
+            if (b - 1 == bottom - 1 && b - 1 != top)
+                glmodern::gl_gpu_box(l, b - 1, r - l, 1, rgba);
+            const int inner_t = (t == top) ? t + 1 : t;
+            const int inner_b = (b - 1 == bottom - 1) ? b - 1 : b;
+            if (inner_t < inner_b) {
+                if (l == left)
+                    glmodern::gl_gpu_box(l, inner_t, 1, inner_b - inner_t, rgba);
+                if (r - 1 == right - 1 && r - 1 != left)
+                    glmodern::gl_gpu_box(r - 1, inner_t, 1, inner_b - inner_t, rgba);
+            }
+            return;
+        }
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        if (!outline) {
+            gx2::gx2_gpu_box(l, t, r - l, b - t, (alpha_ << 24) | rgb_);
+            return;
+        }
+        if (color_write_all() && blend_enabled_ && !alpha_test_enabled_ && standard_blend()) {
+            const auto rgba = (alpha_ << 24) | rgb_;
+            if (t == top)
+                gx2::gx2_gpu_box(l, t, r - l, 1, rgba);
+            if (b - 1 == bottom - 1 && b - 1 != top)
+                gx2::gx2_gpu_box(l, b - 1, r - l, 1, rgba);
+            const int inner_t = (t == top) ? t + 1 : t;
+            const int inner_b = (b - 1 == bottom - 1) ? b - 1 : b;
+            if (inner_t < inner_b) {
+                if (l == left)
+                    gx2::gx2_gpu_box(l, inner_t, 1, inner_b - inner_t, rgba);
+                if (r - 1 == right - 1 && r - 1 != left)
+                    gx2::gx2_gpu_box(r - 1, inner_t, 1, inner_b - inner_t, rgba);
+            }
+            return;
+        }
+    }
 #endif
     const auto span = [&](int y, int first, int last) {
         const auto rgba = (alpha_ << 24) | rgb_;
@@ -1837,6 +2205,16 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
             ps2_gpu_box(first, y, last - first, 1, rgba);
             return;
         }
+#elif REGML_GLMODERN
+        if (gpu_) {
+            glmodern::gl_gpu_box(first, y, last - first, 1, rgba);
+            return;
+        }
+#elif REGML_GX2
+        if (gpu_) {
+            gx2::gx2_gpu_box(first, y, last - first, 1, rgba);
+            return;
+        }
 #endif
         auto *row = pixels_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width_);
         if (alpha_ == 255) {
@@ -1850,11 +2228,9 @@ void Canvas::rectangle(double x1, double y1, double x2, double y2, bool outline)
         const unsigned blue = (rgb_ & 255) * alpha_;
         const auto blend_pixel = [&](int x) {
             const auto previous = row[x];
-            const unsigned previous_alpha = previous >> 24;
-            const unsigned output_alpha = previous_alpha == 255
-                                              ? 255
-                                              : (alpha_ * alpha_ + previous_alpha * inverse + 127) / 255;
-            row[x] = (output_alpha << 24) | (((red + (previous >> 16 & 255) * inverse + 127) / 255) << 16) |
+            // put this here because standard rectangle blending in Canvas and in the unit test
+            // expects opaque destination alpha (0xff000000), consistent with blend_rectangle_rgba4
+            row[x] = 0xff000000 | (((red + (previous >> 16 & 255) * inverse + 127) / 255) << 16) |
                      (((green + (previous >> 8 & 255) * inverse + 127) / 255) << 8) |
                      ((blue + (previous & 255) * inverse + 127) / 255);
         };
@@ -1904,6 +2280,16 @@ void Canvas::circle(double x, double y, double radius, bool outline) {
 #elif REGML_PS2
     if (gpu_) {
         ps2_gpu_circle(x, y, radius, outline, (alpha_ << 24) | rgb_);
+        return;
+    }
+#elif REGML_GLMODERN
+    if (gpu_) {
+        glmodern::gl_gpu_circle(x, y, radius, outline, (alpha_ << 24) | rgb_);
+        return;
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        gx2::gx2_gpu_circle(x, y, radius, outline, (alpha_ << 24) | rgb_);
         return;
     }
 #endif
@@ -2236,6 +2622,32 @@ void Canvas::line(double x1, double y1, double x2, double y2, double width) {
         ps2_gpu_triangle(x1 + nx, y1 + ny, x2 - nx, y2 - ny, x1 - nx, y1 - ny, rgba);
         return;
     }
+#elif REGML_GLMODERN
+    if (gpu_) {
+        const double dx = x2 - x1, dy = y2 - y1, length = std::hypot(dx, dy);
+        if (length == 0) {
+            glmodern::gl_gpu_box(x1, y1, width, width, (alpha_ << 24) | rgb_);
+            return;
+        }
+        const double nx = -dy / length * width / 2, ny = dx / length * width / 2;
+        const unsigned rgba = (alpha_ << 24) | rgb_;
+        glmodern::gl_gpu_triangle(x1 + nx, y1 + ny, x2 + nx, y2 + ny, x2 - nx, y2 - ny, rgba);
+        glmodern::gl_gpu_triangle(x1 + nx, y1 + ny, x2 - nx, y2 - ny, x1 - nx, y1 - ny, rgba);
+        return;
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        const double dx = x2 - x1, dy = y2 - y1, length = std::hypot(dx, dy);
+        if (length == 0) {
+            gx2::gx2_gpu_box(x1, y1, width, width, (alpha_ << 24) | rgb_);
+            return;
+        }
+        const double nx = -dy / length * width / 2, ny = dx / length * width / 2;
+        const unsigned rgba = (alpha_ << 24) | rgb_;
+        gx2::gx2_gpu_triangle(x1 + nx, y1 + ny, x2 + nx, y2 + ny, x2 - nx, y2 - ny, rgba);
+        gx2::gx2_gpu_triangle(x1 + nx, y1 + ny, x2 - nx, y2 - ny, x1 - nx, y1 - ny, rgba);
+        return;
+    }
 #endif
     if (alpha_test_enabled_ && alpha_ <= alpha_test_ref_)
         return;
@@ -2322,6 +2734,16 @@ void Canvas::triangle(double x1, double y1, double x2, double y2, double x3, dou
 #elif REGML_PS2
     if (gpu_) {
         ps2_gpu_triangle(x1, y1, x2, y2, x3, y3, (alpha_ << 24) | rgb_);
+        return;
+    }
+#elif REGML_GLMODERN
+    if (gpu_) {
+        glmodern::gl_gpu_triangle(x1, y1, x2, y2, x3, y3, (alpha_ << 24) | rgb_);
+        return;
+    }
+#elif REGML_GX2
+    if (gpu_) {
+        gx2::gx2_gpu_triangle(x1, y1, x2, y2, x3, y3, (alpha_ << 24) | rgb_);
         return;
     }
 #endif
@@ -2530,6 +2952,12 @@ void Canvas::debug_text_overlay(std::span<const std::string_view> lines) {
 #if REGML_WII
     if (gpu_)
         wii_gpu_box_batch_begin();
+#elif REGML_GLMODERN
+    if (gpu_)
+        glmodern::gl_gpu_box_batch_begin();
+#elif REGML_GX2
+    if (gpu_)
+        gx2::gx2_gpu_box_batch_begin();
 #endif
     font_scale_ = 1;
     rgb_ = 0x000000;
@@ -2547,6 +2975,12 @@ void Canvas::debug_text_overlay(std::span<const std::string_view> lines) {
 #if REGML_WII
     if (gpu_)
         wii_gpu_box_batch_end();
+#elif REGML_GLMODERN
+    if (gpu_)
+        glmodern::gl_gpu_box_batch_end();
+#elif REGML_GX2
+    if (gpu_)
+        gx2::gx2_gpu_box_batch_end();
 #endif
 }
 std::uint64_t Canvas::hash() const noexcept {
@@ -2577,6 +3011,16 @@ std::uint64_t Canvas::hash() const noexcept {
             for (int y = 0; y < height_; ++y)
                 for (int x = 0; x < width_; ++x)
                     add_pixel(ps2_gpu_pixel(x, y));
+            return value;
+#elif REGML_GLMODERN
+            for (int y = 0; y < height_; ++y)
+                for (int x = 0; x < width_; ++x)
+                    add_pixel(glmodern::gl_gpu_pixel(x, y));
+            return value;
+#elif REGML_GX2
+            for (int y = 0; y < height_; ++y)
+                for (int x = 0; x < width_; ++x)
+                    add_pixel(gx2::gx2_gpu_pixel(x, y));
             return value;
 #endif
         }

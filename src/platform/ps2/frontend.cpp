@@ -49,6 +49,16 @@ constexpr int kDisplayHeight = 448;
 constexpr std::size_t kTexturePixels = static_cast<std::size_t>(kTextureWidth) * kTextureHeight;
 constexpr std::size_t kTextureBytes = kTexturePixels * sizeof(std::uint16_t);
 constexpr std::size_t kMappedKeys[] = {37, 38, 39, 40, 'Z', 'X', 'C', 13};
+constexpr std::array<std::uint16_t, 16> kGamepadButtonMasks = {
+    PAD_CROSS,  PAD_CIRCLE, PAD_SQUARE, PAD_TRIANGLE,
+    PAD_L1,     PAD_R1,     PAD_L2,     PAD_R2,
+    PAD_SELECT, PAD_START,  PAD_L3,     PAD_R3,
+    PAD_UP,     PAD_DOWN,   PAD_LEFT,   PAD_RIGHT,
+};
+
+double normalize_ps2_axis(unsigned char value) noexcept {
+    return std::clamp((static_cast<double>(value) - 127.5) / 127.5, -1.0, 1.0);
+}
 
 std::uint16_t rgba5551(std::uint32_t argb) noexcept {
     const auto red = (argb >> 19) & 0x1f;
@@ -142,6 +152,22 @@ bool Ps2Frontend::poll(double *speed_multiplier) {
         pressed_[key] = held_[key] && !previous_[key];
         previous_[key] = held_[key];
     }
+
+    if (!connected) {
+        gamepad_ = GamepadState{};
+    } else {
+        gamepad_.connected = true;
+        for (std::size_t i = 0; i < kGamepadButtonMasks.size(); ++i) {
+            const bool is_down = down(kGamepadButtonMasks[i]);
+            if (is_down && !gamepad_.buttons[i])
+                gamepad_.pressed[i] = true;
+            gamepad_.buttons[i] = is_down;
+        }
+        gamepad_.axes[0] = normalize_ps2_axis(state.ljoy_h);
+        gamepad_.axes[1] = normalize_ps2_axis(state.ljoy_v);
+        gamepad_.axes[2] = normalize_ps2_axis(state.rjoy_h);
+        gamepad_.axes[3] = normalize_ps2_axis(state.rjoy_v);
+    }
     return !(down(PAD_L3) && down(PAD_R3));
 }
 
@@ -173,6 +199,8 @@ void Ps2Frontend::tick_game(GameSession &session,
         gpu_initialized_ = true;
     }
     ps2_gpu_begin();
+    session.set_gamepad_state(gamepad_);
+    gamepad_.pressed.fill(false);
     const auto pressed = take_pressed();
     session.tick(replay ? *replay : held_,
                  replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed);

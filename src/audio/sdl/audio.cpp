@@ -645,6 +645,7 @@ std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::vector<std::uint8_t> own
                 throw Error(ErrorKind::unsupported, "resampled audio exceeds limit");
             return clip;
         }
+        source.reserve(static_cast<std::size_t>(total) * static_cast<std::size_t>(channels));
         int section = 0;
         float **pcm = nullptr;
         while (true) {
@@ -685,8 +686,9 @@ std::unique_ptr<GameAudio::Clip> GameAudio::decode(std::vector<std::uint8_t> own
             (bits != 8 && bits != 16))
             throw Error(ErrorKind::unsupported, "unsupported WAV sample profile");
         const BinaryView samples(pcm);
-        for (std::size_t at = 0; at + static_cast<std::size_t>(bits / 8) <= samples.size();
-             at += static_cast<std::size_t>(bits / 8))
+        const auto sample_bytes = static_cast<std::size_t>(bits / 8);
+        source.reserve(samples.size() / sample_bytes);
+        for (std::size_t at = 0; at + sample_bytes <= samples.size(); at += sample_bytes)
             source.push_back(bits == 16 ? static_cast<float>(samples.i16(at)) / 32768.0f
                                         : (static_cast<float>(samples.u8(at)) - 128) / 128);
     }

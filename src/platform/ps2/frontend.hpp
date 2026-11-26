@@ -39,6 +39,7 @@ class Ps2Frontend {
 #endif
     void *texture_memory_ = nullptr;
     KeyboardState held_{}, pressed_{}, previous_{};
+    GamepadState gamepad_{};
     alignas(64) unsigned char pad_buffer_[256]{};
 };
 } // namespace regml

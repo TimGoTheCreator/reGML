@@ -17,6 +17,9 @@
 #if REGML_WIIU
 #include "platform/wiiu/paths.hpp"
 #endif
+#if REGML_GX2
+#include "gx2/gx2_gpu.hpp"
+#endif
 #if REGML_WII
 #include "platform/wii/host.hpp"
 #endif
@@ -892,7 +895,10 @@ struct GameSession::Impl {
     std::vector<DelayedCall> delayed_calls;
     std::unordered_map<int, Canvas> surfaces;
     int next_surface = 1, surface_target = 0;
+    int app_surface_id = 0;
+    bool application_surface_draw_enabled = true;
     std::vector<int> surface_target_stack;
+    std::vector<std::array<double, 6>> surface_view_stack;
     VideoPlayer video_player;
     int video_surface = -1;
     bool video_start_event_sent = false;
@@ -997,6 +1003,22 @@ struct GameSession::Impl {
         const double scale_x = std::isfinite(width) && width > 0 ? canvas.logical_width() / width : 1.0;
         const double scale_y = std::isfinite(height) && height > 0 ? canvas.logical_height() / height : 1.0;
         assets.view(0, 0, scale_x, scale_y, 0, 0);
+    }
+    void bind_gx2_target(Canvas &target) {
+#if REGML_GX2
+        if (!canvas.gpu_target())
+            return;
+        if (&target == &canvas) {
+            gx2::gx2_gpu_surface_bind(0, canvas.logical_width(), canvas.logical_height());
+            return;
+        }
+        if (target.gpu_surface_id() == 0)
+            target.enable_gpu_surface();
+        if (target.gpu_surface_id() != 0)
+            gx2::gx2_gpu_surface_bind(target.gpu_surface_id(), target.width(), target.height());
+#else
+        (void)target;
+#endif
     }
     explicit Impl(const std::filesystem::path &path,
                   std::optional<std::uint32_t> seed,
@@ -1349,10 +1371,11 @@ struct GameSession::Impl {
         const auto found = surface_texture_ids.find(surface);
         if (found == surface_texture_ids.end())
             return;
-        texture_surfaces.erase(found->second);
+        const int handle = found->second;
+        texture_surfaces.erase(handle);
         surface_texture_ids.erase(found);
         std::erase_if(shader_texture_stages,
-                      [&](const auto &stage) { return stage.second == found->second; });
+                      [&](const auto &stage) { return stage.second == handle; });
     }
     std::uint32_t sample_shader_stage(int sampler, double u, double v) {
         const auto slot = std::find(shoujo_sampler_uniforms.begin(), shoujo_sampler_uniforms.end(), sampler);
@@ -3224,8 +3247,76 @@ struct GameSession::Impl {
                     return std::int32_t{38};
                 if (name == "vk_right")
                     return std::int32_t{39};
+                if (name == "vk_nokey") return std::int32_t{0};
+                if (name == "vk_anykey") return std::int32_t{1};
+                if (name == "vk_backspace") return std::int32_t{8};
+                if (name == "vk_tab") return std::int32_t{9};
+                if (name == "vk_shift") return std::int32_t{16};
+                if (name == "vk_control") return std::int32_t{17};
+                if (name == "vk_alt") return std::int32_t{18};
+                if (name == "vk_pause") return std::int32_t{19};
+                if (name == "vk_pageup") return std::int32_t{33};
+                if (name == "vk_pagedown") return std::int32_t{34};
+                if (name == "vk_end") return std::int32_t{35};
+                if (name == "vk_home") return std::int32_t{36};
                 if (name == "vk_down")
                     return std::int32_t{40};
+                if (name == "vk_printscreen") return std::int32_t{44};
+                if (name == "vk_insert") return std::int32_t{45};
+                if (name == "vk_delete") return std::int32_t{46};
+                if (name == "vk_numpad0") return std::int32_t{96};
+                if (name == "vk_numpad1") return std::int32_t{97};
+                if (name == "vk_numpad2") return std::int32_t{98};
+                if (name == "vk_numpad3") return std::int32_t{99};
+                if (name == "vk_numpad4") return std::int32_t{100};
+                if (name == "vk_numpad5") return std::int32_t{101};
+                if (name == "vk_numpad6") return std::int32_t{102};
+                if (name == "vk_numpad7") return std::int32_t{103};
+                if (name == "vk_numpad8") return std::int32_t{104};
+                if (name == "vk_numpad9") return std::int32_t{105};
+                if (name == "vk_multiply") return std::int32_t{106};
+                if (name == "vk_add") return std::int32_t{107};
+                if (name == "vk_subtract") return std::int32_t{109};
+                if (name == "vk_decimal") return std::int32_t{110};
+                if (name == "vk_divide") return std::int32_t{111};
+                if (name == "vk_f1") return std::int32_t{112};
+                if (name == "vk_f2") return std::int32_t{113};
+                if (name == "vk_f3") return std::int32_t{114};
+                if (name == "vk_f4") return std::int32_t{115};
+                if (name == "vk_f5") return std::int32_t{116};
+                if (name == "vk_f6") return std::int32_t{117};
+                if (name == "vk_f7") return std::int32_t{118};
+                if (name == "vk_f8") return std::int32_t{119};
+                if (name == "vk_f9") return std::int32_t{120};
+                if (name == "vk_f10") return std::int32_t{121};
+                if (name == "vk_f11") return std::int32_t{122};
+                if (name == "vk_f12") return std::int32_t{123};
+                if (name == "vk_lshift") return std::int32_t{160};
+                if (name == "vk_rshift") return std::int32_t{161};
+                if (name == "vk_lcontrol") return std::int32_t{162};
+                if (name == "vk_rcontrol") return std::int32_t{163};
+                if (name == "vk_lalt") return std::int32_t{164};
+                if (name == "vk_ralt") return std::int32_t{165};
+                if (name == "gp_face1") return std::int32_t{32769};
+                if (name == "gp_face2") return std::int32_t{32770};
+                if (name == "gp_face3") return std::int32_t{32771};
+                if (name == "gp_face4") return std::int32_t{32772};
+                if (name == "gp_shoulderl") return std::int32_t{32773};
+                if (name == "gp_shoulderr") return std::int32_t{32774};
+                if (name == "gp_shoulderlb") return std::int32_t{32775};
+                if (name == "gp_shoulderrb") return std::int32_t{32776};
+                if (name == "gp_select") return std::int32_t{32777};
+                if (name == "gp_start") return std::int32_t{32778};
+                if (name == "gp_stickl") return std::int32_t{32779};
+                if (name == "gp_stickr") return std::int32_t{32780};
+                if (name == "gp_padu") return std::int32_t{32781};
+                if (name == "gp_padd") return std::int32_t{32782};
+                if (name == "gp_padl") return std::int32_t{32783};
+                if (name == "gp_padr") return std::int32_t{32784};
+                if (name == "gp_axislh") return std::int32_t{32785};
+                if (name == "gp_axislv") return std::int32_t{32786};
+                if (name == "gp_axisrh") return std::int32_t{32787};
+                if (name == "gp_axisrv") return std::int32_t{32788};
                 if (name == "mb_left")
                     return std::int32_t{1};
                 if (name == "c_white")
@@ -4119,9 +4210,7 @@ struct GameSession::Impl {
                         push(a * b);
                         break;
                     case Opcode::div:
-                        if (b == 0)
-                            throw Error(ErrorKind::vm, "division by zero");
-                        push(a / b);
+                        push(b == 0 ? 0.0 : a / b);
                         break;
                     case Opcode::rem:
                         if (b == 0)
@@ -9765,7 +9854,8 @@ struct GameSession::Impl {
                 return std::int32_t{id};
             }
             if (name == "surface_resize") {
-                const int id = static_cast<int>(n(0));
+                const int raw_id = static_cast<int>(n(0));
+                const int id = (raw_id == 0 && app_surface_id != 0) ? app_surface_id : raw_id;
                 const int width = static_cast<int>(std::clamp(n(1), 1.0, 8192.0));
                 const int height = static_cast<int>(std::clamp(n(2), 1.0, 8192.0));
                 if (static_cast<std::uint64_t>(width) * height > 64ULL * 1024 * 1024)
@@ -9797,7 +9887,8 @@ struct GameSession::Impl {
             if (name == "surface_get_texture")
                 return std::int32_t{surface_texture_handle(static_cast<int>(n(0)))};
             if (name == "surface_get_width" || name == "surface_get_height") {
-                const int id = static_cast<int>(n(0));
+                const int raw_id = static_cast<int>(n(0));
+                const int id = (raw_id == 0 && app_surface_id != 0) ? app_surface_id : raw_id;
                 if (id == 0)
                     return std::int32_t{name == "surface_get_width" ? this->canvas.logical_width()
                                                                     : this->canvas.logical_height()};
@@ -9807,11 +9898,16 @@ struct GameSession::Impl {
                 return std::int32_t{name == "surface_get_width" ? surface.width() : surface.height()};
             }
             if (name == "surface_set_target") {
-                const int id = static_cast<int>(n(0));
+                const int raw_id = static_cast<int>(n(0));
+                const int id = (raw_id == 0 && app_surface_id != 0) ? app_surface_id : raw_id;
                 if (id != 0 && !surfaces.contains(id))
                     return false;
                 surface_target_stack.push_back(surface_target);
+                surface_view_stack.push_back(assets.view_state());
                 surface_target = id;
+                if (id != 0 && id != app_surface_id)
+                    assets.view(0, 0, 1, 1, 0, 0);
+                bind_gx2_target(current_canvas());
                 configure_shader(current_canvas());
                 return true;
             }
@@ -9819,6 +9915,12 @@ struct GameSession::Impl {
                 surface_target = surface_target_stack.empty() ? 0 : surface_target_stack.back();
                 if (!surface_target_stack.empty())
                     surface_target_stack.pop_back();
+                if (!surface_view_stack.empty()) {
+                    const auto v = surface_view_stack.back();
+                    surface_view_stack.pop_back();
+                    assets.view(v[0], v[1], v[2], v[3], v[4], v[5]);
+                }
+                bind_gx2_target(current_canvas());
                 configure_shader(current_canvas());
                 return std::monostate{};
             }
@@ -9832,11 +9934,13 @@ struct GameSession::Impl {
                 std::erase(surface_target_stack, id);
                 forget_surface_texture(id);
                 surfaces.erase(id);
+                bind_gx2_target(current_canvas());
                 configure_shader(current_canvas());
                 return std::monostate{};
             }
             if (name == "draw_surface_part_ext") {
-                const int id = static_cast<int>(n(0));
+                const int raw_id = static_cast<int>(n(0));
+                const int id = (raw_id == 0 && app_surface_id != 0) ? app_surface_id : raw_id;
                 const Canvas *source = nullptr;
                 if (id == 0)
                     source = &this->canvas;
@@ -9859,7 +9963,8 @@ struct GameSession::Impl {
                 return std::monostate{};
             }
             if (name == "draw_surface" || name == "draw_surface_ext") {
-                const int id = static_cast<int>(n(0));
+                const int raw_id = static_cast<int>(n(0));
+                const int id = (raw_id == 0 && app_surface_id != 0) ? app_surface_id : raw_id;
                 const Canvas *source = nullptr;
                 if (id == 0)
                     source = &this->canvas;
@@ -10215,7 +10320,7 @@ struct GameSession::Impl {
                 // the active frame also handles draw_clear calls made in scripts.
                 if (event_stack.empty() || event_stack.back().type != event_draw)
                     return std::monostate{};
-                current_canvas().clear(static_cast<unsigned>(n(0)));
+                current_canvas().clear(static_cast<unsigned>(n(0)), n(1));
                 return std::monostate{};
             }
             if (name == "draw_clear") {
@@ -10247,16 +10352,21 @@ struct GameSession::Impl {
                 const double tile_height = info.height * std::fabs(sy);
                 if (!std::isfinite(tile_width + tile_height + x + y) || tile_width <= 0 || tile_height <= 0)
                     return std::monostate{};
-                const double width = current_canvas().logical_width(),
-                             height = current_canvas().logical_height();
-                const double start_x = x + std::floor(-x / tile_width) * tile_width;
-                const double start_y = y + std::floor(-y / tile_height) * tile_height;
-                const double columns = std::ceil((width - start_x) / tile_width);
-                const double rows = std::ceil((height - start_y) / tile_height);
+                const auto v = assets.view_state();
+                const double min_x = v[0];
+                const double min_y = v[1];
+                const double max_x =
+                    min_x + (v[2] > 0 ? current_canvas().logical_width() / v[2] : current_canvas().logical_width());
+                const double max_y =
+                    min_y + (v[3] > 0 ? current_canvas().logical_height() / v[3] : current_canvas().logical_height());
+                const double start_x = x + std::floor((min_x - x) / tile_width) * tile_width;
+                const double start_y = y + std::floor((min_y - y) / tile_height) * tile_height;
+                const double columns = std::ceil((max_x - start_x) / tile_width);
+                const double rows = std::ceil((max_y - start_y) / tile_height);
                 if (columns > 0 && rows > 0 && columns * rows > 1'000'000)
                     throw Error(ErrorKind::vm, "tiled sprite draw limit exceeded");
-                for (double tile_y = start_y; tile_y < height; tile_y += tile_height)
-                    for (double tile_x = start_x; tile_x < width; tile_x += tile_width)
+                for (double tile_y = start_y; tile_y < max_y; tile_y += tile_height)
+                    for (double tile_x = start_x; tile_x < max_x; tile_x += tile_width)
                         assets.draw_sprite(current_canvas(), sprite, frame_index, tile_x, tile_y, sx, sy, 0,
                                            static_cast<unsigned>(n(6)), n(7));
                 return std::monostate{};
@@ -11679,9 +11789,14 @@ struct GameSession::Impl {
                 const auto key = static_cast<int>(n(0));
                 if (key < 0 || key >= 256)
                     return false;
-                return name == "keyboard_check_pressed"    ? pressed[static_cast<std::size_t>(key)]
-                       : name == "keyboard_check_released" ? released[static_cast<std::size_t>(key)]
-                                                           : held[static_cast<std::size_t>(key)];
+                const auto &state = name == "keyboard_check_pressed"    ? pressed
+                                    : name == "keyboard_check_released" ? released
+                                                                        : held;
+                if (key == 0 || key == 1) {
+                    const bool any = std::any_of(state.begin() + 2, state.end(), [](bool v) { return v; });
+                    return key == 1 ? any : !any;
+                }
+                return state[static_cast<std::size_t>(key)];
             }
             if (name == "mouse_check_button" || name == "mouse_check_button_pressed" ||
                 name == "mouse_check_button_released" || name == "device_mouse_check_button" ||
@@ -11710,8 +11825,36 @@ struct GameSession::Impl {
             }
             if (name == "gamepad_get_axis_deadzone")
                 return n(0) == 0 ? gamepad_axis_deadzone : 0.0;
-            if (name == "gamepad_get_description")
-                return std::string(gamepad.connected && n(0) == 0 ? "PlayStation 4 controller" : "");
+            if (name == "gamepad_get_description") {
+                if (!gamepad.connected || n(0) != 0)
+                    return std::string();
+#if REGML_PS4
+                return std::string("PlayStation 4 controller");
+#elif REGML_WIIU
+                return std::string("Wii U GamePad");
+#else
+                return std::string("Xbox 360 Controller (XInput STANDARD GAMEPAD)");
+#endif
+            }
+            if (name == "gamepad_set_button_threshold" || name == "gamepad_get_button_threshold") {
+                if (name == "gamepad_set_button_threshold")
+                    return std::monostate{};
+                return 0.5;
+            }
+            if (name == "gamepad_hat_count")
+                return gamepad.connected && n(0) == 0 ? std::int32_t{1} : std::int32_t{0};
+            if (name == "gamepad_hat_value") {
+                if (!gamepad.connected || n(0) != 0 || n(1) != 0)
+                    return std::int32_t{0};
+                std::int32_t mask = 0;
+                if (gamepad.buttons[12]) mask |= 1;
+                if (gamepad.buttons[15]) mask |= 2;
+                if (gamepad.buttons[13]) mask |= 4;
+                if (gamepad.buttons[14]) mask |= 8;
+                return mask;
+            }
+            if (name == "gamepad_set_vibration" || name == "gamepad_set_colour" || name == "gamepad_set_color")
+                return std::monostate{};
             if (name == "gamepad_get_guid")
                 return std::string{"none"};
             if (name == "gamepad_test_mapping")
@@ -11730,6 +11873,8 @@ struct GameSession::Impl {
                                                                  : gamepad.buttons[button];
             }
             if (name == "gamepad_button_value") {
+                if (args.size() < 2)
+                    return 0.0;
                 const int raw_button = number(args[1]);
                 const int button = raw_button >= 32769 ? raw_button - 32769 : raw_button;
                 return gamepad.connected && number(args[0]) == 0 && button >= 0 && button < 16
@@ -12004,7 +12149,7 @@ struct GameSession::Impl {
             if (name == "switch_controller_support_get_selected_id")
                 return std::int32_t{-1};
             if (name == "switch_language_get_desired_language")
-                return std::int32_t{0};
+                return std::string("en");
             if (name == "switch_save_data_mount")
                 return true;
             if (name == "switch_accounts_open_user" || name == "switch_accounts_select_account" ||
@@ -12248,9 +12393,40 @@ struct GameSession::Impl {
                 }
                 return std::monostate{};
             }
-            if (name == "texture_set_interpolation" || name == "application_surface_enable" ||
-                name == "application_surface_draw_enable")
+            if (name == "texture_set_interpolation" || name == "application_surface_enable")
                 return std::monostate{};
+            if (name == "application_surface_draw_enable") {
+                application_surface_draw_enabled = args.empty() || n(0) != 0;
+                if (!application_surface_draw_enabled && app_surface_id == 0) {
+                    app_surface_id = next_surface++;
+                    auto [it, inserted] = surfaces.emplace(app_surface_id,
+                                                           Canvas(canvas.logical_width(), canvas.logical_height()));
+                    (void)inserted;
+                    it->second.clear_transparent();
+                    configure_blend(it->second);
+                    it->second.color_write_enable(color_write_enable[0], color_write_enable[1],
+                                                  color_write_enable[2], color_write_enable[3]);
+                    it->second.blend_enable(blend_enabled);
+                    it->second.alpha_test_enable(alpha_test_enabled);
+                    it->second.alpha_test_ref(alpha_test_reference);
+#if REGML_GX2
+                    if (canvas.gpu_target() && canvas.logical_width() * 9 < canvas.logical_height() * 16) {
+                        engine["window_width"] = 1280.0;
+                        engine["window_height"] = 720.0;
+                        canvas = Canvas(1280, 720, true);
+                        canvas.gpu_target(true);
+                        configure_blend(canvas);
+                        canvas.color_write_enable(color_write_enable[0], color_write_enable[1],
+                                                  color_write_enable[2], color_write_enable[3]);
+                        canvas.blend_enable(blend_enabled);
+                        canvas.alpha_test_enable(alpha_test_enabled);
+                        canvas.alpha_test_ref(alpha_test_reference);
+                        gx2::gx2_gpu_set_viewport(1280, 720);
+                    }
+#endif
+                }
+                return std::monostate{};
+            }
             if (name == "show_debug_message") {
                 std::cout << "Guest: " << text(0) << '\n';
                 return std::monostate{};
@@ -12314,11 +12490,26 @@ struct GameSession::Impl {
                 }
             }
             previous_held = held;
+            std::int32_t active_key = 0;
+            for (std::size_t k = 2; k < 256; ++k) {
+                if (pressed[k]) {
+                    active_key = static_cast<std::int32_t>(k);
+                    engine["keyboard_lastkey"] = active_key;
+                    break;
+                }
+                if (active_key == 0 && held[k])
+                    active_key = static_cast<std::int32_t>(k);
+            }
+            engine["keyboard_key"] = active_key;
             for (std::size_t k = 0; k < gamepad.buttons.size(); ++k) {
                 gamepad.pressed[k] = gamepad.pressed[k] || (gamepad.buttons[k] && !gamepad_previous[k]);
                 gamepad_released[k] = !gamepad.buttons[k] && gamepad_previous[k];
             }
             gamepad_previous = gamepad.buttons;
+            struct GamepadPressedGuard {
+                GamepadState &gp;
+                ~GamepadPressedGuard() { gp.pressed.fill(false); }
+            } gamepad_pressed_guard{gamepad};
             event_budget = 0;
             allocation_stage = "audio recording events";
             service_audio_recorders();
@@ -12717,7 +12908,9 @@ struct GameSession::Impl {
                 draw_start = ProfileClock::now();
                 last_logic_ms = std::chrono::duration<double, std::milli>(draw_start - profile_start).count();
             }
-            canvas.clear(rooms.at(static_cast<std::size_t>(current_room)).color);
+            const auto clear_color = rooms.at(static_cast<std::size_t>(current_room)).color;
+            bind_gx2_target(canvas);
+            canvas.clear(clear_color);
             if (number(engine.at("view_enabled")) != 0 && number(engine.at("view_visible[0]")) != 0) {
                 const auto w = value_number(engine.at("view_wview[0]")),
                            h = value_number(engine.at("view_hview[0]"));
@@ -12757,6 +12950,11 @@ struct GameSession::Impl {
             for (const auto &i : snapshot)
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
                     event(i, event_draw, event_draw_pre);
+            if (app_surface_id != 0 && surfaces.contains(app_surface_id)) {
+                surface_target = app_surface_id;
+                bind_gx2_target(surfaces.at(app_surface_id));
+                surfaces.at(app_surface_id).clear(clear_color);
+            }
             allocation_stage = "draw begin events";
             for (const auto &i : snapshot)
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
@@ -12772,9 +12970,12 @@ struct GameSession::Impl {
                 draw_phase_start = now;
             }
             allocation_stage = "background and tile drawing";
+            auto &bg_canvas = (surface_target != 0 && surfaces.contains(surface_target))
+                                  ? surfaces.at(surface_target)
+                                  : canvas;
             for (const auto &b : room.backgrounds)
                 if (!b.foreground)
-                    assets.draw_background(canvas, b.id, b.x, b.y);
+                    assets.draw_background(bg_canvas, b.id, b.x, b.y);
             auto draw_tile = [&](const Tile &t) {
                 if (!t.visible)
                     return;
@@ -12804,11 +13005,11 @@ struct GameSession::Impl {
                     source_y = source->y;
                 }
                 if (t.sprite_tile) {
-                    assets.draw_sprite_part(canvas, t.id, 0, source_x, source_y, t.width, t.height,
+                    assets.draw_sprite_part(bg_canvas, t.id, 0, source_x, source_y, t.width, t.height,
                                             t.x + ox + layer_x, t.y + oy + layer_y, t.sx, t.sy,
                                             t.color & 0xffffffU, static_cast<double>(t.color >> 24) / 255.0);
                 } else {
-                    assets.draw_tile(canvas, t.id, source_x, source_y, t.width, t.height, t.x + ox + layer_x,
+                    assets.draw_tile(bg_canvas, t.id, source_x, source_y, t.width, t.height, t.x + ox + layer_x,
                                      t.y + oy + layer_y, t.sx, t.sy, t.color, t.transform);
                 }
             };
@@ -12912,7 +13113,7 @@ struct GameSession::Impl {
                     const double alpha = static_cast<double>(background->color >> 24) / 255.0;
                     for (int row = 0; row < rows && row * columns < 4096; ++row)
                         for (int column = 0; column < columns && row * columns + column < 4096; ++column)
-                            assets.draw_sprite(canvas, background->sprite, background->frame,
+                            assets.draw_sprite(bg_canvas, background->sprite, background->frame,
                                                x + column * stride_x, y + row * stride_y, sx, sy, 0, tint,
                                                alpha);
                     const double frame_count = static_cast<double>(sprite.frames.size());
@@ -12939,7 +13140,7 @@ struct GameSession::Impl {
                 if (!sprite_entry || !assets.sprite_exists(sprite_entry->sprite))
                     return;
                 auto &sprite = *sprite_entry;
-                assets.draw_sprite(canvas, sprite.sprite, sprite.frame, sprite.x + ox, sprite.y + oy,
+                assets.draw_sprite(bg_canvas, sprite.sprite, sprite.frame, sprite.x + ox, sprite.y + oy,
                                    sprite.sx, sprite.sy, sprite.rotation, sprite.color & 0xffffffU,
                                    static_cast<double>(sprite.color >> 24) / 255.0);
                 const double frame_count = static_cast<double>(assets.sprite(sprite.sprite).frames.size());
@@ -13096,7 +13297,7 @@ struct GameSession::Impl {
                     const bool apply_layer_shader = draw_layer && draw_layer->shader >= 0;
                     if (apply_layer_shader) {
                         active_shader = draw_layer->shader;
-                        configure_shader(canvas);
+                        configure_shader(bg_canvas);
                     }
                     if (draw_layer)
                         run_layer_script(draw_layer->begin_script, i);
@@ -13108,7 +13309,7 @@ struct GameSession::Impl {
                     else {
                         const auto sprite = number(i->vars.at("sprite_index"));
                         if (sprite >= 0)
-                            assets.draw_sprite(canvas, sprite, value_number(i->vars.at("image_index")),
+                            assets.draw_sprite(bg_canvas, sprite, value_number(i->vars.at("image_index")),
                                                value_number(i->vars.at("x")) +
                                                    (draw_layer ? draw_layer->x - draw_layer->origin_x : 0),
                                                value_number(i->vars.at("y")) +
@@ -13145,7 +13346,7 @@ struct GameSession::Impl {
                         run_layer_script(draw_layer->end_script, i);
                     if (apply_layer_shader) {
                         active_shader = previous_shader;
-                        configure_shader(canvas);
+                        configure_shader(bg_canvas);
                     }
                     if (profile_tick_timing) {
                         const double elapsed =
@@ -13163,7 +13364,7 @@ struct GameSession::Impl {
                 profile_layer_visual(layer_visuals[layer_visual++]);
             for (const auto &b : room.backgrounds)
                 if (b.foreground)
-                    assets.draw_background(canvas, b.id, b.x, b.y);
+                    assets.draw_background(bg_canvas, b.id, b.x, b.y);
             if (profile_tick_timing)
                 last_draw_depth_visual_ms +=
                     std::chrono::duration<double, std::milli>(ProfileClock::now() - trailing_visual_start)
@@ -13245,6 +13446,13 @@ struct GameSession::Impl {
             for (const auto &i : snapshot)
                 if (i->alive && !i->deactivated && number(i->vars.at("visible")))
                     event(i, event_draw, event_draw_end);
+            if (app_surface_id != 0) {
+                surface_target = 0;
+                surface_target_stack.clear();
+                bind_gx2_target(canvas);
+                if (application_surface_draw_enabled && surfaces.contains(app_surface_id))
+                    canvas.draw_surface(surfaces.at(app_surface_id), 0, 0, 1, 1, 0, 0xffffff, 1.0);
+            }
             assets.view(0, 0, 1, 1, 0, 0);
             allocation_stage = "post-draw events";
             for (const auto &i : snapshot)
@@ -13334,13 +13542,31 @@ void GameSession::tick(const KeyboardState &h, const KeyboardState &p) {
         const auto seed = impl_->fixed_seed;
         const auto save_directory = impl_->save_dir;
         const auto profile = impl_->profile_tick_timing;
-        auto next = std::make_unique<Impl>(path, seed, save_directory, impl_->gamepad);
+        const auto gamepad = impl_->gamepad;
+#if REGML_GX2
+        gx2::gx2_gpu_flush();
+        gx2::gx2_gpu_presented();
+#endif
+        std::unique_ptr<Impl> old;
+        {
+#if !REGML_PS2
+            std::lock_guard lock(audio_mutex_);
+#endif
+            old = std::move(impl_);
+        }
+        old.reset();
+        auto next = std::make_unique<Impl>(path, seed, save_directory, gamepad);
         next->profile_tick_timing = profile;
         next->canvas.profile_text(profile);
-#if !REGML_PS2
-        std::lock_guard lock(audio_mutex_);
+#if REGML_GX2
+        next->canvas.gpu_target(true);
 #endif
-        impl_ = std::move(next);
+        {
+#if !REGML_PS2
+            std::lock_guard lock(audio_mutex_);
+#endif
+            impl_ = std::move(next);
+        }
     }
 }
 void GameSession::profile_tick(bool enabled) noexcept {
@@ -13434,6 +13660,8 @@ void GameSession::mix_audio(std::span<float> output, double playback_rate) noexc
 #if !REGML_PS2
     std::lock_guard lock(audio_mutex_);
 #endif
+    if (!impl_)
+        return;
     impl_->audio.mix(output, playback_rate);
     impl_->video_player.mix_audio(output, playback_rate);
     const auto master_gain = static_cast<float>(impl_->audio_master_gain.load(std::memory_order_relaxed));

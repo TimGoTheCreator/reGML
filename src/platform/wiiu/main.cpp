@@ -16,24 +16,33 @@ int main(int argc, char **argv) {
         ~SdCardUnmount() { WHBUnmountSdCard(); }
     } sd_card_unmount;
 
-    const std::filesystem::path package = argc > 1 ? argv[1] : "/vol/external01/reGML/data.win";
+    const std::filesystem::path package = [argc, argv]() -> std::filesystem::path {
+        for (int i = 1; i < argc; ++i) {
+            const std::string_view arg = argv[i];
+            if (!arg.starts_with("-"))
+                return arg;
+        }
+        return "/vol/external01/reGML/data.win";
+    }();
     regml::PlayOptions options;
     options.save_directory = regml::wiiu_save_directory();
     const auto game_directory = package.parent_path();
-    options.debug_overlay = std::filesystem::exists(game_directory / regml::debug_overlay_marker);
-    if (std::filesystem::exists(game_directory / "regml-input.txt"))
-        options.input_script = game_directory / "regml-input.txt";
-    if (std::ifstream start_room_file(game_directory / "regml-start-room.txt"); start_room_file) {
-        std::getline(start_room_file, options.start_room);
-        if (!options.start_room.empty() && options.start_room.back() == '\r')
-            options.start_room.pop_back();
-        if (!options.start_room.empty())
-            options.save_directory = game_directory / "regml-start-room-saves";
+    if (std::filesystem::exists(game_directory / "regml-gx2gl.enabled") ||
+        std::filesystem::exists(game_directory / "regml-opengl.enabled"))
+        options.opengl = true;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg == "--gl" || arg == "--opengl" || arg == "--gx2gl")
+            options.opengl = true;
+        else if (arg == "--software")
+            options.opengl = false;
+        else if (arg == "--trace")
+            options.trace_log = game_directory / "regml-trace.log";
+        else if (arg == "--profile")
+            options.profile_log = game_directory / "regml-profile.csv";
+        else if (arg == "--debug-overlay")
+            options.debug_overlay = true;
     }
-    if (std::filesystem::exists(game_directory / "regml-trace.enabled"))
-        options.trace_log = game_directory / "regml-trace.log";
-    if (std::filesystem::exists(game_directory / "regml-profile.enabled"))
-        options.profile_log = game_directory / "regml-profile.csv";
     try {
         const auto report = regml::play_game(package, options);
         std::cout << "reGML " << regml::version << " Wii U\nFrames: " << report.frames

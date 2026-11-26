@@ -11,6 +11,7 @@ struct PlayOptions {
     bool uncapped = false;
     bool speed_controls = false;
     bool debug_overlay = false;
+    bool opengl = false;
     double speed_multiplier = 1.0;
     std::filesystem::path screenshot;
     std::filesystem::path input_script;

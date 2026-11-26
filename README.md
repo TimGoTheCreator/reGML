@@ -17,6 +17,49 @@ Package inspection reads v14-v17 layouts.
 Decoding & disasm cover v15-v17.
 v17 is supported, but not every GameMaker feature is implemented yet. DELTARUNE has been tried.
 
+## Table of Contents
+
+- [Screenshots](#screenshots)
+- [Platform Status](#platform-status)
+- [Build](#build)
+  - [CMake](#cmake)
+  - [Web / GX.games](#web--gxgames)
+- [PlayStation 4](#playstation-4)
+- [Run](#run)
+- [Wii U](#wii-u)
+  - [SD card](#sd-card)
+  - [Cemu](#cemu)
+- [Wii](#wii)
+- [Tools](#tools)
+- [Tests](#tests)
+- [Contributing](#contributing)
+
+## Screenshots
+
+### Undertale (Desktop / SDL2 + Software Renderer)
+
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/regml.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/asriel.png" width="240">
+
+### Undertale (Wii U / Cemu + Software Renderer)
+
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/wiiu.png" width="240">
+
+### DELTARUNE Chapter 1 (Wii U / Cemu + Software Renderer)
+
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/king.png" width="240">
+
+### DELTARUNE Chapter 2 (Wii U / Cemu + GX2)
+
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/hothothot.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/werewires.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/freesamples.png" width="240"> 
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/wonderfulplace.png" width="240">
+
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/thiscafe.png" width="240"><img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/fahahaha.png" width="240"><img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/seamblabbing.png" width="240"><img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/fahahaha.png" width="240">
+
+
+### DELTARUNE Chapter 3 (Wii U / Cemu + GX2)
+
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/ralseinotreal.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/ch3things.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/tvtime.png" width="240">
+
 ## Platform Status
 
 | Platform | Status | Details |
@@ -29,14 +72,6 @@ v17 is supported, but not every GameMaker feature is implemented yet. DELTARUNE 
 | **Nintendo Wii** | Glooby | Uses libogc and direct GX render / Sometimes doesn't even boot up |
 | **PlayStation 2** | Glooby | Sometimes doesn't even boot up / Compiles, but currently runs out of memory |
 
-## Screenshots
-
-| Desktop | Wii U (Cemu) |
-| --- | --- |
-| <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/regml.png" alt="Undertale on desktop" width="420"> | <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/wiiu.png" alt="Undertale on Wii U via Cemu" width="420"> |
-| **Desktop (Asriel)** | **Deltarune (Cemu / Wii U)** |
-| <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/asriel.png" alt="Asriel on desktop" width="420"> | <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/king.png" alt="Deltarune King fight on Wii U via Cemu" width="420"> |
-
 ## Build
 
 Requires C++20, CMake 3.22+, libpng, zlib, libvorbisfile, and SDL2.
@@ -47,6 +82,7 @@ Requires C++20, CMake 3.22+, libpng, zlib, libvorbisfile, and SDL2.
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ctest --test-dir build --output-on-failure -C Release
+
 ```
 
 For a headless build, add `-DREGML_SDL2=OFF`.
@@ -56,11 +92,12 @@ As well, the optional miniaudio can be tried:
 ```sh
 cmake -S . -B build/miniaudio -DREGML_MINIAUDIO=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build/miniaudio --config Release
+
 ```
 
 (It only replaces the output device. Decoding and mixing still use audio/SDL. Wii, Wii U, and PS2 builds do not support this.)
 
-OpenAL can also be selected for desktop audio output: Install OpenAL-Soft, then configure with `-DREGML_OPENAL=ON`. 
+OpenAL can also be selected for desktop audio output: Install OpenAL-Soft, then configure with `-DREGML_OPENAL=ON`.
 The decode/mix story is the same as SDL.
 
 ### Web / GX.games
@@ -70,6 +107,7 @@ Build with the Emscripten SDK installed and activated:
 ```sh
 emcmake cmake -S . -B build/web -DREGML_WEB=ON -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build/web
+
 ```
 
 Once the build finishes, upload index.html, index.js, & index.wasm from build/web as a web game on GX.games. When it opens, pick the folder that has data.win and the game's external files. (Saves are in the browser!!!)
@@ -84,6 +122,7 @@ cmake -S . -B build/ps4 -G Ninja `
   -DREGML_PS4=ON -DREGML_SDL2=ON `
   -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build/ps4
+
 ```
 
 That creates build/ps4/regml.elf, build/ps4/regml.oelf, and build/ps4/eboot.bin. The game pkg loads from /app0/data.win and saves go under /data/reGML/saves. This build only makes the executable payload. However, it doesn't create a .pkg installer.
@@ -92,12 +131,14 @@ That creates build/ps4/regml.elf, build/ps4/regml.oelf, and build/ps4/eboot.bin.
 
 ```sh
 ./build/regml run path/to/data.win
+
 ```
 
 On Windows with the Visual Studio CMake generator:
 
 ```powershell
 .\build\Release\regml.exe run 'C:\path\to\data.win'
+
 ```
 
 Keep external files in the same folder as `data.win`.
@@ -107,6 +148,7 @@ For speed:
 
 ```powershell
 .\build\Release\regml.exe run 'C:\path\to\data.win' --speed 4x
+
 ```
 
 `--speed` accepts values from `0.01` to `1000`, with an optional `x` suffix.
@@ -123,6 +165,7 @@ pacman -S --needed cmake ninja wiiu-dev wiiu-sdl2 ppc-libpng ppc-libvorbis
 
 /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake -S . -B build-wiiu -DCMAKE_BUILD_TYPE=Release -DREGML_WIIU=ON -DBUILD_TESTING=OFF
 cmake --build build-wiiu --config Release
+
 ```
 
 Outputs: `build-wiiu/regml.rpx` and `build-wiiu/regml.wuhb`
@@ -131,8 +174,8 @@ Outputs: `build-wiiu/regml.rpx` and `build-wiiu/regml.wuhb`
 
 Put `data.win` and external audio files in `sd:/reGML/`.
 
-- Aroma: copy `regml.wuhb` to `sd:/wiiu/apps/reGML/` & launch with Homebrew on Menu.
-- Tiramisu: copy `regml.rpx` to `sd:/wiiu/apps/reGML/` & launch with the Homebrew Launcher.
+* Aroma: copy `regml.wuhb` to `sd:/wiiu/apps/reGML/` & launch with Homebrew on Menu.
+* Tiramisu: copy `regml.rpx` to `sd:/wiiu/apps/reGML/` & launch with the Homebrew Launcher.
 
 Saves: `sd:/wiiu/apps/reGML/saves/`
 
@@ -153,14 +196,14 @@ Was tested with Cemu v2.6.
 | X / Y | C |
 | Start | Enter |
 
-The Trace logs and input scripts: [docs/wiiu.md](docs/wiiu.md)
+The Trace logs and input scripts: [docs/wiiu.md](https://www.google.com/search?q=docs/wiiu.md)
 
 ## Wii
 
 The Wii build uses libogc for video, input, & audio, with direct GX render. The VM is shared with desktop and Wii U. SDL2 isn't linked:
 Wii code is in `src/platform/wii/`.
 
-[GX renderer](docs/wii-gx.md) ? [Optional 240p builds](docs/240p.md)
+[GX renderer](https://www.google.com/search?q=docs/wii-gx.md) ? [Optional 240p builds](https://www.google.com/search?q=docs/240p.md)
 
 Install devkitPro and run these in its MSYS2 terminal:
 
@@ -170,6 +213,7 @@ pacman -S --needed cmake ninja wii-dev ppc-libpng ppc-libvorbis ppc-zlib
 /opt/devkitpro/portlibs/wii/bin/powerpc-eabi-cmake -G Ninja -S . -B build/wii \
   -DCMAKE_BUILD_TYPE=Release -DREGML_WII=ON -DBUILD_TESTING=OFF
 cmake --build build/wii --config Release
+
 ```
 
 Outputs: `build/wii/regml.dol`.
@@ -185,6 +229,7 @@ Wii hardware and Dolphin have not been tested. Rendering still uses the software
 .\build\Release\regml.exe inspect 'C:\path\to\data.win' --code --strings
 .\build\Release\regml.exe audit 'C:\path\to\data.win'
 .\build\Release\regml.exe disasm 'C:\path\to\data.win' 0 --linked
+
 ```
 
 ## Tests
@@ -193,6 +238,7 @@ Undertale regression checks:
 
 ```powershell
 .\tools\test-undertale.ps1 -DataFile 'C:\path\to\data.win'
+
 ```
 
 Audio decoding, mixing, and collision mask checks:
@@ -201,6 +247,7 @@ Audio decoding, mixing, and collision mask checks:
 cmake -S . -B build/audio-test -DREGML_UNDERTALE_DATA='C:\path\to\data.win'
 cmake --build build/audio-test --config Release
 ctest --test-dir build/audio-test --output-on-failure -C Release
+
 ```
 
 Audio tests do not check playback through a physical output device.

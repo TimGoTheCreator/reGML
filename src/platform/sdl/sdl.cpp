@@ -21,6 +21,17 @@
 #include <orbis/Pad.h>
 #include <orbis/UserService.h>
 #endif
+#if REGML_GLMODERN
+#include "glmodern/gl_gpu.hpp"
+#include "glmodern/gl_core.hpp"
+#endif
+#if REGML_GX2
+#include "gx2/gx2_gpu.hpp"
+#endif
+#if REGML_WIIU
+#include <whb/proc.h>
+#include <whb/gfx.h>
+#endif
 #include "error.hpp"
 #include "game.hpp"
 #include "lookup.hpp"
@@ -30,6 +41,7 @@
 #include <cmath>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -202,6 +214,10 @@ struct SdlLifetime {
         SDL_SetMainReady();
 #if REGML_WII
         sdl_ok(SDL_Init(SDL_INIT_TIMER), "SDL timer initialization");
+#elif REGML_WIIU
+        // On Wii U, GX2GL uses WHBGfx for display buffers.
+        // SDL_INIT_VIDEO in wiiu-sdl2 would initialize its own GX2 buffers and conflict with WHBGfx.
+        sdl_ok(SDL_Init(SDL_INIT_EVENTS | SDL_INIT_TIMER), "SDL initialization");
 #else
         sdl_ok(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_TIMER), "SDL initialization");
 #endif
@@ -223,7 +239,32 @@ struct TextureDelete {
 int gml_key(SDL_Keycode key) {
     if (key >= SDLK_F1 && key <= SDLK_F12)
         return 112 + static_cast<int>(key - SDLK_F1);
+    if (key >= SDLK_KP_1 && key <= SDLK_KP_9)
+        return 97 + static_cast<int>(key - SDLK_KP_1);
     switch (key) {
+    case SDLK_BACKSPACE:
+        return 8;
+    case SDLK_TAB:
+        return 9;
+    case SDLK_RETURN:
+    case SDLK_KP_ENTER:
+        return 13;
+    case SDLK_PAUSE:
+        return 19;
+    case SDLK_CAPSLOCK:
+        return 20;
+    case SDLK_ESCAPE:
+        return 27;
+    case SDLK_SPACE:
+        return 32;
+    case SDLK_PAGEUP:
+        return 33;
+    case SDLK_PAGEDOWN:
+        return 34;
+    case SDLK_END:
+        return 35;
+    case SDLK_HOME:
+        return 36;
     case SDLK_LEFT:
         return 37;
     case SDLK_UP:
@@ -232,6 +273,58 @@ int gml_key(SDL_Keycode key) {
         return 39;
     case SDLK_DOWN:
         return 40;
+    case SDLK_PRINTSCREEN:
+        return 44;
+    case SDLK_INSERT:
+        return 45;
+    case SDLK_DELETE:
+        return 46;
+    case SDLK_KP_0:
+        return 96;
+    case SDLK_KP_MULTIPLY:
+        return 106;
+    case SDLK_KP_PLUS:
+        return 107;
+    case SDLK_KP_MINUS:
+        return 109;
+    case SDLK_KP_PERIOD:
+        return 110;
+    case SDLK_KP_DIVIDE:
+        return 111;
+    case SDLK_LSHIFT:
+        return 160;
+    case SDLK_RSHIFT:
+        return 161;
+    case SDLK_LCTRL:
+        return 162;
+    case SDLK_RCTRL:
+        return 163;
+    case SDLK_LALT:
+        return 164;
+    case SDLK_RALT:
+        return 165;
+    case SDLK_SEMICOLON:
+        return 186;
+    case SDLK_EQUALS:
+        return 187;
+    case SDLK_COMMA:
+        return 188;
+    case SDLK_MINUS:
+        return 189;
+    case SDLK_PERIOD:
+        return 190;
+    case SDLK_SLASH:
+        return 191;
+    case SDLK_BACKQUOTE:
+        return 192;
+    case SDLK_LEFTBRACKET:
+        return 219;
+    case SDLK_BACKSLASH:
+        return 220;
+    case SDLK_RIGHTBRACKET:
+        return 221;
+    case SDLK_QUOTE:
+        return 222;
     default:
         if (key >= SDLK_a && key <= SDLK_z)
             return static_cast<int>(key - SDLK_a + 'A');
@@ -240,42 +333,105 @@ int gml_key(SDL_Keycode key) {
 }
 class VideoWindow {
   public:
-    explicit VideoWindow(bool hidden, bool escape_quits = true, bool speed_controls = false)
+    explicit VideoWindow(bool hidden, bool escape_quits = true, bool speed_controls = false, bool opengl = false)
         : escape_quits_(escape_quits), speed_controls_(speed_controls) {
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+#if !REGML_WIIU
 #if REGML_WII
-        const auto flags =
+        auto flags =
             static_cast<Uint32>(SDL_WINDOW_FULLSCREEN | (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN));
         constexpr int window_width = 640, window_height = 480;
 #else
-        const auto flags = static_cast<Uint32>(SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
-                                               (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN));
+        auto flags = static_cast<Uint32>(SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
+                                         (hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN));
         constexpr int window_width = 640, window_height = 480;
+#endif
+#if REGML_GLMODERN
+        if (opengl) {
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+            SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+            SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+            SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+            SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+            SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+            flags |= SDL_WINDOW_OPENGL;
+        }
+#else
+        (void)opengl;
 #endif
         window_.reset(SDL_CreateWindow(escape_quits ? "reGML - VM Arcade" : "reGML - Game (experimental)",
                                        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, window_width,
                                        window_height, flags));
+        if (!window_ && (flags & SDL_WINDOW_OPENGL)) {
+            flags &= ~static_cast<Uint32>(SDL_WINDOW_OPENGL);
+            window_.reset(SDL_CreateWindow(escape_quits ? "reGML - VM Arcade" : "reGML - Game (experimental)",
+                                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, window_width,
+                                           window_height, flags));
+        }
         if (!window_)
             throw Error(ErrorKind::io, std::string("window creation: ") + SDL_GetError());
-        // Sync the software-composited game frame to the display. Without this, the window
-        // can present while the monitor is scanning out, making moving scenes visibly tear.
-        renderer_.reset(
-            SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC));
-        if (!renderer_)
-            renderer_.reset(SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_ACCELERATED));
-        if (!renderer_)
+#if REGML_GLMODERN
+        if (opengl) {
+            gl_context_ = SDL_GL_CreateContext(window_.get());
+            if (gl_context_) {
+                if (SDL_GL_MakeCurrent(window_.get(), gl_context_) == 0 &&
+                    regml::glmodern::load_gl_core_3_3(SDL_GL_GetProcAddress)) {
+                    int drawable_w = window_width, drawable_h = window_height;
+                    SDL_GL_GetDrawableSize(window_.get(), &drawable_w, &drawable_h);
+                    glViewport(0, 0, drawable_w, drawable_h);
+                    regml::glmodern::gl_gpu_set_viewport(640, 480);
+                    regml::glmodern::gl_gpu_begin();
+                    use_opengl_ = true;
+                    std::cout << "OpenGL Renderer initialized successfully." << std::endl;
+                } else {
+                    SDL_GL_DeleteContext(gl_context_);
+                    gl_context_ = nullptr;
+                }
+            }
+        }
+#endif
+#else // REGML_WIIU
+        if (opengl) {
+#if REGML_GX2
+            WHBProcInit();
+            regml::gx2::gx2_gpu_set_viewport(640, 480);
+            use_opengl_ = true;
+            std::cout << "Wii U GX2 Renderer initialized successfully." << std::endl;
+#endif
+        }
+        if (!use_opengl_) {
+            SDL_InitSubSystem(SDL_INIT_VIDEO);
+            constexpr int window_width = 640, window_height = 480;
+            window_.reset(SDL_CreateWindow("reGML - Wii U", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                           window_width, window_height, SDL_WINDOW_FULLSCREEN));
+            if (!window_)
+                throw Error(ErrorKind::io, std::string("window creation: ") + SDL_GetError());
+        }
+#endif
+        if (!use_opengl_) {
             renderer_.reset(
-                SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC));
-        if (!renderer_)
-            renderer_.reset(SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_SOFTWARE));
-        if (!renderer_)
-            throw Error(ErrorKind::io, std::string("renderer creation: ") + SDL_GetError());
-        sdl_ok(SDL_RenderSetLogicalSize(renderer_.get(), 640, 480), "logical resolution");
-        texture_.reset(SDL_CreateTexture(renderer_.get(), SDL_PIXELFORMAT_ARGB8888,
-                                         SDL_TEXTUREACCESS_STREAMING, render_width, render_height));
-        if (!texture_)
-            throw Error(ErrorKind::io, std::string("framebuffer texture: ") + SDL_GetError());
-        sdl_ok(SDL_SetTextureBlendMode(texture_.get(), SDL_BLENDMODE_NONE), "texture blend mode");
+                SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC));
+            if (!renderer_)
+                renderer_.reset(SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_ACCELERATED));
+            if (!renderer_)
+                renderer_.reset(
+                    SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC));
+            if (!renderer_)
+                renderer_.reset(SDL_CreateRenderer(window_.get(), -1, SDL_RENDERER_SOFTWARE));
+            if (!renderer_)
+                throw Error(ErrorKind::io, std::string("renderer creation: ") + SDL_GetError());
+            SDL_RendererInfo rinfo{};
+            if (SDL_GetRendererInfo(renderer_.get(), &rinfo) == 0)
+                std::cout << "SDL Renderer: " << (rinfo.name ? rinfo.name : "unknown") << std::endl;
+            sdl_ok(SDL_RenderSetLogicalSize(renderer_.get(), 640, 480), "logical resolution");
+            texture_.reset(SDL_CreateTexture(renderer_.get(), SDL_PIXELFORMAT_ARGB8888,
+                                             SDL_TEXTUREACCESS_STREAMING, render_width, render_height));
+            if (!texture_)
+                throw Error(ErrorKind::io, std::string("framebuffer texture: ") + SDL_GetError());
+            sdl_ok(SDL_SetTextureBlendMode(texture_.get(), SDL_BLENDMODE_NONE), "texture blend mode");
+        }
 #if REGML_PS4
         OrbisUserServiceInitializeParams params{};
         params.priority = ORBIS_KERNEL_PRIO_FIFO_LOWEST;
@@ -286,14 +442,25 @@ class VideoWindow {
             poll_ps4_pad();
         }
 #else
-        if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) >= 0) {
+        if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) >= 0) {
             controller_subsystem_ = true;
         }
         for (int i = 0; i < SDL_NumJoysticks(); ++i) {
             if (controller_subsystem_ && SDL_IsGameController(i)) {
                 controller_ = SDL_GameControllerOpen(i);
-                if (controller_)
+                if (controller_) {
+                    gamepad_.connected = true;
                     break;
+                }
+            }
+        }
+        if (!controller_ && controller_subsystem_) {
+            for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+                joystick_ = SDL_JoystickOpen(i);
+                if (joystick_) {
+                    gamepad_.connected = true;
+                    break;
+                }
             }
         }
 #endif
@@ -301,14 +468,26 @@ class VideoWindow {
     ~VideoWindow() {
         if (controller_)
             SDL_GameControllerClose(controller_);
+        if (joystick_)
+            SDL_JoystickClose(joystick_);
 #if REGML_PS4
         if (pad_ >= 0)
             scePadClose(pad_);
 #endif
         if (controller_subsystem_)
-            SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
+            SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK);
+#if !REGML_WIIU
+        if (gl_context_)
+            SDL_GL_DeleteContext(gl_context_);
+#endif
     }
+    [[nodiscard]] bool is_opengl() const noexcept { return use_opengl_; }
     bool poll(double *speed_multiplier = nullptr) {
+#if REGML_WIIU
+        if (!WHBProcIsRunning()) {
+            return false;
+        }
+#endif
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT)
@@ -321,9 +500,11 @@ class VideoWindow {
                     *speed_multiplier =
                         std::clamp(*speed_multiplier * (event.key.keysym.sym == SDLK_LEFTBRACKET ? 0.5 : 2.0),
                                    0.01, 1000.0);
-                    std::ostringstream title;
-                    title << "reGML - Game (" << std::setprecision(3) << *speed_multiplier << "x)";
-                    SDL_SetWindowTitle(window_.get(), title.str().c_str());
+                    if (window_) {
+                        std::ostringstream title;
+                        title << "reGML - Game (" << std::setprecision(3) << *speed_multiplier << "x)";
+                        SDL_SetWindowTitle(window_.get(), title.str().c_str());
+                    }
                     continue;
                 }
             }
@@ -340,15 +521,36 @@ class VideoWindow {
                 joystick_hat_pressed_.fill(false);
                 joystick_axes_held_.fill(false);
                 joystick_axes_pressed_.fill(false);
+                gamepad_.buttons.fill(false);
+                gamepad_.pressed.fill(false);
+                gamepad_.axes.fill(0.0);
             }
             if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
+                const bool down = event.type == SDL_KEYDOWN;
+                const bool detect_press = !event.key.repeat;
                 const auto key = gml_key(event.key.keysym.sym);
-                update_source_key(keyboard_held_, keyboard_pressed_, key, event.type == SDL_KEYDOWN,
-                                  !event.key.repeat);
+                update_source_key(keyboard_held_, keyboard_pressed_, key, down, detect_press);
+                if (key == 160 || key == 161)
+                    update_source_key(keyboard_held_, keyboard_pressed_, 16,
+                                      keyboard_held_[160] || keyboard_held_[161], detect_press);
+                else if (key == 162 || key == 163)
+                    update_source_key(keyboard_held_, keyboard_pressed_, 17,
+                                      keyboard_held_[162] || keyboard_held_[163], detect_press);
+                else if (key == 164 || key == 165)
+                    update_source_key(keyboard_held_, keyboard_pressed_, 18,
+                                      keyboard_held_[164] || keyboard_held_[165], detect_press);
             }
             if (controller_subsystem_ && event.type == SDL_CONTROLLERDEVICEADDED && !controller_ &&
-                SDL_IsGameController(event.cdevice.which))
+                SDL_IsGameController(event.cdevice.which)) {
                 controller_ = SDL_GameControllerOpen(event.cdevice.which);
+                if (controller_) {
+                    if (joystick_) {
+                        SDL_JoystickClose(joystick_);
+                        joystick_ = nullptr;
+                    }
+                    gamepad_.connected = true;
+                }
+            }
             if (event.type == SDL_CONTROLLERDEVICEREMOVED && controller_ &&
                 SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller_)) == event.cdevice.which) {
                 SDL_GameControllerClose(controller_);
@@ -357,18 +559,67 @@ class VideoWindow {
                 controller_buttons_pressed_.fill(false);
                 controller_axes_held_.fill(false);
                 controller_axes_pressed_.fill(false);
+                if (!joystick_)
+                    gamepad_ = GamepadState{};
             }
             if (event.type == SDL_CONTROLLERBUTTONDOWN || event.type == SDL_CONTROLLERBUTTONUP) {
-                const auto key = gml_button(static_cast<SDL_GameControllerButton>(event.cbutton.button));
-                update_source_key(controller_buttons_held_, controller_buttons_pressed_, key,
-                                  event.type == SDL_CONTROLLERBUTTONDOWN);
-                if (event.type == SDL_CONTROLLERBUTTONDOWN &&
-                    event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)
-                    return false;
+                const bool down = event.type == SDL_CONTROLLERBUTTONDOWN;
+                const auto btn = static_cast<SDL_GameControllerButton>(event.cbutton.button);
+                const auto key = gml_button(btn);
+                update_source_key(controller_buttons_held_, controller_buttons_pressed_, key, down);
+                update_gamepad_button(gml_gamepad_button(btn), down);
             }
             if (event.type == SDL_CONTROLLERAXISMOTION) {
-                update_controller_axis(static_cast<SDL_GameControllerAxis>(event.caxis.axis),
-                                       event.caxis.value, controller_axes_held_, controller_axes_pressed_);
+                const auto axis = static_cast<SDL_GameControllerAxis>(event.caxis.axis);
+                update_controller_axis(axis, event.caxis.value, controller_axes_held_, controller_axes_pressed_);
+                update_gamepad_axis(axis, event.caxis.value);
+            }
+            if (controller_subsystem_ && event.type == SDL_JOYDEVICEADDED && !controller_ && !joystick_ &&
+                !SDL_IsGameController(event.jdevice.which)) {
+                joystick_ = SDL_JoystickOpen(event.jdevice.which);
+                if (joystick_)
+                    gamepad_.connected = true;
+            }
+            if (event.type == SDL_JOYDEVICEREMOVED && joystick_ &&
+                SDL_JoystickInstanceID(joystick_) == event.jdevice.which) {
+                SDL_JoystickClose(joystick_);
+                joystick_ = nullptr;
+                joystick_buttons_held_.fill(false);
+                joystick_buttons_pressed_.fill(false);
+                joystick_hat_held_.fill(false);
+                joystick_hat_pressed_.fill(false);
+                joystick_axes_held_.fill(false);
+                joystick_axes_pressed_.fill(false);
+                if (!controller_)
+                    gamepad_ = GamepadState{};
+            }
+            if (!controller_ && (event.type == SDL_JOYBUTTONDOWN || event.type == SDL_JOYBUTTONUP)) {
+                const bool down = event.type == SDL_JOYBUTTONDOWN;
+                static constexpr std::array<int, 4> face_keys = {'Z', 'X', 'C', 'C'};
+                if (event.jbutton.button < face_keys.size())
+                    update_source_key(joystick_buttons_held_, joystick_buttons_pressed_,
+                                      face_keys[event.jbutton.button], down);
+                if (event.jbutton.button < 16)
+                    update_gamepad_button(static_cast<int>(event.jbutton.button), down);
+            }
+            if (!controller_ && event.type == SDL_JOYAXISMOTION) {
+                if (event.jaxis.axis == 0)
+                    update_axis_pair(37, 39, event.jaxis.value, joystick_axes_held_, joystick_axes_pressed_);
+                else if (event.jaxis.axis == 1)
+                    update_axis_pair(38, 40, event.jaxis.value, joystick_axes_held_, joystick_axes_pressed_);
+                if (event.jaxis.axis < 4)
+                    gamepad_.axes[event.jaxis.axis] = std::clamp(event.jaxis.value / 32767.0, -1.0, 1.0);
+            }
+            if (!controller_ && event.type == SDL_JOYHATMOTION) {
+                const Uint8 hat = event.jhat.value;
+                update_source_key(joystick_hat_held_, joystick_hat_pressed_, 37, (hat & SDL_HAT_LEFT) != 0);
+                update_source_key(joystick_hat_held_, joystick_hat_pressed_, 39, (hat & SDL_HAT_RIGHT) != 0);
+                update_source_key(joystick_hat_held_, joystick_hat_pressed_, 38, (hat & SDL_HAT_UP) != 0);
+                update_source_key(joystick_hat_held_, joystick_hat_pressed_, 40, (hat & SDL_HAT_DOWN) != 0);
+                update_gamepad_button(12, (hat & SDL_HAT_UP) != 0);
+                update_gamepad_button(13, (hat & SDL_HAT_DOWN) != 0);
+                update_gamepad_button(14, (hat & SDL_HAT_LEFT) != 0);
+                update_gamepad_button(15, (hat & SDL_HAT_RIGHT) != 0);
             }
         }
 #if REGML_PS4
@@ -378,6 +629,47 @@ class VideoWindow {
         return true;
     }
     void present(const Canvas &canvas) {
+#if REGML_GLMODERN || REGML_GX2
+        if (use_opengl_) {
+#if REGML_GLMODERN
+            if (regml::glmodern::glBindFramebuffer) {
+                regml::glmodern::glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            }
+            if (regml::glmodern::glDrawBuffer) {
+                regml::glmodern::glDrawBuffer(GL_BACK);
+            }
+            if (canvas.gpu_target()) {
+                regml::glmodern::gl_gpu_flush();
+                regml::glmodern::gl_gpu_presented();
+            } else {
+                std::span<const std::uint32_t> px = canvas.pixels();
+                if (!px.empty()) {
+                    regml::glmodern::gl_gpu_begin();
+                    regml::glmodern::gl_gpu_image(px, canvas.width(), 0, 0, canvas.width(), canvas.height(),
+                                                  0, 0, canvas.width(), canvas.height(), 0, 0xffffff, 1.0, 0);
+                    regml::glmodern::gl_gpu_flush();
+                    regml::glmodern::gl_gpu_presented();
+                }
+            }
+            SDL_GL_SwapWindow(window_.get());
+#elif REGML_GX2
+            if (canvas.gpu_target()) {
+                regml::gx2::gx2_gpu_flush();
+                regml::gx2::gx2_gpu_presented();
+            } else {
+                std::span<const std::uint32_t> px = canvas.pixels();
+                if (!px.empty()) {
+                    regml::gx2::gx2_gpu_begin();
+                    regml::gx2::gx2_gpu_image(px, canvas.width(), 0, 0, canvas.width(), canvas.height(),
+                                              0, 0, canvas.width(), canvas.height(), 0, 0xffffff, 1.0, 0);
+                    regml::gx2::gx2_gpu_flush();
+                    regml::gx2::gx2_gpu_presented();
+                }
+            }
+#endif
+            return;
+        }
+#endif
         const auto *pixels = canvas.pixels().data();
         int pitch = canvas.width() * static_cast<int>(sizeof(std::uint32_t));
         if (canvas.width() != render_width || canvas.height() != render_height) {
@@ -500,17 +792,29 @@ class VideoWindow {
     void tick_game(GameSession &session,
                    const KeyboardState *replay,
                    const KeyboardState *replay_pressed = nullptr) {
-#if REGML_PS4
         session.set_gamepad_state(gamepad_);
         gamepad_.pressed.fill(false);
+#if REGML_GLMODERN || REGML_GX2
+        if (use_opengl_) {
+            session.canvas().gpu_target(true);
+#if REGML_GLMODERN
+            int drawable_w = 640, drawable_h = 480;
+            if (window_)
+                SDL_GL_GetDrawableSize(window_.get(), &drawable_w, &drawable_h);
+            glViewport(0, 0, drawable_w, drawable_h);
+            regml::glmodern::gl_gpu_set_viewport(session.canvas().width(), session.canvas().height());
+            regml::glmodern::gl_gpu_begin();
+#elif REGML_GX2
+            regml::gx2::gx2_gpu_set_viewport(session.canvas().width(), session.canvas().height());
+            regml::gx2::gx2_gpu_begin();
+#endif
+        }
 #endif
         session.tick(replay ? *replay : held_,
                      replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed_);
         pressed_.fill(false);
     }
-#if REGML_PS4
     const GamepadState &gamepad_state() const { return gamepad_; }
-#endif
 
   private:
     void update_source_key(KeyboardState &source_held,
@@ -596,6 +900,73 @@ class VideoWindow {
         joystick_hat_pressed_.fill(false);
         joystick_axes_pressed_.fill(false);
     }
+    void update_gamepad_button(int index, bool down) {
+        if (index < 0 || index >= static_cast<int>(gamepad_.buttons.size()))
+            return;
+        const auto i = static_cast<std::size_t>(index);
+        if (down && !gamepad_.buttons[i])
+            gamepad_.pressed[i] = true;
+        gamepad_.buttons[i] = down;
+    }
+    void update_gamepad_axis(SDL_GameControllerAxis axis, Sint16 value) {
+        const double norm = std::clamp(value / 32767.0, -1.0, 1.0);
+        switch (axis) {
+        case SDL_CONTROLLER_AXIS_LEFTX:
+            gamepad_.axes[0] = norm;
+            break;
+        case SDL_CONTROLLER_AXIS_LEFTY:
+            gamepad_.axes[1] = norm;
+            break;
+        case SDL_CONTROLLER_AXIS_RIGHTX:
+            gamepad_.axes[2] = norm;
+            break;
+        case SDL_CONTROLLER_AXIS_RIGHTY:
+            gamepad_.axes[3] = norm;
+            break;
+        case SDL_CONTROLLER_AXIS_TRIGGERLEFT:
+            update_gamepad_button(6, value > 8000);
+            break;
+        case SDL_CONTROLLER_AXIS_TRIGGERRIGHT:
+            update_gamepad_button(7, value > 8000);
+            break;
+        default:
+            break;
+        }
+    }
+    static int gml_gamepad_button(SDL_GameControllerButton button) {
+        switch (button) {
+        case SDL_CONTROLLER_BUTTON_A:
+            return 0;
+        case SDL_CONTROLLER_BUTTON_B:
+            return 1;
+        case SDL_CONTROLLER_BUTTON_X:
+            return 2;
+        case SDL_CONTROLLER_BUTTON_Y:
+            return 3;
+        case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+            return 4;
+        case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+            return 5;
+        case SDL_CONTROLLER_BUTTON_BACK:
+            return 8;
+        case SDL_CONTROLLER_BUTTON_START:
+            return 9;
+        case SDL_CONTROLLER_BUTTON_LEFTSTICK:
+            return 10;
+        case SDL_CONTROLLER_BUTTON_RIGHTSTICK:
+            return 11;
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+            return 12;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+            return 13;
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+            return 14;
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+            return 15;
+        default:
+            return -1;
+        }
+    }
     static int gml_button(SDL_GameControllerButton button) {
         switch (button) {
         case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
@@ -624,11 +995,14 @@ class VideoWindow {
     std::unique_ptr<SDL_Window, WindowDelete> window_;
     std::unique_ptr<SDL_Renderer, RendererDelete> renderer_;
     std::unique_ptr<SDL_Texture, TextureDelete> texture_;
+    SDL_GLContext gl_context_ = nullptr;
+    bool use_opengl_ = false;
     std::vector<std::uint32_t> present_pixels_;
     SDL_GameController *controller_ = nullptr;
+    SDL_Joystick *joystick_ = nullptr;
+    GamepadState gamepad_{};
 #if REGML_PS4
     int pad_ = -1;
-    GamepadState gamepad_{};
 #endif
     bool controller_subsystem_ = false;
     KeyboardState held_{}, pressed_{};
@@ -649,11 +1023,13 @@ using VideoWindow = Ps2Frontend;
 #if REGML_WII && !REGML_WITH_SDL2
 class VideoWindow {
   public:
-    explicit VideoWindow(bool hidden, bool escape_quits = true, bool speed_controls = false) {
+    explicit VideoWindow(bool hidden, bool escape_quits = true, bool speed_controls = false, bool opengl = false) {
         (void)hidden;
         (void)escape_quits;
         (void)speed_controls;
+        (void)opengl;
     }
+    [[nodiscard]] bool is_opengl() const noexcept { return false; }
     bool poll(double *speed_multiplier = nullptr) {
         (void)speed_multiplier;
         return input_.poll();
@@ -668,6 +1044,7 @@ class VideoWindow {
                    const KeyboardState *replay,
                    const KeyboardState *replay_pressed = nullptr) {
         session.canvas().gpu_target(true);
+        session.set_gamepad_state(input_.take_gamepad());
         const auto pressed = input_.take_pressed();
         session.tick(replay ? *replay : input_.held(),
                      replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed);
@@ -846,7 +1223,7 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
 #if REGML_PS2
         video_window.emplace(options.hidden, false, options.speed_controls, options.uncapped);
 #else
-        video_window.emplace(options.hidden, false, options.speed_controls);
+        video_window.emplace(options.hidden, false, options.speed_controls, options.opengl);
 #endif
     }
 #endif
@@ -879,14 +1256,9 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
     std::unique_ptr<GameSession> game;
     trace_stage("session.begin");
     try {
-#if REGML_PS4
         game = std::make_unique<GameSession>(package, options.seed, options.save_directory,
                                              video_window ? video_window->gamepad_state() : GamepadState{},
                                              options.start_room);
-#else
-        game = std::make_unique<GameSession>(package, options.seed, options.save_directory, GamepadState{},
-                                             options.start_room);
-#endif
         trace_stage("session.ready", game.get());
     } catch (const Error &error) {
 #if !REGML_PS2
@@ -901,6 +1273,10 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
     }
     GameSession &session = *game;
     session.profile_tick(profile.enabled());
+#if (REGML_WITH_SDL2 || REGML_WII) && !REGML_PS2
+    if (video_window && video_window->is_opengl())
+        session.canvas().gpu_target(true);
+#endif
     trace_stage("load.end", &session);
     std::map<std::size_t, KeyboardState> replay;
     if (!options.input_script.empty()) {
@@ -932,6 +1308,8 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
     }
     KeyboardState replay_keys{}, replay_pressed{};
     auto input = [&]() {
+        if (replay.empty())
+            return replay_keys;
         const auto previous = replay_keys;
         if (const auto it = replay.find(session.frames()); it != replay.end())
             replay_keys = it->second;
@@ -1011,6 +1389,11 @@ PlayReport play_game(const std::filesystem::path &package, const PlayOptions &op
                 if (options.debug_overlay)
                     draw_debug_overlay(session, debug_frame_ms);
                 trace_stage("present", &session);
+#if REGML_GLMODERN
+                regml::glmodern::gl_gpu_set_frame_number(session.frames());
+#elif REGML_GX2
+                regml::gx2::gx2_gpu_set_frame_number(session.frames());
+#endif
                 window.present(session.canvas());
                 present_end = profile.enabled() ? Clock::now() : Clock::time_point{};
 #if REGML_WII

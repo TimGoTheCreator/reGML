@@ -150,6 +150,7 @@ Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
     program.bytecode_version = version;
     if (limits.build_index)
         program.index_by_word.assign(code.size() / 4 + 1, std::numeric_limits<std::uint32_t>::max());
+    program.instructions.reserve(code.size() / 4);
     for (std::size_t offset = 0; offset < code.size();) {
         if (program.instructions.size() >= limits.max_instructions)
             throw Error(ErrorKind::unsupported, "instruction count exceeds configured limit",
@@ -258,7 +259,6 @@ Program decode(BinaryView code, std::uint8_t version, DecodeLimits limits) {
             throw Error(ErrorKind::malformed, "branch targets an immediate payload instead of an instruction",
                         code.origin() + ins.offset);
     }
-    program.instructions.shrink_to_fit();
     return program;
 }
 } // namespace regml

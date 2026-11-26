@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -19,6 +20,10 @@ class Canvas {
     int logical_height() const noexcept { return logical_height_; }
     void gpu_target(bool enabled);
     bool gpu_target() const noexcept { return gpu_; }
+    void enable_gpu_surface();
+    [[nodiscard]] std::uint32_t gpu_surface_id() const noexcept {
+        return gpu_surface_ ? *gpu_surface_ : 0U;
+    }
     void profile_text(bool enabled) noexcept { profile_text_ = enabled; }
     double take_text_profile_ms() noexcept {
         const double result = text_profile_ms_;
@@ -30,30 +35,20 @@ class Canvas {
     [[nodiscard]] std::span<std::uint32_t> pixels() noexcept { return pixels_; }
     [[nodiscard]] std::span<const std::uint32_t> pixels() const noexcept { return pixels_; }
     [[nodiscard]] std::uint32_t pixel(int x, int y) const;
-    void clear(std::uint32_t gml_bgr);
+    void clear(std::uint32_t gml_bgr, double alpha = 1.0);
     void clear_transparent() noexcept;
     void color(std::uint32_t gml_bgr) noexcept;
     void alpha(double alpha);
-    void blend_enable(bool enabled) noexcept { blend_enabled_ = enabled; }
+    void blend_enable(bool enabled) noexcept;
     void blend_mode(int source_rgb,
                     int destination_rgb,
                     int source_alpha,
                     int destination_alpha,
                     int equation_rgb = 0,
-                    int equation_alpha = 0) noexcept {
-        blend_factors_ = {source_rgb, destination_rgb, source_alpha, destination_alpha};
-        blend_equations_ = {equation_rgb, equation_alpha};
-        standard_blend_ =
-            blend_factors_ == std::array<int, 4>{5, 6, 5, 6} && blend_equations_ == std::array<int, 2>{0, 0};
-        additive_blend_ =
-            blend_factors_ == std::array<int, 4>{5, 2, 5, 2} && blend_equations_ == std::array<int, 2>{0, 0};
-    }
-    void alpha_test_enable(bool enabled) noexcept { alpha_test_enabled_ = enabled; }
-    void alpha_test_ref(unsigned value) noexcept { alpha_test_ref_ = value > 255 ? 255 : value; }
-    void color_write_enable(bool red, bool green, bool blue, bool alpha) noexcept {
-        color_write_mask_ = (red ? 0x00ff0000U : 0U) | (green ? 0x0000ff00U : 0U) |
-                            (blue ? 0x000000ffU : 0U) | (alpha ? 0xff000000U : 0U);
-    }
+                    int equation_alpha = 0) noexcept;
+    void alpha_test_enable(bool enabled) noexcept;
+    void alpha_test_ref(unsigned value) noexcept;
+    void color_write_enable(bool red, bool green, bool blue, bool alpha) noexcept;
     void pixel_shader(PixelShader shader, void *context = nullptr) noexcept {
         pixel_shader_ = shader;
         pixel_shader_context_ = context;
@@ -113,6 +108,7 @@ class Canvas {
     void save_bmp(const std::filesystem::path &path) const;
     void save_png(const std::filesystem::path &path) const;
     [[nodiscard]] std::uint64_t hash() const noexcept;
+    bool gpu_readback(std::span<std::uint32_t> pixels) const noexcept;
 
   private:
     friend class GameAssets;
@@ -120,7 +116,6 @@ class Canvas {
     void plot_in_bounds(int x, int y);
     void plot_span_in_bounds(int left, int right, int y);
     void store_pixel(int x, int y, std::uint32_t rgba) noexcept;
-    bool gpu_readback(std::span<std::uint32_t> pixels) const noexcept;
     bool blit_rgba_scaled_opaque(std::span<const std::uint32_t> source,
                                  int source_width,
                                  std::span<const int> source_x,
@@ -153,6 +148,7 @@ class Canvas {
     double render_scale_ = 1, coordinate_scale_ = 1;
     int logical_width_, logical_height_;
     bool gpu_ = false;
+    std::shared_ptr<std::uint32_t> gpu_surface_;
     bool profile_text_ = false;
     bool blend_enabled_ = true;
     bool standard_blend_ = true;

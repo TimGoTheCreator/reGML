@@ -9,13 +9,16 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if(PS2 OR REGML_WIIU)
+if(PS2)
     set(REGML_240P_DEFAULT ON)
 else()
     set(REGML_240P_DEFAULT OFF)
 endif()
 option(REGML_240P "Render the main screen at half resolution (320x240 for 640x480 games)" ${REGML_240P_DEFAULT})
 unset(REGML_240P_DEFAULT)
+if(REGML_WIIU)
+    set(REGML_240P OFF CACHE BOOL "Render the main screen at half resolution (320x240 for 640x480 games)" FORCE)
+endif()
 option(REGML_PS2_NTSC "Force NTSC video mode on PS2 instead of using the console signal" OFF)
 option(REGML_LOW_MEMORY "Use lazy bytecode and smaller caches for low-memory targets" OFF)
 
@@ -27,6 +30,7 @@ option(REGML_OPENAL "Use OpenAL for desktop audio output" OFF)
 option(REGML_WIIU "Build a Wii U homebrew RPX with devkitPro wut" OFF)
 option(REGML_WII "Build a Nintendo Wii homebrew DOL with devkitPro libogc" OFF)
 option(REGML_PS4 "Build a PlayStation 4 homebrew ELF and eboot.bin with OpenOrbis" OFF)
+option(REGML_GLMODERN "Build modern OpenGL 3.3 renderer" ON)
 set(REGML_UNDERTALE_DATA "" CACHE FILEPATH "Optional Undertale data.win path for audio integration testing")
 
 set(REGML_CONSOLE_TARGETS 0)
@@ -234,6 +238,7 @@ file(GLOB REGML_ENGINE_SOURCES
     "src/platform/ps2/*.cpp"
     "src/rendersoftware/*.cpp"
     "src/video/*.cpp"
+    "src/glmodern/*.cpp"
 )
 file(GLOB REGML_AUDIO_SOURCES CONFIGURE_DEPENDS "src/audio/sdl/*.cpp")
 list(APPEND REGML_ENGINE_SOURCES ${REGML_AUDIO_SOURCES})
@@ -248,7 +253,8 @@ if(REGML_ANDROID)
         "src/platform/android/native.cpp")
 endif()
 if(REGML_WIIU)
-    list(APPEND REGML_ENGINE_SOURCES "src/platform/wiiu/audio_async.cpp")
+    file(GLOB_RECURSE REGML_GX2_SOURCES CONFIGURE_DEPENDS "src/gx2/*.cpp")
+    list(APPEND REGML_ENGINE_SOURCES "src/platform/wiiu/audio_async.cpp" ${REGML_GX2_SOURCES})
 endif()
 if(REGML_MINIAUDIO)
     list(APPEND REGML_ENGINE_SOURCES
@@ -342,6 +348,12 @@ target_compile_definitions(${REGML_TARGET} PUBLIC
     REGML_LOW_MEMORY=$<BOOL:${REGML_LOW_MEMORY}>
     REGML_WITH_FFMPEG=$<BOOL:${REGML_FFMPEG_AVAILABLE}>
 )
+if(REGML_GLMODERN AND NOT REGML_WIIU)
+    target_compile_definitions(${REGML_TARGET} PUBLIC REGML_GLMODERN=1)
+    if(TARGET regml_engine)
+        target_compile_definitions(regml_engine PUBLIC REGML_GLMODERN=1)
+    endif()
+endif()
 
 target_include_directories(${REGML_TARGET} PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -521,7 +533,7 @@ if(REGML_WIIU)
     if(NOT COMMAND wut_create_rpx)
         message(FATAL_ERROR "REGML_WIIU requires devkitPro's powerpc-eabi-cmake and wut toolchain")
     endif()
-    target_compile_definitions(regml_engine PUBLIC REGML_WIIU=1)
+    target_compile_definitions(regml_engine PUBLIC REGML_WIIU=1 REGML_GX2=1 REGML_GLMODERN=0)
     wut_create_rpx(regml)
     if(COMMAND wut_create_wuhb)
         wut_create_wuhb(regml NAME "reGML" SHORTNAME "reGML" AUTHOR "TimGoTheCreator")
@@ -549,6 +561,9 @@ include(CTest)
 if(BUILD_TESTING AND NOT REGML_WIIU AND NOT REGML_WII AND NOT REGML_PS4 AND NOT REGML_ANDROID AND NOT PS2 AND NOT REGML_WEB)
     add_executable(regml_tests tests/core_tests.cpp)
     target_link_libraries(regml_tests PRIVATE regml_engine)
+    add_executable(regml_gl_tests tests/gl_modern_tests.cpp)
+    target_link_libraries(regml_gl_tests PRIVATE regml_engine)
+    add_test(NAME gl_modern COMMAND regml_gl_tests)
     add_executable(regml_audio_test tests/audio_integration.cpp)
     target_link_libraries(regml_audio_test PRIVATE regml_engine)
     add_executable(regml_assets_test tests/assets_integration.cpp)
