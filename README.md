@@ -50,9 +50,11 @@ v17 is supported, but not every GameMaker feature is implemented yet. DELTARUNE 
 
 ### DELTARUNE Chapter 2 (Wii U / Cemu + GX2)
 
-<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/hothothot.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/werewires.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/freesamples.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/wonderfulplace.png" width="240">
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/hothothot.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/werewires.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/freesamples.png" width="240">
 
-<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/thiscafe.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/fahahaha.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/seamblabbing.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/fahahaha.png" width="240">
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/wonderfulplace.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/thiscafe.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/fahahaha.png" width="240">
+
+<img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/seamblabbing.png" width="240"> <img src="https://raw.githubusercontent.com/TimGoTheCreator/timgothecreator.github.io/master/images/fahahaha.png" width="240">
 
 
 ### DELTARUNE Chapter 3 (Wii U / Cemu + GX2)
