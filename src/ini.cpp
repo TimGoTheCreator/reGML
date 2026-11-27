@@ -128,12 +128,12 @@ void IniFile::write(std::string_view section, std::string_view key, std::string_
 }
 
 bool IniFile::section_exists(std::string_view section) const {
-    return sections_.contains(section);
+    return sections_.find(section) != sections_.end();
 }
 
 bool IniFile::key_exists(std::string_view section, std::string_view key) const {
     const auto section_it = sections_.find(section);
-    return section_it != sections_.end() && section_it->second.contains(key);
+    return section_it != sections_.end() && section_it->second.find(key) != section_it->second.end();
 }
 
 void IniFile::delete_section(std::string_view section) {
