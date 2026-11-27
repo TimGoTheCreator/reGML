@@ -222,14 +222,8 @@ void GLModernCanvas::color_write_enable(bool red, bool green, bool blue, bool al
     if (new_mask == color_write_mask_) {
         return;
     }
-    batcher_.flush();
     color_write_mask_ = new_mask;
-    if (glColorMask) {
-        glColorMask(red ? GL_TRUE : GL_FALSE,
-                    green ? GL_TRUE : GL_FALSE,
-                    blue ? GL_TRUE : GL_FALSE,
-                    alpha ? GL_TRUE : GL_FALSE);
-    }
+    batcher_.set_color_mask(red, green, blue, alpha);
 }
 
 void GLModernCanvas::rectangle(double x1, double y1, double x2, double y2, bool outline) {

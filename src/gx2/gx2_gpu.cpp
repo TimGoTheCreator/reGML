@@ -73,6 +73,8 @@ bool s_presented = false;
 
 int s_viewport_width = 1280;
 int s_viewport_height = 720;
+int s_main_width = 1280;
+int s_main_height = 720;
 
 bool s_box_batch_active = false;
 
@@ -285,6 +287,7 @@ void gx2_gpu_presented() {
 }
 
 void gx2_gpu_box(double x, double y, double w, double h, std::uint32_t rgba) {
+    if (w <= 0.0 || h <= 0.0) return;
     ensure_batch_started();
     s_batcher.draw_quad(nullptr,
                         static_cast<float>(x),
@@ -471,6 +474,8 @@ void gx2_gpu_set_viewport(int width, int height) {
     s_viewport_width = width;
     s_viewport_height = height;
     if (s_bound_surface_id == 0) {
+        s_main_width = width;
+        s_main_height = height;
         set_tv_viewport_and_scissor();
     } else {
         GX2SetViewport(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f);
@@ -569,7 +574,7 @@ void gx2_gpu_surface_destroy(std::uint32_t surface_id) {
     auto it = s_surfaces.find(surface_id);
     if (it == s_surfaces.end()) return;
     if (s_bound_surface_id == surface_id) {
-        gx2_gpu_surface_bind(0, s_viewport_width, s_viewport_height);
+        gx2_gpu_surface_bind(0, s_main_width, s_main_height);
     } else {
         gx2_gpu_flush();
     }
@@ -603,6 +608,8 @@ void gx2_gpu_surface_bind(std::uint32_t surface_id, int width, int height) {
         if (GX2ColorBuffer *tv = WHBGfxGetTVColourBuffer()) {
             GX2SetColorBuffer(tv, GX2_RENDER_TARGET_0);
         }
+        s_main_width = width;
+        s_main_height = height;
         s_viewport_width = width;
         s_viewport_height = height;
         set_tv_viewport_and_scissor();
@@ -637,6 +644,7 @@ void gx2_gpu_surface_clear(std::uint32_t argb) {
     ensure_batch_started();
     const bool prev_blend = s_batcher.blend_enabled();
     const bool prev_alpha_test = s_batcher.alpha_test_enabled();
+    const float prev_alpha_ref = s_batcher.alpha_test_ref();
     s_batcher.set_blend_enable(false);
     s_batcher.set_alpha_test(false, 0.0f);
     const std::uint32_t rgba = ((argb & 0x00ffffffu) << 8) | ((argb >> 24) & 0xffu);
@@ -644,7 +652,7 @@ void gx2_gpu_surface_clear(std::uint32_t argb) {
                         static_cast<float>(it->second->width),
                         static_cast<float>(it->second->height),
                         0.0f, 0.0f, 0.0f, 0.0f, rgba, 0.0f);
-    s_batcher.set_alpha_test(prev_alpha_test, s_batcher.alpha_test_ref());
+    s_batcher.set_alpha_test(prev_alpha_test, prev_alpha_ref);
     s_batcher.set_blend_enable(prev_blend);
     s_dirty = true;
 }

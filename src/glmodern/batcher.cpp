@@ -22,14 +22,14 @@ constexpr GLenum gm_factor_to_gl(int factor) noexcept {
     case 9: return GL_DST_COLOR;
     case 10: return GL_ONE_MINUS_DST_COLOR;
     case 11: return GL_SRC_ALPHA_SATURATE;
-    default: return GL_ZERO;
+    default: return GL_SRC_ALPHA;
     }
 }
 
 constexpr GLenum gm_equation_to_gl(int eq) noexcept {
     switch (eq) {
-    case 1: return GL_FUNC_REVERSE_SUBTRACT;
-    case 2: return GL_FUNC_SUBTRACT;
+    case 1: return GL_FUNC_SUBTRACT;
+    case 2: return GL_FUNC_REVERSE_SUBTRACT;
     case 3: return GL_MIN;
     case 4: return GL_MAX;
     case 0:
@@ -433,6 +433,7 @@ void SpriteBatcher::set_alpha_test(bool enabled, float ref) {
         alpha_test_enabled_ = enabled;
         alpha_test_ref_ = ref;
         Shader &sh = active_shader();
+        sh.bind();
         sh.set_int("u_alpha_test", enabled ? 1 : 0);
         sh.set_float("u_alpha_ref", ref);
     }

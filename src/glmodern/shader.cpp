@@ -137,6 +137,7 @@ bool Shader::init(std::string_view vertex_src, std::string_view fragment_src) {
     }
 
     error_log_.clear();
+#if REGML_WIIU
     {
         std::ofstream out("/vol/external01/reGML/regml-init.log", std::ios::app);
         GLint u_proj = glGetUniformLocation(program_, "u_projection");
@@ -147,6 +148,7 @@ bool Shader::init(std::string_view vertex_src, std::string_view fragment_src) {
         out << "Sprite Shader loaded: u_proj=" << u_proj << " u_tex=" << u_tex
             << " u_use=" << u_use << " u_ref=" << u_ref << " u_test=" << u_test << "\n";
     }
+#endif
     return true;
 }
 

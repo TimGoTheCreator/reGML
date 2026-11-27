@@ -1504,10 +1504,11 @@ void GameAssets::draw_tile(Canvas &canvas,
         if (page_w > 0 && page_h > 0 && cached) {
             const float inv_w = 1.0f / static_cast<float>(page_w);
             const float inv_h = 1.0f / static_cast<float>(page_h);
-            float u0 = static_cast<float>(cut.x) * inv_w;
-            float v0 = static_cast<float>(cut.y) * inv_h;
-            float u1 = static_cast<float>(cut.x + cut.w) * inv_w;
-            float v1 = static_cast<float>(cut.y + cut.h) * inv_h;
+            constexpr float kTexelInset = 0.01f;
+            float u0 = (static_cast<float>(cut.x) + kTexelInset) * inv_w;
+            float v0 = (static_cast<float>(cut.y) + kTexelInset) * inv_h;
+            float u1 = (static_cast<float>(cut.x + cut.w) - kTexelInset) * inv_w;
+            float v1 = (static_cast<float>(cut.y + cut.h) - kTexelInset) * inv_h;
             if (transform & mirror_mask) std::swap(u0, u1);
             if (transform & flip_mask) std::swap(v0, v1);
             const unsigned rgb = color & 0xffffffU;
@@ -2111,6 +2112,8 @@ void GameAssets::draw_sprite(Canvas &canvas,
                              double angle,
                              unsigned color,
                              double alpha) {
+    if (!sprite_exists(unpack_sprite_reference(id)))
+        return;
     const auto &spr = sprite(id);
     if (spr.frames.empty())
         return;
@@ -2139,6 +2142,8 @@ void GameAssets::draw_sprite_stretched(Canvas &canvas,
                                        double height,
                                        unsigned color,
                                        double alpha) {
+    if (!sprite_exists(unpack_sprite_reference(id)))
+        return;
     const auto &s = sprite(id);
     if (s.width <= 0 || s.height <= 0)
         return;
@@ -2351,6 +2356,8 @@ void GameAssets::draw_sprite_part(Canvas &canvas,
                                   double sy,
                                   unsigned color,
                                   double alpha) {
+    if (!sprite_exists(unpack_sprite_reference(id)))
+        return;
     const auto &spr = sprite(id);
     if (spr.frames.empty())
         return;
@@ -2388,10 +2395,11 @@ void GameAssets::draw_sprite_part(Canvas &canvas,
 #if REGML_GLMODERN || REGML_GX2
     if (canvas.gpu_target() && r.tw > 0 && r.th > 0) {
         const auto base_key = image_cache_key(r);
-        const float u0 = static_cast<float>(ix - r.tx) / static_cast<float>(r.tw);
-        const float v0 = static_cast<float>(iy - r.ty) / static_cast<float>(r.th);
-        const float u1 = static_cast<float>(ir - r.tx) / static_cast<float>(r.tw);
-        const float v1 = static_cast<float>(ib - r.ty) / static_cast<float>(r.th);
+        constexpr float kTexelInset = 0.01f;
+        const float u0 = (static_cast<float>(ix - r.tx) + kTexelInset) / static_cast<float>(r.tw);
+        const float v0 = (static_cast<float>(iy - r.ty) + kTexelInset) / static_cast<float>(r.th);
+        const float u1 = (static_cast<float>(ir - r.tx) - kTexelInset) / static_cast<float>(r.tw);
+        const float v1 = (static_cast<float>(ib - r.ty) - kTexelInset) / static_cast<float>(r.th);
         const unsigned tint = ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff);
 #if REGML_GLMODERN
         if (glmodern::gl_gpu_cached_sub_image(dest_x, dest_y, dest_w, dest_h, u0, v0, u1, v1, tint, alpha, base_key))
@@ -2437,6 +2445,8 @@ void GameAssets::draw_sprite_general(Canvas &canvas,
                                      double angle,
                                      const std::array<unsigned, 4> &colors,
                                      double alpha) {
+    if (!sprite_exists(unpack_sprite_reference(id)))
+        return;
     const auto &spr = sprite(id);
     if (spr.frames.empty())
         return;
@@ -2745,10 +2755,11 @@ void GameAssets::draw_text(Canvas &canvas,
                 if (g.w > 0 && g.h > 0) {
                     const double ox = (lx + g.offset) * sx;
                     const double oy = ly * sy;
-                    const double draw_x = (x + ox - view_x_) * view_sx_ + port_x_;
-                    const double draw_y = (y + oy - view_y_) * view_sy_ + port_y_;
-                    const double draw_w = g.w * sx * view_sx_;
-                    const double draw_h = g.h * sy * view_sy_;
+                    const double scale = canvas.render_scale();
+                    const double draw_x = ((x + ox - view_x_) * view_sx_ + port_x_) * scale;
+                    const double draw_y = ((y + oy - view_y_) * view_sy_ + port_y_) * scale;
+                    const double draw_w = g.w * sx * view_sx_ * scale;
+                    const double draw_h = g.h * sy * view_sy_ * scale;
                     const float u0 = static_cast<float>(atlas.x + g.x) * inv_w;
                     const float v0 = static_cast<float>(atlas.y + g.y) * inv_h;
                     const float u1 = static_cast<float>(atlas.x + g.x + g.w) * inv_w;

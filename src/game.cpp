@@ -722,6 +722,7 @@ struct GameSession::Impl {
         double depth;
         std::size_t order;
         const Instance *instance;
+        bool manual_depth = false;
     };
     struct LayerVisualEntry {
         double depth = 0;
@@ -1656,8 +1657,8 @@ struct GameSession::Impl {
                 layer.type = source_layer.type;
                 layer.x = source_layer.x;
                 layer.y = source_layer.y;
-                layer.origin_x = source_layer.x;
-                layer.origin_y = source_layer.y;
+                layer.origin_x = layer.type == 1 ? 0.0 : source_layer.x;
+                layer.origin_y = layer.type == 1 ? 0.0 : source_layer.y;
                 layer.visible = source_layer.visible;
                 layer.instances = source_layer.instances;
                 for (const auto &source_sprite : source_layer.sprites) {
@@ -1899,8 +1900,8 @@ struct GameSession::Impl {
                 layer.depth = header.i32(12);
                 layer.x = regml::bit_cast<float>(header.u32(16));
                 layer.y = regml::bit_cast<float>(header.u32(20));
-                layer.origin_x = layer.x;
-                layer.origin_y = layer.y;
+                layer.origin_x = layer.type == 1 ? 0.0 : layer.x;
+                layer.origin_y = layer.type == 1 ? 0.0 : layer.y;
                 layer.hspeed = regml::bit_cast<float>(header.u32(24));
                 layer.vspeed = regml::bit_cast<float>(header.u32(28));
                 layer.visible = header.u32(32) != 0;
@@ -2074,6 +2075,12 @@ struct GameSession::Impl {
         if (instances.size() >= 10000)
             throw Error(ErrorKind::vm, "instance limit reached");
         const auto &obj = objects.at(static_cast<std::size_t>(p.object));
+        std::int32_t initial_depth = obj.depth;
+        if (p.layer >= 0 && current_room >= 0 && static_cast<std::size_t>(current_room) < rooms.size()) {
+            const auto &room = rooms[static_cast<std::size_t>(current_room)];
+            if (const auto found = room.layer_indices.find(p.layer); found != room.layer_indices.end())
+                initial_depth = room.layers[found->second].depth;
+        }
         auto inst = InstancePtr(new Instance());
         inst->id = p.id;
         inst->object = p.object;
@@ -2092,7 +2099,7 @@ struct GameSession::Impl {
                       {"visible", std::int32_t{obj.visible}},
                       {"persistent", std::int32_t{obj.persistent}},
                       {"solid", std::int32_t{obj.solid}},
-                      {"depth", std::int32_t{obj.depth}},
+                      {"depth", initial_depth},
                       {"image_index", p.image_index},
                       {"image_speed", p.image_speed},
                       {"image_xscale", p.sx},
@@ -3950,7 +3957,7 @@ struct GameSession::Impl {
                         if (!found_value && (name.starts_with("u_") || name.starts_with("tex_")))
                             return std::int32_t{-1};
                         if (!found_value)
-                            throw Error(ErrorKind::vm, "uninitialized variable: " + std::string(name));
+                            return std::int32_t{0};
                         return *found_value;
                     };
                     if (multi_target) {
@@ -10346,6 +10353,8 @@ struct GameSession::Impl {
             }
             if (name == "draw_sprite_tiled_ext") {
                 const int sprite = static_cast<int>(n(0));
+                if (!assets.sprite_exists(sprite))
+                    return std::monostate{};
                 const auto &info = assets.sprite(sprite);
                 const double frame_index = n(1), x = n(2), y = n(3), sx = n(4), sy = n(5);
                 const double tile_width = info.width * std::fabs(sx);
@@ -10395,6 +10404,8 @@ struct GameSession::Impl {
             }
             if (name == "draw_sprite_stretched") {
                 const auto sprite = static_cast<int>(n(0));
+                if (!assets.sprite_exists(sprite))
+                    return std::monostate{};
                 const auto &info = assets.sprite(sprite);
                 const double sx = info.width ? n(4) / info.width : 1,
                              sy = info.height ? n(5) / info.height : 1;
@@ -10405,6 +10416,8 @@ struct GameSession::Impl {
             }
             if (name == "draw_sprite_stretched_ext") {
                 const int sprite = static_cast<int>(n(0));
+                if (!assets.sprite_exists(sprite))
+                    return std::monostate{};
                 const auto &info = assets.sprite(sprite);
                 const double frame = n(1) < 0 ? value_number(self->vars.at("image_index")) : n(1);
                 const double sx = info.width ? n(4) / info.width : 1;
@@ -11556,6 +11569,7 @@ struct GameSession::Impl {
                 p.id = next_id++;
                 const auto i = make(p);
                 i->vars["depth"] = depth;
+                i->manual_depth = true;
                 if (args.size() > 4) {
                     if (const auto *initial = std::get_if<StructPtr>(&args[4]); initial && *initial)
                         for (const auto &[name, value] : (*initial)->variables)
@@ -13200,9 +13214,11 @@ struct GameSession::Impl {
                         rebuild_draw_order = true;
                         break;
                     }
-                    const double depth = instance_draw_depth(snapshot[entry.order]);
-                    resort_draw_order |= entry.depth != depth;
+                    const auto &instance = snapshot[entry.order];
+                    const double depth = instance_draw_depth(instance);
+                    resort_draw_order |= entry.depth != depth || entry.manual_depth != instance->manual_depth;
                     entry.depth = depth;
+                    entry.manual_depth = instance->manual_depth;
                 }
             }
             if (rebuild_draw_order) {
@@ -13211,13 +13227,18 @@ struct GameSession::Impl {
                     draw_entries.reserve(snapshot.size());
                 for (std::size_t index = 0; index < snapshot.size(); ++index) {
                     const auto &instance = snapshot[index];
-                    draw_entries.push_back({instance_draw_depth(instance), index, instance.get()});
+                    draw_entries.push_back(
+                        {instance_draw_depth(instance), index, instance.get(), instance->manual_depth});
                 }
                 resort_draw_order = true;
             }
             if (resort_draw_order)
                 std::sort(draw_entries.begin(), draw_entries.end(), [](const auto &a, const auto &b) {
-                    return a.depth != b.depth ? a.depth > b.depth : a.order < b.order;
+                    if (a.depth != b.depth)
+                        return a.depth > b.depth;
+                    if (a.manual_depth != b.manual_depth)
+                        return a.manual_depth;
+                    return a.order < b.order;
                 });
             if (profile_tick_timing) {
                 const auto now = ProfileClock::now();

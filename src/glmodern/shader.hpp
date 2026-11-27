@@ -44,7 +44,7 @@ inline constexpr std::string_view SPRITE_FRAGMENT_SHADER =
     "    if (u_use_texture != 0) {\n"
     "        col *= texture(u_texture, v_uv);\n"
     "    }\n"
-    "    if (u_alpha_test != 0 && col.a < u_alpha_ref) {\n"
+    "    if (u_alpha_test != 0 && col.a <= u_alpha_ref) {\n"
     "        discard;\n"
     "    }\n"
     "    frag_color = col;\n"

@@ -34,11 +34,14 @@ std::uint32_t s_last_texture_id = 0;
 std::vector<std::uint32_t> s_textures_used;
 
 bool s_initialized = false;
+bool s_in_render = false;
 bool s_dirty = false;
 bool s_presented = false;
 
 int s_viewport_width = 640;
 int s_viewport_height = 480;
+int s_main_width = 640;
+int s_main_height = 480;
 GLint s_main_vp[4] = {0, 0, 0, 0};
 bool s_main_vp_saved = false;
 std::unordered_map<std::uint32_t, std::unique_ptr<GLFramebuffer>> s_surfaces;
@@ -96,6 +99,13 @@ const auto &unit_circle() {
     return make_rgba(r, g, b, a);
 }
 
+[[nodiscard]] bool is_default_alpha_blend() noexcept {
+    return s_blend_enabled &&
+           s_blend_src_rgb == 5 && s_blend_dst_rgb == 6 &&
+           s_blend_src_a == 5 && s_blend_dst_a == 6 &&
+           s_blend_eq_rgb == 0 && s_blend_eq_a == 0;
+}
+
 bool ensure_initialized() {
     if (s_initialized) return true;
     if (!is_gl_core_loaded() && !load_gl_core_3_3()) {
@@ -126,6 +136,10 @@ bool is_cached_recursive(int width, int height, std::uint64_t key) {
 
 void gl_gpu_set_viewport(int width, int height) {
     if (width <= 0 || height <= 0) return;
+    if (s_bound_surface_id == 0) {
+        s_main_width = width;
+        s_main_height = height;
+    }
     if (s_viewport_width == width && s_viewport_height == height) return;
     gl_gpu_flush();
     s_viewport_width = width;
@@ -141,6 +155,10 @@ void gl_gpu_set_viewport(int width, int height) {
 
 void gl_gpu_begin() {
     ensure_initialized();
+    if (s_in_render) {
+        return;
+    }
+    s_in_render = true;
     s_batcher.reset_draw_call_count();
     s_textures_used.clear();
     s_flush_draw_calls = 0;
@@ -154,6 +172,11 @@ void gl_gpu_begin() {
                 s_viewport_height = vp[3];
             }
         }
+    }
+
+    if (s_bound_surface_id == 0) {
+        s_main_width = s_viewport_width > 0 ? s_viewport_width : 640;
+        s_main_height = s_viewport_height > 0 ? s_viewport_height : 480;
     }
 
     const auto proj = Mat4::ortho_2d(static_cast<float>(s_viewport_width > 0 ? s_viewport_width : 640),
@@ -217,6 +240,11 @@ void gl_gpu_flush() {
 }
 
 void gl_gpu_presented() {
+    gl_gpu_flush();
+    if (s_batcher.is_active()) {
+        s_batcher.end();
+    }
+    s_in_render = false;
     s_presented = true;
     s_dirty = false;
 }
@@ -224,9 +252,7 @@ void gl_gpu_presented() {
 void gl_gpu_box(double x, double y, double w, double h, std::uint32_t rgba) {
     if (w <= 0.0 || h <= 0.0) return;
 
-    if (s_blend_enabled && (rgba >> 24) == 0 &&
-        s_blend_src_rgb == 5 && s_blend_dst_rgb == 6 &&
-        s_blend_src_a == 5 && s_blend_dst_a == 6) {
+    if ((rgba >> 24) == 0 && is_default_alpha_blend()) {
         return;
     }
 
@@ -267,9 +293,7 @@ void gl_gpu_box_batch_end() {
 }
 
 void gl_gpu_triangle(double x1, double y1, double x2, double y2, double x3, double y3, std::uint32_t rgba) {
-    if (s_blend_enabled && (rgba >> 24) == 0 &&
-        s_blend_src_rgb == 5 && s_blend_dst_rgb == 6 &&
-        s_blend_src_a == 5 && s_blend_dst_a == 6) {
+    if ((rgba >> 24) == 0 && is_default_alpha_blend()) {
         return;
     }
 
@@ -284,9 +308,7 @@ void gl_gpu_triangle(double x1, double y1, double x2, double y2, double x3, doub
 
 void gl_gpu_circle(double x, double y, double r, bool outline, std::uint32_t rgba) {
     if (r <= 0.0) return;
-    if (s_blend_enabled && (rgba >> 24) == 0 &&
-        s_blend_src_rgb == 5 && s_blend_dst_rgb == 6 &&
-        s_blend_src_a == 5 && s_blend_dst_a == 6) {
+    if ((rgba >> 24) == 0 && is_default_alpha_blend()) {
         return;
     }
 
@@ -359,7 +381,7 @@ void gl_gpu_image(std::span<const std::uint32_t> pixels,
                  unsigned tint,
                  double opacity,
                  std::uint64_t key) {
-    if (width <= 0 || height <= 0 || opacity <= 0.0) return;
+    if (width <= 0 || height <= 0 || (opacity <= 0.0 && is_default_alpha_blend())) return;
 
     if (width > 1024 || height > 1024) {
         const double rad = angle * 3.14159265358979323846 / 180.0;
@@ -511,7 +533,7 @@ bool gl_gpu_cached_sub_image(double x,
                              double opacity,
                              std::uint64_t key,
                              double angle) {
-    if (!key || opacity <= 0.0 || dw == 0.0 || dh == 0.0) return false;
+    if (!key || (opacity <= 0.0 && is_default_alpha_blend()) || dw == 0.0 || dh == 0.0) return false;
 
     const GLuint tex_id = s_texture_cache.get(key);
     if (tex_id == 0) return false;
@@ -558,7 +580,8 @@ std::uint32_t gl_gpu_pixel(int x, int y) {
         glReadPixels(x, gl_y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     }
 
-    return 0xff000000U | (static_cast<std::uint32_t>(rgba[0]) << 16) |
+    return (static_cast<std::uint32_t>(rgba[3]) << 24) |
+           (static_cast<std::uint32_t>(rgba[0]) << 16) |
            (static_cast<std::uint32_t>(rgba[1]) << 8) | rgba[2];
 }
 
@@ -583,7 +606,8 @@ bool gl_gpu_readback(int width, int height, std::span<std::uint32_t> pixels) noe
         for (int x = 0; x < width; ++x) {
             const auto *p = &buffer[(static_cast<std::size_t>(src_y) * width + x) * 4];
             pixels[static_cast<std::size_t>(y) * width + x] =
-                0xff000000U | (static_cast<std::uint32_t>(p[0]) << 16) |
+                (static_cast<std::uint32_t>(p[3]) << 24) |
+                (static_cast<std::uint32_t>(p[0]) << 16) |
                 (static_cast<std::uint32_t>(p[1]) << 8) | p[2];
         }
     }
@@ -619,6 +643,22 @@ std::uint32_t gl_gpu_surface_create(int width, int height) {
     if (!fbo->init(width, height, false)) {
         return 0;
     }
+    GLint prev_fbo = 0;
+    if (glGetIntegerv) {
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+    }
+    if (glBindFramebuffer) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo->fbo_id());
+    }
+    if (glClearColor) {
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    if (glClear) {
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    if (glBindFramebuffer) {
+        glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prev_fbo));
+    }
     const std::uint32_t id = s_next_surface_id++;
     s_surfaces.emplace(id, std::move(fbo));
     return id;
@@ -629,7 +669,9 @@ void gl_gpu_surface_destroy(std::uint32_t surface_id) {
         return;
     }
     if (s_bound_surface_id == surface_id) {
-        gl_gpu_surface_bind(0, s_viewport_width, s_viewport_height);
+        gl_gpu_surface_bind(0, s_main_width, s_main_height);
+    } else if (s_batcher.is_active()) {
+        s_batcher.flush();
     }
     s_surfaces.erase(surface_id);
 }
@@ -637,16 +679,18 @@ void gl_gpu_surface_destroy(std::uint32_t surface_id) {
 void gl_gpu_surface_bind(std::uint32_t surface_id, int width, int height) {
     ensure_initialized();
     if (surface_id != 0 && s_surfaces.find(surface_id) == s_surfaces.end()) {
-        surface_id = 0;
+        return;
     }
-    if (s_bound_surface_id == 0 && surface_id != 0 && !s_main_vp_saved && glGetIntegerv) {
+    if (s_bound_surface_id == 0 && surface_id != 0 && glGetIntegerv) {
         glGetIntegerv(GL_VIEWPORT, s_main_vp);
-        if (s_main_vp[2] > 0 && s_main_vp[3] > 0) {
-            s_main_vp_saved = true;
-        }
+        s_main_vp_saved = (s_main_vp[2] > 0 && s_main_vp[3] > 0);
     }
-    int target_w = width > 0 ? width : 640;
-    int target_h = height > 0 ? height : 480;
+    if (surface_id == 0) {
+        if (width > 0) s_main_width = width;
+        if (height > 0) s_main_height = height;
+    }
+    int target_w = width > 0 ? width : s_main_width;
+    int target_h = height > 0 ? height : s_main_height;
     if (surface_id != 0) {
         const auto &fbo = s_surfaces.at(surface_id);
         target_w = fbo->width();
@@ -707,7 +751,7 @@ bool gl_gpu_surface_draw(std::uint32_t surface_id,
                          double angle,
                          unsigned tint,
                          double opacity) {
-    if (surface_id == 0 || opacity <= 0.0 || width <= 0.0 || height <= 0.0 || dw == 0.0 || dh == 0.0) {
+    if (surface_id == 0 || (opacity <= 0.0 && is_default_alpha_blend()) || width <= 0.0 || height <= 0.0 || dw == 0.0 || dh == 0.0) {
         return false;
     }
     const auto it = s_surfaces.find(surface_id);

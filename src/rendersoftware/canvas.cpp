@@ -376,7 +376,6 @@ void composite_custom_rgba4(std::uint32_t *destination,
     const auto destination_low = _mm_unpacklo_epi8(destination_bytes, _mm_setzero_si128());
     const auto destination_high = _mm_unpackhi_epi8(destination_bytes, _mm_setzero_si128());
     const auto full = _mm_set1_epi16(255);
-    const auto zero = _mm_setzero_si128();
     const auto rgb_mask = _mm_setr_epi16(-1, -1, -1, 0, -1, -1, -1, 0);
     const auto alpha_words = _mm_setr_epi16(0, 0, 0, -1, 0, 0, 0, -1);
     const auto repeat_alpha = [](const __m128i pixels) {
@@ -415,7 +414,7 @@ void composite_custom_rgba4(std::uint32_t *destination,
             return factor;
         }
         default:
-            return zero;
+            return repeat_alpha(src);
         }
     };
     const auto combine_factors = [&](const __m128i src, const __m128i dst, int rgb_type, int alpha_type) {
@@ -433,9 +432,9 @@ void composite_custom_rgba4(std::uint32_t *destination,
                                     const __m128i src, const __m128i dst, int equation) {
         switch (equation) {
         case 1:
-            return _mm_subs_epu16(destination_term, source_term);
-        case 2:
             return _mm_subs_epu16(source_term, destination_term);
+        case 2:
+            return _mm_subs_epu16(destination_term, source_term);
         case 3: {
             const auto greater = _mm_cmpgt_epi16(src, dst);
             return _mm_or_si128(_mm_and_si128(greater, dst), _mm_andnot_si128(greater, src));
@@ -837,8 +836,12 @@ bool Canvas::gpu_readback(std::span<std::uint32_t> pixels) const noexcept {
 #elif REGML_PS2
     return ps2_gpu_readback(pixels);
 #elif REGML_GLMODERN
+    if (gpu_target())
+        glmodern::gl_gpu_surface_bind(gpu_surface_id(), width_, height_);
     return glmodern::gl_gpu_readback(width_, height_, pixels);
 #elif REGML_GX2
+    if (gpu_target())
+        gx2::gx2_gpu_surface_bind(gpu_surface_id(), width_, height_);
     return gx2::gx2_gpu_readback(width_, height_, pixels);
 #else
     (void)pixels;
@@ -882,6 +885,7 @@ void Canvas::clear(std::uint32_t bgr, double alpha) {
 #elif REGML_GLMODERN
     if (gpu_) {
         if (gpu_surface_id() != 0) {
+            glmodern::gl_gpu_surface_bind(gpu_surface_id(), width_, height_);
             glmodern::gl_gpu_surface_clear(argb);
             return;
         }
@@ -892,6 +896,7 @@ void Canvas::clear(std::uint32_t bgr, double alpha) {
 #elif REGML_GX2
     if (gpu_) {
         if (gpu_surface_id() != 0) {
+            gx2::gx2_gpu_surface_bind(gpu_surface_id(), width_, height_);
             gx2::gx2_gpu_surface_clear(argb);
             return;
         }
@@ -911,11 +916,13 @@ void Canvas::clear(std::uint32_t bgr, double alpha) {
 void Canvas::clear_transparent() noexcept {
 #if REGML_GLMODERN
     if (gpu_ && gpu_surface_id() != 0) {
+        glmodern::gl_gpu_surface_bind(gpu_surface_id(), width_, height_);
         glmodern::gl_gpu_surface_clear(0x00000000U);
         return;
     }
 #elif REGML_GX2
     if (gpu_ && gpu_surface_id() != 0) {
+        gx2::gx2_gpu_surface_bind(gpu_surface_id(), width_, height_);
         gx2::gx2_gpu_surface_clear(0x00000000U);
         return;
     }
@@ -1047,6 +1054,7 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
                 result[3] = 255;
                 break;
             default:
+                result.fill(source_alpha);
                 break;
             }
             return result;
@@ -1071,9 +1079,9 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
                 const auto source_term = (source[channel] * source_factor + 127) / 255;
                 const auto destination_term = (destination[channel] * destination_factor + 127) / 255;
                 if (equation == 1)
-                    output = destination_term > source_term ? destination_term - source_term : 0;
-                else if (equation == 2)
                     output = source_term > destination_term ? source_term - destination_term : 0;
+                else if (equation == 2)
+                    output = destination_term > source_term ? destination_term - source_term : 0;
                 else
                     output = std::min(source_term + destination_term, 255U);
             }
@@ -1122,7 +1130,10 @@ void Canvas::rgba_pixel_tinted(int x, int y, std::uint32_t rgba, unsigned tint, 
     store_pixel(x, y, result);
 }
 void Canvas::rgba_span(int x, int y, int count, std::uint32_t rgba, unsigned tint, double opacity) noexcept {
-    if (y < 0 || y >= height_ || count <= 0 || x >= width_ || opacity <= 0)
+    const bool standard_alpha_blend =
+        blend_enabled_ && blend_factors_ == std::array<int, 4>{5, 6, 5, 6} &&
+        blend_equations_ == std::array<int, 2>{0, 0};
+    if (y < 0 || y >= height_ || count <= 0 || x >= width_ || (opacity <= 0 && standard_alpha_blend))
         return;
     const int end =
         static_cast<int>(std::min(static_cast<std::int64_t>(x) + count, static_cast<std::int64_t>(width_)));
@@ -1275,7 +1286,10 @@ void Canvas::blit_rgba(std::span<const std::uint32_t> source,
                        unsigned tint,
                        double opacity,
                        std::int8_t source_alpha_mode) noexcept {
-    if (opacity <= 0)
+    const bool standard_alpha_blend =
+        blend_enabled_ && blend_factors_ == std::array<int, 4>{5, 6, 5, 6} &&
+        blend_equations_ == std::array<int, 2>{0, 0};
+    if (opacity <= 0 && standard_alpha_blend)
         return;
     const bool source_overlaps_canvas = overlaps_canvas_pixels(source, pixels_);
     const bool additive_fast_path = additive_blend_ && !gpu_ && !pixel_shader_ && !source_overlaps_canvas;
@@ -1707,7 +1721,11 @@ void Canvas::draw_surface(const Canvas &source,
     finite(sy);
     finite(angle);
     finite(opacity);
-    if (sx == 0 || sy == 0 || source.width_ == 0 || source.height_ == 0 || opacity <= 0)
+    const bool standard_alpha_blend =
+        blend_enabled_ && blend_factors_ == std::array<int, 4>{5, 6, 5, 6} &&
+        blend_equations_ == std::array<int, 2>{0, 0};
+    if (sx == 0 || sy == 0 || source.width_ == 0 || source.height_ == 0 ||
+        (opacity <= 0 && standard_alpha_blend))
         return;
 #if REGML_WII
     if (gpu_) {
@@ -1733,7 +1751,8 @@ void Canvas::draw_surface(const Canvas &source,
     if (gpu_) {
         if (source.gpu_surface_id() != 0 && &source != this) {
             if (glmodern::gl_gpu_surface_draw(source.gpu_surface_id(), 0, 0, source.width_, source.height_, x, y,
-                                              source.width_ * sx, source.height_ * sy, angle, tint, opacity))
+                                              source.width_ * sx, source.height_ * sy, angle, to_rgb(tint),
+                                              opacity))
                 return;
         }
         if (&source == this || source.gpu_) {
@@ -1741,10 +1760,10 @@ void Canvas::draw_surface(const Canvas &source,
             if (!source.gpu_readback(readback_scratch_))
                 return;
             glmodern::gl_gpu_image(readback_scratch_, source.width_, 0, 0, source.width_, source.height_, x, y,
-                                   source.width_ * sx, source.height_ * sy, angle, tint, opacity);
+                                   source.width_ * sx, source.height_ * sy, angle, to_rgb(tint), opacity);
         } else {
             glmodern::gl_gpu_image(source.pixels_, source.width_, 0, 0, source.width_, source.height_, x, y,
-                                   source.width_ * sx, source.height_ * sy, angle, tint, opacity);
+                                   source.width_ * sx, source.height_ * sy, angle, to_rgb(tint), opacity);
         }
         return;
     }
@@ -1752,7 +1771,8 @@ void Canvas::draw_surface(const Canvas &source,
     if (gpu_) {
         if (source.gpu_surface_id() != 0 && &source != this) {
             if (gx2::gx2_gpu_surface_draw(source.gpu_surface_id(), 0, 0, source.width_, source.height_, x, y,
-                                          source.width_ * sx, source.height_ * sy, angle, tint, opacity))
+                                          source.width_ * sx, source.height_ * sy, angle, to_rgb(tint),
+                                          opacity))
                 return;
         }
         if (&source == this || source.gpu_) {
@@ -1760,10 +1780,10 @@ void Canvas::draw_surface(const Canvas &source,
             if (!source.gpu_readback(readback_scratch_))
                 return;
             gx2::gx2_gpu_image(readback_scratch_, source.width_, 0, 0, source.width_, source.height_, x, y,
-                               source.width_ * sx, source.height_ * sy, angle, tint, opacity);
+                               source.width_ * sx, source.height_ * sy, angle, to_rgb(tint), opacity);
         } else {
             gx2::gx2_gpu_image(source.pixels_, source.width_, 0, 0, source.width_, source.height_, x, y,
-                               source.width_ * sx, source.height_ * sy, angle, tint, opacity);
+                               source.width_ * sx, source.height_ * sy, angle, to_rgb(tint), opacity);
         }
         return;
     }

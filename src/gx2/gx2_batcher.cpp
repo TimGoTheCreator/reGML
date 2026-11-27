@@ -326,21 +326,19 @@ void Gx2Batcher::draw_quad(const GX2Texture *texture,
     float x3 = x, y3 = y + h;
 
     if (angle_degrees != 0.0f) {
-        const float rad = -angle_degrees * DEG_TO_RAD;
-        const float c = std::cos(rad);
-        const float s = std::sin(rad);
-        const float cx = x + w * 0.5f;
-        const float cy = y + h * 0.5f;
-        auto rot = [&](float &px, float &py) {
-            const float dx = px - cx;
-            const float dy = py - cy;
-            px = cx + dx * c - dy * s;
-            py = cy + dx * s + dy * c;
-        };
-        rot(x0, y0);
-        rot(x1, y1);
-        rot(x2, y2);
-        rot(x3, y3);
+        const float rad = angle_degrees * DEG_TO_RAD;
+        const float cs = std::cos(rad);
+        const float sn = std::sin(rad);
+        const float wx = w * cs;
+        const float wy = -w * sn;
+        const float hx = h * sn;
+        const float hy = h * cs;
+        x1 = x + wx;
+        y1 = y + wy;
+        x2 = x + wx + hx;
+        y2 = y + wy + hy;
+        x3 = x + hx;
+        y3 = y + hy;
     }
 
     Gx2Vertex *v = ring_buffer_ + ring_offset_ + batch_count_;

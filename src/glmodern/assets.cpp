@@ -926,10 +926,24 @@ void GLModernAssets::draw_tile(GLModernCanvas &canvas,
     const double dw = (right - left) * sx * view_sx_ * canvas.render_scale();
     const double dh = (bottom - top) * sy * view_sy_ * canvas.render_scale();
 
-    const std::uint32_t c = gml_to_rgba(color, 1.0);
-    canvas.batcher().draw_quad(tex_id, static_cast<float>(dest_x), static_cast<float>(dest_y),
-                               static_cast<float>(dw), static_cast<float>(dh),
-                               u0, v0, u1, v1, c, 0.0f);
+    const double alpha = static_cast<double>(color >> 24) / 255.0;
+    const std::uint32_t c = gml_to_rgba(color, alpha);
+    const float fx = static_cast<float>(dest_x);
+    const float fy = static_cast<float>(dest_y);
+    const float fw = static_cast<float>(dw);
+    const float fh = static_cast<float>(dh);
+
+    if (tile_data & 0x40000000U) {
+        const std::array<Vertex, 4> v{{
+            {fx, fy, u0, v1, c},
+            {fx + fw, fy, u0, v0, c},
+            {fx + fw, fy + fh, u1, v0, c},
+            {fx, fy + fh, u1, v1, c}
+        }};
+        canvas.batcher().draw_quad_corners(tex_id, v);
+    } else {
+        canvas.batcher().draw_quad(tex_id, fx, fy, fw, fh, u0, v0, u1, v1, c, 0.0f);
+    }
 }
 
 void GLModernAssets::draw_text(GLModernCanvas &canvas,
