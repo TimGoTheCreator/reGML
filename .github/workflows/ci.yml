@@ -355,7 +355,12 @@ jobs:
           version: '4.0.4'
       - name: Install dependencies
         timeout-minutes: 20
-        run: doas mport install -y cmake ninja pkgconf png libvorbis sdl2 ccache gcc13
+        run: |
+          doas mport index < /dev/null
+          for pkg in cmake ninja pkgconf png libvorbis sdl2 ccache gcc13; do
+            echo "Installing $pkg..."
+            doas mport -q install "$pkg" < /dev/null
+          done
       - name: Configure and build
         run: |
           mkdir -p "$PWD/host_cache/ccache"
@@ -367,7 +372,8 @@ jobs:
           export CXX=/usr/local/bin/g++13
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DREGML_SDL2=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,/usr/local/lib/gcc13"
           cmake --build build --parallel
       - name: Run tests
         run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software ctest --test-dir build --output-on-failure
