@@ -4,6 +4,12 @@
 #include <filesystem>
 #include <iostream>
 
+#if REGML_PS4
+extern "C" int __cxa_thread_atexit_impl(void (*)(void *), void *, void *) noexcept {
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv) {
     const std::filesystem::path package = argc > 1 ? argv[1] : "/app0/data.win";
     const auto game_directory = package.parent_path();
