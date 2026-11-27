@@ -68,7 +68,8 @@ std::uint32_t additive_blend_pixel(
     const unsigned output_red = blend_channel(red, (destination >> 16) & 255);
     const unsigned output_green = blend_channel(green, (destination >> 8) & 255);
     const unsigned output_blue = blend_channel(blue, destination & 255);
-    const unsigned output_alpha = std::min((alpha * alpha + 127) / 255 + (destination >> 24), 255U);
+    const unsigned output_alpha =
+        std::min<unsigned>((alpha * alpha + 127) / 255 + (destination >> 24), 255U);
     return (output_alpha << 24) | (output_red << 16) | (output_green << 8) | output_blue;
 }
 struct AdditiveSourcePixel {

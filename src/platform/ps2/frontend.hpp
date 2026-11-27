@@ -26,6 +26,7 @@ class Ps2Frontend {
                    const KeyboardState *replay,
                    const KeyboardState *replay_pressed = nullptr);
     void present(const Canvas &canvas);
+    [[nodiscard]] const GamepadState &gamepad_state() const noexcept { return gamepad_; }
 
   private:
     KeyboardState take_pressed() noexcept;

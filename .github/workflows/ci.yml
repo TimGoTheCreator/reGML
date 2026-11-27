@@ -15,6 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod*
           sudo apt-get update
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential cmake pkg-config libpng-dev libvorbis-dev libsdl2-dev libbz2-dev
@@ -298,7 +299,8 @@ jobs:
           }
           EOF
           sudo pkg update -f
-          sudo pkg install -y cmake ninja pkgconf png libvorbis sdl2 ccache
+          sudo pkg upgrade -y
+          sudo pkg install -y cmake ninja pkgconf png libvorbis sdl2 ccache openssl
       - name: Configure and build
         run: |
           mkdir -p "$PWD/host_cache/ccache"
@@ -517,6 +519,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install build tools
         run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod*
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang lld llvm cmake ninja-build git curl
       - uses: actions/cache@v4

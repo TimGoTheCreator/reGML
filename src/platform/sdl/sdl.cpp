@@ -1050,6 +1050,7 @@ class VideoWindow {
                      replay ? (replay_pressed ? *replay_pressed : KeyboardState{}) : pressed);
     }
     void present(const Canvas &canvas) { renderer_.present(canvas); }
+    GamepadState gamepad_state() { return input_.take_gamepad(); }
 
   private:
     WiiRenderer renderer_;
