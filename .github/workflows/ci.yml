@@ -361,7 +361,9 @@ jobs:
             echo "Installing $pkg..."
             sudo env ASSUME_ALWAYS_YES=1 MAGUS=1 mport -q install "$pkg" < /dev/null || true
           done
-          command -v cmake ninja pkg-config ccache
+          for bin in cmake ninja pkg-config ccache; do
+            command -v "$bin"
+          done
           pkg-config --exists libpng vorbisfile sdl2
       - name: Configure and build
         run: |
